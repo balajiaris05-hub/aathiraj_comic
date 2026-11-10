@@ -180,9 +180,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
                     ? 'bg-amber-600 text-white'
                     : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800 hover:bg-amber-100'
                 }`}
+                title="Restricted Admin Portal (2FA Verification)"
               >
                 <Shield className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Admin Panel</span>
+                <span className="hidden sm:inline">Admin Portal</span>
+                <span className="text-[10px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono font-bold">2FA</span>
               </button>
             )}
 

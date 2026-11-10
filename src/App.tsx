@@ -128,11 +128,12 @@ function MainAppContent() {
               />
             )}
 
-            {currentTab === 'admin_dashboard' && (
+            {(currentTab === 'admin_dashboard' || currentTab === 'admin_dashboard_delete_requests') && (
               <AdminDashboard
                 comics={comics}
                 onRefreshComics={fetchComics}
                 setCurrentTab={handleTabChange}
+                initialSubTab={currentTab === 'admin_dashboard_delete_requests' ? 'delete-requests' : undefined}
               />
             )}
 

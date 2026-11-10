@@ -7,6 +7,7 @@ export interface User {
   role: UserRole;
   isVerified: boolean;
   avatar: string;
+  phone?: string;
   bio?: string;
   createdAt: string;
 }
@@ -44,6 +45,7 @@ export interface Episode {
   releaseDate: string;
   isPremium: boolean;
   priceInr: number;
+  coverImage?: string;
   pages: ComicPage[];
   likesCount: number;
   dislikesCount: number;
@@ -86,7 +88,7 @@ export interface Comic {
   averageRating: number;
   createdAt: string;
   updatedAt: string;
-  moderationStatus: 'approved' | 'pending' | 'rejected';
+  moderationStatus: 'approved' | 'pending' | 'rejected' | 'delete_requested';
   submittedAt?: string;
   adminReviewNote?: string;
   isPublishedDirectlyByAdmin?: boolean;
@@ -184,4 +186,23 @@ export interface ActivityLog {
   details: string;
   targetType: string;
   targetId: string;
+}
+
+export interface DeleteRequest {
+  id: string;
+  comicId: string;
+  comicTitle: string;
+  comicCover?: string;
+  chapterId?: string;
+  chapterTitle?: string;
+  episodeId?: string;
+  episodeTitle?: string;
+  targetType: 'series' | 'chapter' | 'episode';
+  authorId: string;
+  authorName: string;
+  reason?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  requestedAt: string;
+  reviewedAt?: string;
+  adminNote?: string;
 }

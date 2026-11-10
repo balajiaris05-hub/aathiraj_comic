@@ -86,6 +86,15 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
                   Customer Purchase History &amp; Invoices
                 </button>
               </li>
+              <li className="pt-2 border-t border-slate-800">
+                <button
+                  onClick={() => setCurrentTab('admin_dashboard')}
+                  className="hover:text-amber-400 text-amber-500 font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Admin Portal (2FA Protected)</span>
+                </button>
+              </li>
             </ul>
           </div>
 

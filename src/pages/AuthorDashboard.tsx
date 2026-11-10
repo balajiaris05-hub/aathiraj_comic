@@ -21,7 +21,17 @@ import {
   TrendingUp,
   Sliders,
   Paperclip,
-  FileUp
+  FileUp,
+  Images,
+  ArrowUp,
+  ArrowDown,
+  ZoomIn,
+  ZoomOut,
+  XCircle,
+  X,
+  ChevronDown,
+  ChevronUp,
+  FolderPlus
 } from 'lucide-react';
 
 interface AuthorDashboardProps {
@@ -55,6 +65,71 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   // New Chapter Form State
   const [chapterTitle, setChapterTitle] = useState('');
 
+  // Multiple Photos Attachment State for Episode Upload
+  const [episodeAttachedPages, setEpisodeAttachedPages] = useState<{
+    id: string;
+    fileName: string;
+    size: string;
+    type: string;
+    dataUrl: string;
+    pageNumber: number;
+    caption?: string;
+  }[]>([]);
+
+  // Multiple Photos Attachment State for New Comic Creation
+  const [newComicAttachedPages, setNewComicAttachedPages] = useState<{
+    id: string;
+    fileName: string;
+    size: string;
+    type: string;
+    dataUrl: string;
+    pageNumber: number;
+    caption?: string;
+  }[]>([]);
+  const [selectedCoverPageId, setSelectedCoverPageId] = useState<string | null>(null);
+  const [selectedEpisodeCoverPageId, setSelectedEpisodeCoverPageId] = useState<string | null>(null);
+
+  // Live Reader Preview Modal State
+  const [showAuthorLivePreview, setShowAuthorLivePreview] = useState(false);
+  const [previewViewMode, setPreviewViewMode] = useState<'vertical' | 'page'>('vertical');
+  const [previewCurrentPage, setPreviewCurrentPage] = useState(1);
+  const [previewZoom, setPreviewZoom] = useState(100);
+
+  // Comic Editing State
+  const [isEditingComicModalOpen, setIsEditingComicModalOpen] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editGenres, setEditGenres] = useState<string[]>([]);
+  const [editCustomGenre, setEditCustomGenre] = useState('');
+  const [editCover, setEditCover] = useState('');
+  const [editAccessType, setEditAccessType] = useState<'free' | 'premium'>('free');
+  const [editFullPrice, setEditFullPrice] = useState(99);
+  const [isSavingComicEdit, setIsSavingComicEdit] = useState(false);
+  const [comicEditError, setComicEditError] = useState<string | null>(null);
+
+  // Chapter Editing State
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [editChapterTitle, setEditChapterTitle] = useState('');
+  const [isUpdatingChapter, setIsUpdatingChapter] = useState(false);
+
+  // Episode Editing State
+  const [editingEpisode, setEditingEpisode] = useState<Episode | null>(null);
+  const [editEpisodeTitle, setEditEpisodeTitle] = useState('');
+  const [editEpisodeSynopsis, setEditEpisodeSynopsis] = useState('');
+  const [editEpisodeIsPremium, setEditEpisodeIsPremium] = useState(false);
+  const [editEpisodePrice, setEditEpisodePrice] = useState(10);
+  const [isUpdatingEpisode, setIsUpdatingEpisode] = useState(false);
+
+  // Direct Chapter Upload Trigger State
+  const [activeUploadChapterId, setActiveUploadChapterId] = useState<string | null>(null);
+
+  // Manual Deletion Modal State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteMode, setDeleteMode] = useState<'episode' | 'chapter' | 'series'>('episode');
+  const [modalSelectedChapterId, setModalSelectedChapterId] = useState<string>('');
+  const [modalSelectedEpisodeId, setModalSelectedEpisodeId] = useState<string>('');
+  const [isDeletingItem, setIsDeletingItem] = useState(false);
+
   // Attached Comic File State (Author)
   const [attachedComicFile, setAttachedComicFile] = useState<{
     name: string;
@@ -72,9 +147,8 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [selectedChapterId, setSelectedChapterId] = useState('');
   const [episodeTitle, setEpisodeTitle] = useState('');
   const [episodeSynopsis, setEpisodeSynopsis] = useState('');
-  const [episodeIsPremium, setEpisodeIsPremium] = useState(true);
+  const [episodeIsPremium, setEpisodeIsPremium] = useState(false);
   const [episodePrice, setEpisodePrice] = useState(10);
-  const [episodePagesCount, setEpisodePagesCount] = useState(4);
   const [isPublishingEpisode, setIsPublishingEpisode] = useState(false);
 
   // Earnings data
@@ -93,16 +167,59 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [payoutRequested, setPayoutRequested] = useState(false);
 
   useEffect(() => {
-    // Filter author comics (or default to user id / rajesh)
-    const myComics = comics.filter(c => c.authorId === user?.id || c.authorName === user?.name || user?.role === 'author');
+    // STRICT OWNERSHIP FILTER: Author only has access to his own books!
+    const myComics = comics.filter(c => {
+      // Never show admin publications or books belonging to other authors
+      if (c.authorId === 'usr_admin' || c.authorName?.includes('(Admin)')) return false;
+
+      if (user?.id && c.authorId === user.id) return true;
+      if (user?.name && c.authorName?.toLowerCase() === user.name?.toLowerCase()) return true;
+      if (user?.email && c.authorId === user.email) return true;
+      // Demo author persona
+      if ((user?.id === 'usr_rajesh' || user?.name === 'Rajesh Singh') && (c.authorId === 'usr_rajesh' || c.authorName === 'Rajesh Singh')) return true;
+      return false;
+    });
+
     setAuthorComics(myComics);
-    if (myComics.length > 0 && !selectedComic) {
-      setSelectedComic(myComics[0]);
-      if (myComics[0].chapters.length > 0) {
-        setSelectedChapterId(myComics[0].chapters[0].id);
+    if (myComics.length > 0) {
+      if (!selectedComic || !myComics.find(mc => mc.id === selectedComic.id)) {
+        const firstComic = myComics[0];
+        setSelectedComic(firstComic);
+        if (firstComic.chapters.length > 0) {
+          setSelectedChapterId(firstComic.chapters[0].id);
+          setModalSelectedChapterId(firstComic.chapters[0].id);
+          if (firstComic.chapters[0].episodes.length > 0) {
+            setModalSelectedEpisodeId(firstComic.chapters[0].episodes[0].id);
+          }
+        }
+      } else {
+        const latest = myComics.find(mc => mc.id === selectedComic.id);
+        if (latest) {
+          setSelectedComic(latest);
+          if (latest.chapters.length > 0 && !modalSelectedChapterId) {
+            setModalSelectedChapterId(latest.chapters[0].id);
+            if (latest.chapters[0].episodes.length > 0 && !modalSelectedEpisodeId) {
+              setModalSelectedEpisodeId(latest.chapters[0].episodes[0].id);
+            }
+          }
+        }
       }
+    } else {
+      setSelectedComic(null);
     }
   }, [comics, user]);
+
+  useEffect(() => {
+    if (selectedComic && selectedComic.chapters.length > 0) {
+      const activeChap = selectedComic.chapters.find(c => c.id === modalSelectedChapterId) || selectedComic.chapters[0];
+      setModalSelectedChapterId(activeChap.id);
+      if (activeChap.episodes.length > 0) {
+        setModalSelectedEpisodeId(activeChap.episodes[0].id);
+      } else {
+        setModalSelectedEpisodeId('');
+      }
+    }
+  }, [selectedComic]);
 
   useEffect(() => {
     if (user) {
@@ -141,39 +258,159 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     }
   };
 
-  // Handle file attachment for author comic creation
-  const handleAuthorFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Handle Direct Author Comic Series Deletion
+  const handleDirectDeleteComicSeries = async () => {
+    if (!selectedComic) return;
+    if (!confirm(`⚠️ CRITICAL WARNING: Are you sure you want to permanently delete "${selectedComic.title}" along with ALL its chapters and episodes? This cannot be undone.`)) return;
 
-    const formattedSize = file.size > 1024 * 1024
-      ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
-      : `${(file.size / 1024).toFixed(1)} KB`;
-
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachedComicFile({
-          name: file.name,
-          size: formattedSize,
-          type: file.type || 'image',
-          dataUrl: reader.result as string,
-        });
-      };
-      reader.readAsDataURL(file);
-    } else {
-      setAttachedComicFile({
-        name: file.name,
-        size: formattedSize,
-        type: file.name.split('.').pop()?.toUpperCase() || 'DOCUMENT',
+    setIsDeletingItem(true);
+    try {
+      const res = await fetch(`/api/comics/${selectedComic.id}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
+        method: 'DELETE',
       });
+      const data = await res.json();
+      setIsDeletingItem(false);
+      if (res.ok) {
+        setIsDeleteModalOpen(false);
+        onRefreshComics();
+        setSubmissionFeedback(`Comic series "${selectedComic.title}" was permanently deleted.`);
+        setSelectedComic(null);
+        setTimeout(() => setSubmissionFeedback(null), 5000);
+      } else {
+        alert(data.error || 'Failed to delete comic series.');
+      }
+    } catch (err) {
+      setIsDeletingItem(false);
+      console.error(err);
+      alert('Network error while deleting comic series.');
     }
+  };
+
+  // Handle Author Content Deletion Request to Admin Portal (Series, Chapter, or Episode)
+  const handleSubmitDeleteRequestToAdmin = async (targetType: 'series' | 'chapter' | 'episode') => {
+    if (!selectedComic) return;
+    const note = prompt(`Enter an optional note or reason for the administrator regarding your ${targetType} deletion request:`);
+    if (note === null) return; // cancelled
+
+    try {
+      const res = await fetch('/api/author/comics/request-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comicId: selectedComic.id,
+          chapterId: targetType !== 'series' ? modalSelectedChapterId : undefined,
+          episodeId: targetType === 'episode' ? modalSelectedEpisodeId : undefined,
+          targetType,
+          reason: note,
+          authorId: user?.id,
+          authorName: user?.name,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setIsDeleteModalOpen(false);
+        onRefreshComics();
+        if (data.comic) setSelectedComic(data.comic);
+        setSubmissionFeedback(`✓ ${targetType.toUpperCase()} deletion request for "${selectedComic.title}" sent to Admin Portal! Admin will review your request in the Delete Requests tab.`);
+        setTimeout(() => setSubmissionFeedback(null), 8000);
+      } else {
+        alert(data.error || 'Failed to submit deletion request.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Network error while requesting deletion.');
+    }
+  };
+
+  // Handle Author Comic Deletion Request to Admin
+  const handleRequestComicDeletion = async () => {
+    await handleSubmitDeleteRequestToAdmin('series');
+  };
+
+  // Directly send an Episode Deletion Request to Admin
+  const handleSendEpisodeDeleteRequest = async (ep: Episode, chapId: string) => {
+    if (!selectedComic) return;
+    const note = prompt(`Enter optional reason/note for Admin regarding deleting Episode "${ep.title}":`);
+    if (note === null) return; // user clicked cancel
+
+    try {
+      const res = await fetch('/api/author/comics/request-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comicId: selectedComic.id,
+          chapterId: chapId,
+          episodeId: ep.id,
+          targetType: 'episode',
+          reason: note,
+          authorId: user?.id,
+          authorName: user?.name,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onRefreshComics();
+        if (data.comic) setSelectedComic(data.comic);
+        setSubmissionFeedback(`✓ Episode deletion request for "${ep.title}" sent to Admin Portal! Admin will review your request in the Delete Requests tab.`);
+        setTimeout(() => setSubmissionFeedback(null), 8000);
+      } else {
+        alert(data.error || 'Failed to submit episode deletion request.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Network error while requesting episode deletion.');
+    }
+  };
+
+  // Handle multiple file attachments for author comic creation & cover selection
+  const handleNewComicFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    files.forEach((file, index) => {
+      const formattedSize = file.size > 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
+        : `${(file.size / 1024).toFixed(1)} KB`;
+
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setNewComicAttachedPages(prev => {
+            const updated = [
+              ...prev,
+              {
+                id: `p_new_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${index}`,
+                fileName: file.name,
+                size: formattedSize,
+                type: file.type || 'image',
+                dataUrl: reader.result as string,
+                pageNumber: prev.length + 1,
+                caption: `Page ${prev.length + 1}`,
+              },
+            ];
+            if (!selectedCoverPageId && updated.length > 0) {
+              setSelectedCoverPageId(updated[0].id);
+            }
+            return updated;
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+    e.target.value = '';
   };
 
   // Handle Comic Creation
   const handleCreateComic = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newComicAttachedPages.length === 0) {
+      alert('Please attach at least one comic page / image file.');
+      return;
+    }
     setIsSubmittingComic(true);
+
+    const coverPage = newComicAttachedPages.find(p => p.id === selectedCoverPageId) || newComicAttachedPages[0];
+    const coverImageUrl = coverPage?.dataUrl || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
 
     try {
       const res = await fetch('/api/comics', {
@@ -184,15 +421,20 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           authorId: user?.id || 'usr_rajesh',
           authorName: user?.name || 'Rajesh Singh',
           genre: [newGenre],
-          coverImage: newCover,
+          coverImage: coverImageUrl,
           description: newDesc,
           accessType: newAccess,
           fullPriceInr: newAccess === 'premium' ? newFullPrice : 0,
           chapterPriceInr: newAccess === 'premium' ? 30 : 0,
           episodePriceInr: newAccess === 'premium' ? newEpPrice : 0,
-          attachedFileName: attachedComicFile?.name,
-          attachedFileSize: attachedComicFile?.size,
-          attachedFileType: attachedComicFile?.type,
+          attachedFileName: coverPage?.fileName || 'Attached Comic Pages',
+          attachedFileSize: `${newComicAttachedPages.length} files`,
+          attachedFileType: 'IMAGE_ARCHIVE',
+          pages: newComicAttachedPages.map(p => ({
+            pageNumber: p.pageNumber,
+            imageUrl: p.dataUrl,
+            caption: p.caption,
+          })),
         }),
       });
 
@@ -200,18 +442,15 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
 
       if (res.ok && data.comic) {
         if (submitForApprovalOnCreate) {
-          // Send immediately for admin approval with attached file info
           await fetch('/api/author/comics/submit-for-review', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               comicId: data.comic.id,
-              attachedFileName: attachedComicFile?.name,
-              attachedFileSize: attachedComicFile?.size,
-              attachedFileType: attachedComicFile?.type,
+              attachedFileName: coverPage?.fileName,
             }),
           });
-          setSubmissionFeedback(`"${data.comic.title}" was created and submitted with attached file to Admin for approval! Once approved, it will be automatically published on the website.`);
+          setSubmissionFeedback(`"${data.comic.title}" was created and submitted with ${newComicAttachedPages.length} attached pages to Admin for approval! Once approved, it will be automatically published on the website.`);
           setTimeout(() => setSubmissionFeedback(null), 8000);
         }
 
@@ -221,13 +460,275 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         setActiveTab('comics');
         setNewTitle('');
         setNewDesc('');
-        setAttachedComicFile(null);
+        setNewComicAttachedPages([]);
+        setSelectedCoverPageId(null);
       } else {
         setIsSubmittingComic(false);
+        alert(data.error || 'Failed to create comic.');
       }
     } catch (err) {
       setIsSubmittingComic(false);
       console.error(err);
+    }
+  };
+
+  // Multiple Photos Upload Handler for Author Episodes
+  const handleAuthorMultipleEpisodePagesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    files.forEach((file, index) => {
+      const formattedSize = file.size > 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
+        : `${(file.size / 1024).toFixed(1)} KB`;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        setEpisodeAttachedPages(prev => {
+          const newId = `p_auth_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${index}`;
+          const updated = [
+            ...prev,
+            {
+              id: newId,
+              fileName: file.name,
+              size: formattedSize,
+              type: file.type || 'image',
+              dataUrl: reader.result as string,
+              pageNumber: prev.length + 1,
+              caption: `Page ${prev.length + 1}`,
+            },
+          ];
+          if (!selectedEpisodeCoverPageId && updated.length > 0) {
+            setSelectedEpisodeCoverPageId(updated[0].id);
+          }
+          return updated;
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = '';
+  };
+
+  // Remove Page from Episode Upload
+  const handleRemoveEpisodePage = (pageId: string) => {
+    setEpisodeAttachedPages(prev => {
+      const filtered = prev.filter(p => p.id !== pageId);
+      return filtered.map((p, idx) => ({ ...p, pageNumber: idx + 1, caption: `Page ${idx + 1}` }));
+    });
+  };
+
+  // Move Page order in Episode Upload
+  const handleMoveEpisodePage = (index: number, direction: 'up' | 'down') => {
+    setEpisodeAttachedPages(prev => {
+      const targetIdx = direction === 'up' ? index - 1 : index + 1;
+      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+      const copy = [...prev];
+      const temp = copy[index];
+      copy[index] = copy[targetIdx];
+      copy[targetIdx] = temp;
+      return copy.map((p, idx) => ({ ...p, pageNumber: idx + 1, caption: `Page ${idx + 1}` }));
+    });
+  };
+
+  // Handle Comic Edit Initiation
+  const handleStartEditComic = () => {
+    if (!selectedComic) return;
+    setEditTitle(selectedComic.title);
+    setEditDesc(selectedComic.description);
+    setEditGenres(selectedComic.genre || ['Fantasy']);
+    setEditCover(selectedComic.coverImage);
+    setEditAccessType(selectedComic.accessType);
+    setEditFullPrice(selectedComic.fullPriceInr || 99);
+    setComicEditError(null);
+    setIsEditingComicModalOpen(true);
+  };
+
+  // Save Comic Edit
+  const handleSaveComicEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedComic) return;
+    setIsSavingComicEdit(true);
+    setComicEditError(null);
+
+    try {
+      const res = await fetch(`/api/comics/${selectedComic.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          description: editDesc.trim(),
+          genre: editGenres,
+          coverImage: editCover,
+          accessType: editAccessType,
+          fullPriceInr: editAccessType === 'premium' ? editFullPrice : 0,
+          authorId: user?.id,
+          authorName: user?.name,
+        }),
+      });
+
+      const data = await res.json();
+      setIsSavingComicEdit(false);
+
+      if (res.ok) {
+        setIsEditingComicModalOpen(false);
+        setSelectedComic(data.comic);
+        onRefreshComics();
+        setSubmissionFeedback(`"${data.comic.title}" was updated successfully!`);
+        setTimeout(() => setSubmissionFeedback(null), 5000);
+      } else {
+        setComicEditError(data.error || 'Failed to update comic.');
+      }
+    } catch (err) {
+      setIsSavingComicEdit(false);
+      setComicEditError('Network error while saving changes.');
+      console.error(err);
+    }
+  };
+
+  // Handle Chapter Title Update
+  const handleUpdateChapter = async (chapId: string, newTitle: string) => {
+    if (!selectedComic || !newTitle.trim()) return;
+    setIsUpdatingChapter(true);
+
+    try {
+      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newTitle.trim(),
+          authorId: user?.id,
+          authorName: user?.name,
+        }),
+      });
+
+      setIsUpdatingChapter(false);
+      if (res.ok) {
+        setEditingChapterId(null);
+        onRefreshComics();
+      }
+    } catch (err) {
+      setIsUpdatingChapter(false);
+      console.error(err);
+    }
+  };
+
+  // Handle Chapter Deletion
+  const handleDeleteChapter = async (chapId: string) => {
+    if (!selectedComic) return;
+    if (!confirm('⚠️ WARNING: Are you sure you want to delete this chapter and all its episodes? This action is permanent and cannot be undone.')) return;
+
+    // Optimistic local update
+    setSelectedComic(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        chapters: prev.chapters.filter(ch => ch.id !== chapId),
+      };
+    });
+
+    try {
+      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onRefreshComics();
+        setSubmissionFeedback('Chapter deleted successfully.');
+        setTimeout(() => setSubmissionFeedback(null), 5000);
+      } else {
+        alert(data.error || 'Failed to delete chapter.');
+        onRefreshComics();
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Network error while deleting chapter.');
+      onRefreshComics();
+    }
+  };
+
+  // Start Editing Episode
+  const handleStartEditEpisode = (ep: Episode, chapId: string) => {
+    setSelectedChapterId(chapId);
+    setEditingEpisode(ep);
+    setEditEpisodeTitle(ep.title);
+    setEditEpisodeSynopsis(ep.synopsis || '');
+    setEditEpisodeIsPremium(ep.isPremium);
+    setEditEpisodePrice(ep.priceInr || 10);
+  };
+
+  // Save Episode Edit
+  const handleSaveEpisodeEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedComic || !selectedChapterId || !editingEpisode) return;
+    setIsUpdatingEpisode(true);
+
+    try {
+      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${selectedChapterId}/episodes/${editingEpisode.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: editEpisodeTitle.trim(),
+          synopsis: editEpisodeSynopsis.trim(),
+          isPremium: editEpisodeIsPremium,
+          priceInr: editEpisodeIsPremium ? editEpisodePrice : 0,
+          authorId: user?.id,
+          authorName: user?.name,
+        }),
+      });
+
+      setIsUpdatingEpisode(false);
+      if (res.ok) {
+        setEditingEpisode(null);
+        onRefreshComics();
+        setSubmissionFeedback(`"${editEpisodeTitle}" was updated successfully!`);
+        setTimeout(() => setSubmissionFeedback(null), 5000);
+      }
+    } catch (err) {
+      setIsUpdatingEpisode(false);
+      console.error(err);
+    }
+  };
+
+  // Delete Episode
+  const handleDeleteEpisode = async (chapId: string, epId: string) => {
+    if (!selectedComic) return;
+    if (!confirm('⚠️ WARNING: Are you sure you want to delete this episode? This action is permanent and cannot be undone.')) return;
+
+    // Optimistic local update
+    setSelectedComic(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        chapters: prev.chapters.map(ch => {
+          if (ch.id === chapId) {
+            return {
+              ...ch,
+              episodes: ch.episodes.filter(ep => ep.id !== epId),
+            };
+          }
+          return ch;
+        }),
+      };
+    });
+
+    try {
+      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}/episodes/${epId}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onRefreshComics();
+        setSubmissionFeedback('Episode deleted successfully.');
+        setTimeout(() => setSubmissionFeedback(null), 5000);
+      } else {
+        alert(data.error || 'Failed to delete episode.');
+        onRefreshComics();
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Network error while deleting episode.');
+      onRefreshComics();
     }
   };
 
@@ -240,7 +741,11 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: chapterTitle.trim() }),
+        body: JSON.stringify({
+          title: chapterTitle.trim(),
+          authorId: user?.id,
+          authorName: user?.name,
+        }),
       });
 
       if (res.ok) {
@@ -252,31 +757,61 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     }
   };
 
-  // Handle Episode Creation
-  const handleAddEpisode = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Open Author Live Preview Modal
+  const handleOpenAuthorLivePreview = () => {
+    if (episodeAttachedPages.length === 0) {
+      alert('Please attach at least one photo (comic page) before launching preview.');
+      return;
+    }
+    if (!episodeTitle.trim()) {
+      alert('Please enter an episode title before launching preview.');
+      return;
+    }
+    setPreviewCurrentPage(1);
+    setShowAuthorLivePreview(true);
+  };
+
+  // Handle Episode Creation (With Multi-Photo Support)
+  const handleAddEpisode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!selectedComic || !selectedChapterId || !episodeTitle.trim()) return;
 
     setIsPublishingEpisode(true);
+
+    const selectedEpCoverPage = episodeAttachedPages.find(p => p.id === selectedEpisodeCoverPageId) || episodeAttachedPages[0];
+    const episodeCoverUrl = selectedEpCoverPage?.dataUrl || selectedComic.coverImage;
 
     try {
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${selectedChapterId}/episodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: episodeTitle,
-          synopsis: episodeSynopsis,
+          title: episodeTitle.trim(),
+          synopsis: episodeSynopsis.trim(),
           isPremium: episodeIsPremium,
           priceInr: episodeIsPremium ? episodePrice : 0,
+          authorId: user?.id,
+          authorName: user?.name,
+          coverImage: episodeCoverUrl,
+          pages: episodeAttachedPages.map(p => ({
+            pageNumber: p.pageNumber,
+            imageUrl: p.dataUrl,
+            caption: p.caption,
+          })),
         }),
       });
 
       setIsPublishingEpisode(false);
       if (res.ok) {
-        onRefreshComics();
+        setShowAuthorLivePreview(false);
+        setEpisodeAttachedPages([]);
+        setSelectedEpisodeCoverPageId(null);
         setEpisodeTitle('');
         setEpisodeSynopsis('');
-        setActiveTab('comics');
+        setActiveUploadChapterId(null);
+        onRefreshComics();
+        setSubmissionFeedback(`New episode published with ${episodeAttachedPages.length || 1} pages and cover page assigned!`);
+        setTimeout(() => setSubmissionFeedback(null), 7000);
       }
     } catch (e) {
       setIsPublishingEpisode(false);
@@ -286,7 +821,271 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
 
   return (
     <div className="space-y-8 pb-24">
-      
+
+      {/* Interactive Delete Chapter, Episode or Series Modal */}
+      {isDeleteModalOpen && selectedComic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-lg p-6 rounded-3xl bg-white dark:bg-slate-900 border border-rose-500/40 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center justify-center">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white font-heading">
+                    Delete Content Manager
+                  </h3>
+                  <span className="text-xs text-rose-500 font-semibold">
+                    Series: {selectedComic.title}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDeleteModalOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Mode selection tabs */}
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setDeleteMode('episode')}
+                className={`flex-1 py-2 rounded-lg transition-colors cursor-pointer ${
+                  deleteMode === 'episode'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Delete Episode
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteMode('chapter')}
+                className={`flex-1 py-2 rounded-lg transition-colors cursor-pointer ${
+                  deleteMode === 'chapter'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Delete Chapter
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteMode('series')}
+                className={`flex-1 py-2 rounded-lg transition-colors cursor-pointer ${
+                  deleteMode === 'series'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Delete Entire Series
+              </button>
+            </div>
+
+            {/* MODE 1: DELETE EPISODE */}
+            {deleteMode === 'episode' && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Select a chapter and the specific episode you wish to remove permanently:
+                </p>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    1. Select Chapter:
+                  </label>
+                  <select
+                    value={modalSelectedChapterId}
+                    onChange={(e) => {
+                      setModalSelectedChapterId(e.target.value);
+                      const targetChap = selectedComic.chapters.find(c => c.id === e.target.value);
+                      if (targetChap && targetChap.episodes.length > 0) {
+                        setModalSelectedEpisodeId(targetChap.episodes[0].id);
+                      } else {
+                        setModalSelectedEpisodeId('');
+                      }
+                    }}
+                    className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-medium"
+                  >
+                    {selectedComic.chapters.map(ch => (
+                      <option key={ch.id} value={ch.id}>
+                        Chapter {ch.chapterNumber}: {ch.title} ({ch.episodes.length} Episodes)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    2. Select Episode to Delete:
+                  </label>
+                  {(() => {
+                    const activeChap = selectedComic.chapters.find(c => c.id === modalSelectedChapterId) || selectedComic.chapters[0];
+                    if (!activeChap || activeChap.episodes.length === 0) {
+                      return (
+                        <p className="text-xs text-amber-500 italic p-2 bg-amber-500/10 rounded-lg">
+                          No episodes in this chapter.
+                        </p>
+                      );
+                    }
+                    return (
+                      <select
+                        value={modalSelectedEpisodeId}
+                        onChange={(e) => setModalSelectedEpisodeId(e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-medium"
+                      >
+                        {activeChap.episodes.map(ep => (
+                          <option key={ep.id} value={ep.id}>
+                            Episode {ep.episodeNumber}: {ep.title} ({ep.pages?.length || 0} pages)
+                          </option>
+                        ))}
+                      </select>
+                    );
+                  })()}
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteModalOpen(false)}
+                    className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!modalSelectedChapterId || !modalSelectedEpisodeId}
+                    onClick={() => handleSubmitDeleteRequestToAdmin('episode')}
+                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Send Delete Request to Admin</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* MODE 2: DELETE CHAPTER */}
+            {deleteMode === 'chapter' && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Select a chapter to delete along with all episodes contained inside it:
+                </p>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    Select Chapter to Delete:
+                  </label>
+                  <select
+                    value={modalSelectedChapterId}
+                    onChange={(e) => setModalSelectedChapterId(e.target.value)}
+                    className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-medium"
+                  >
+                    {selectedComic.chapters.map(ch => (
+                      <option key={ch.id} value={ch.id}>
+                        Chapter {ch.chapterNumber}: {ch.title} ({ch.episodes.length} Episodes)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+                  ⚠️ Deleting this chapter will also delete all of its episodes.
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteModalOpen(false)}
+                    className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!modalSelectedChapterId}
+                    onClick={() => handleSubmitDeleteRequestToAdmin('chapter')}
+                    className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Send Delete Request to Admin</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!modalSelectedChapterId}
+                    onClick={async () => {
+                      if (!modalSelectedChapterId) return;
+                      await handleDeleteChapter(modalSelectedChapterId);
+                      setIsDeleteModalOpen(false);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Chapter Directly</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* MODE 3: DELETE ENTIRE SERIES */}
+            {deleteMode === 'series' && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Choose how you wish to delete <strong className="text-slate-900 dark:text-white">"{selectedComic.title}"</strong>:
+                </p>
+
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    disabled={isDeletingItem}
+                    onClick={handleDirectDeleteComicSeries}
+                    className="w-full p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center justify-between shadow-md transition-all cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Trash2 className="w-4 h-4" />
+                      <span>Delete Comic Series Manually Now</span>
+                    </div>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsDeleteModalOpen(false);
+                      await handleRequestComicDeletion();
+                    }}
+                    className="w-full p-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center justify-between border border-slate-300 dark:border-slate-700 transition-all cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-amber-500" />
+                      <span>Send Deletion Request to Admin</span>
+                    </div>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteModalOpen(false)}
+                    className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
         <div>
@@ -459,9 +1258,21 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                 
                 {/* Submission Toast / Feedback */}
                 {submissionFeedback && (
-                  <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    <span>{submissionFeedback}</span>
+                  <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm animate-fade-in">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>{submissionFeedback}</span>
+                    </div>
+                    {submissionFeedback.includes('deletion request') && (
+                      <button
+                        type="button"
+                        onClick={() => setCurrentTab('admin_dashboard_delete_requests')}
+                        className="py-1.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] shadow-sm transition-all cursor-pointer shrink-0 flex items-center gap-1.5"
+                      >
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>View Delete Request in Admin Portal →</span>
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -475,6 +1286,11 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                         <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           <span>Pending Admin Approval</span>
+                        </span>
+                      ) : selectedComic.moderationStatus === 'delete_requested' ? (
+                        <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center gap-1">
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete Request Pending Admin Review</span>
                         </span>
                       ) : selectedComic.moderationStatus === 'approved' ? (
                         <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-1">
@@ -501,24 +1317,24 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
-                      onClick={() => handleSubmitComicForReview(selectedComic.id)}
-                      disabled={isSubmittingForApproval}
-                      className={`py-2 px-3.5 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-all cursor-pointer ${
-                        selectedComic.moderationStatus === 'pending'
-                          ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30'
-                          : 'bg-rose-600 hover:bg-rose-500 text-white'
-                      }`}
+                      type="button"
+                      onClick={handleStartEditComic}
+                      className="py-2 px-3.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 flex items-center gap-1.5 transition-all cursor-pointer border border-slate-300 dark:border-slate-700"
                     >
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>
-                        {isSubmittingForApproval
-                          ? 'Submitting...'
-                          : selectedComic.moderationStatus === 'pending'
-                          ? 'Update & Re-Submit'
-                          : 'Send Comic for Admin Approval'}
-                      </span>
+                      <PenTool className="w-3.5 h-3.5 text-rose-500" />
+                      <span>Edit Comic Details</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsDeleteModalOpen(true)}
+                      className="py-2 px-3.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center gap-1.5 transition-all cursor-pointer border border-rose-500/30"
+                      title="Manually delete chapters, episodes, or full comic series"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Chapter, Episode or Series</span>
                     </button>
                   </div>
                 </div>
@@ -528,6 +1344,15 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                     <Clock className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>
                       <strong>Submission in Admin Queue:</strong> This comic has been submitted to the platform administrator. Once approved, it will be automatically uploaded and visible live to readers!
+                    </span>
+                  </div>
+                )}
+
+                {selectedComic.moderationStatus === 'delete_requested' && (
+                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-600 dark:text-rose-400 flex items-start gap-2">
+                    <Trash2 className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Deletion Request Submitted:</strong> Your request to completely delete this comic series, chapters, and episodes has been sent to the administrator. The admin will review and process your deletion request.
                     </span>
                   </div>
                 )}
@@ -544,30 +1369,49 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                   />
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer"
+                    className="px-4 py-2 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer flex items-center gap-1.5"
                   >
-                    Add Chapter
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Chapter</span>
                   </button>
                 </form>
 
-                {/* Add Episode Form inside this chapter */}
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                      Upload Episode to Chapter
-                    </h4>
-                    <span className="text-[11px] text-slate-400">Step 2: Add Episode &amp; Pages</span>
+                {/* Add Episode & Multi-Photo Upload Section */}
+                <div
+                  id="author-episode-upload-section"
+                  className={`p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border transition-all space-y-4 ${
+                    activeUploadChapterId
+                      ? 'border-rose-500 ring-2 ring-rose-500/20 shadow-md'
+                      : 'border-slate-200 dark:border-slate-800'
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-1.5">
+                        <FileUp className="w-4 h-4 text-rose-500" />
+                        <span>Upload Episode &amp; Pages to Chapter</span>
+                      </h4>
+                      {activeUploadChapterId && (
+                        <p className="text-[11px] text-rose-500 font-semibold mt-0.5">
+                          ✓ Ready to attach episode photos to selected chapter
+                        </p>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-slate-400 font-medium">Attach Photos → Preview → Publish</span>
                   </div>
 
-                  <form onSubmit={handleAddEpisode} className="space-y-3">
+                  <form onSubmit={handleAddEpisode} className="space-y-3.5">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                          Select Chapter *
+                          Target Chapter *
                         </label>
                         <select
                           value={selectedChapterId}
-                          onChange={(e) => setSelectedChapterId(e.target.value)}
+                          onChange={(e) => {
+                            setSelectedChapterId(e.target.value);
+                            setActiveUploadChapterId(null);
+                          }}
                           className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none"
                         >
                           {selectedComic.chapters.map(ch => (
@@ -636,64 +1480,344 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       )}
                     </div>
 
-                    {/* Comic Pages Manager Preview */}
-                    <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2">
-                      <div className="flex items-center justify-between text-xs font-semibold">
-                        <span>Episode Pages: ({episodePagesCount} high-res graphic panels)</span>
-                        <span className="text-emerald-500 text-[11px]">Ready to Render</span>
-                      </div>
-                      <div className="grid grid-cols-4 gap-2 text-center text-[10px] text-slate-400">
-                        <div className="p-2 rounded bg-slate-100 dark:bg-slate-800">Panel 1 (Title)</div>
-                        <div className="p-2 rounded bg-slate-100 dark:bg-slate-800">Panel 2 (Combat)</div>
-                        <div className="p-2 rounded bg-slate-100 dark:bg-slate-800">Panel 3 (Dialog)</div>
-                        <div className="p-2 rounded bg-slate-100 dark:bg-slate-800">Panel 4 (Cliffhanger)</div>
-                      </div>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={isPublishingEpisode}
-                      className="w-full py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider transition-colors disabled:opacity-50"
-                    >
-                      {isPublishingEpisode ? 'Publishing Episode...' : 'Publish Episode to Aathirai Network'}
-                    </button>
-                  </form>
-                </div>
-
-                {/* Existing Chapters & Episodes List */}
-                <div className="space-y-3">
-                  <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-                    Published Content in this Series:
-                  </h4>
-
-                  {selectedComic.chapters.map((ch) => (
-                    <div key={ch.id} className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2">
-                      <div className="flex items-center justify-between font-bold text-xs text-slate-900 dark:text-white">
-                        <span>Chapter {ch.chapterNumber}: {ch.title}</span>
-                        <span className="text-slate-400 font-normal">{ch.episodes.length} episodes</span>
+                    {/* Multi-Photo & Image Upload Dropzone */}
+                    <div className="space-y-2.5 pt-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                          <Images className="w-3.5 h-3.5 text-rose-500" />
+                          <span>Attach Comic Episode Pages / Artwork Photos (Multiple Supported) *</span>
+                        </label>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {episodeAttachedPages.length} {episodeAttachedPages.length === 1 ? 'Photo' : 'Photos'} Attached
+                        </span>
                       </div>
 
-                      <div className="space-y-1.5 pl-2">
-                        {ch.episodes.map(ep => (
-                          <div key={ep.id} className="flex items-center justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-800/60 last:border-0">
-                            <span className="text-slate-600 dark:text-slate-300">
-                              Ep {ep.episodeNumber}: {ep.title}
-                            </span>
+                      {/* Dropzone */}
+                      <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-rose-500 dark:hover:border-rose-500 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-white dark:bg-slate-900 group">
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*"
+                          onChange={handleAuthorMultipleEpisodePagesUpload}
+                          className="hidden"
+                        />
+                        <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/40 text-rose-500 flex items-center justify-center mb-1 group-hover:scale-110 transition-transform">
+                          <FileUp className="w-5 h-5" />
+                        </div>
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                          Click to Select Photos &amp; Images or Drag &amp; Drop
+                        </span>
+                        <span className="text-[10px] text-slate-400 mt-0.5">
+                          Select multiple artwork files (JPG, PNG, WEBP) to arrange as comic pages
+                        </span>
+                      </label>
+
+                      {/* Photo Previews with Reorder & Deletion */}
+                      {episodeAttachedPages.length > 0 && (
+                        <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              {ep.isPremium ? (
-                                <span className="text-[10px] font-bold text-amber-500">₹{ep.priceInr}</span>
-                              ) : (
-                                <span className="text-[10px] font-bold text-emerald-500">Free</span>
-                              )}
+                              <span className="text-xs font-bold text-slate-900 dark:text-white">
+                                Selected Photos Preview ({episodeAttachedPages.length})
+                              </span>
+                              <span className="text-[10px] text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" /> Ready
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
                               <button
-                                onClick={() => onOpenEpisode(ep.id)}
-                                className="text-[11px] text-rose-500 hover:underline font-semibold"
+                                type="button"
+                                onClick={handleOpenAuthorLivePreview}
+                                className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
                               >
-                                Preview
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>Preview Selected Photos</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEpisodeAttachedPages([])}
+                                className="text-[11px] text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                              >
+                                Clear All
                               </button>
                             </div>
                           </div>
-                        ))}
+
+                          {/* Thumbnails Grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2.5 max-h-72 overflow-y-auto p-1">
+                            {episodeAttachedPages.map((page, idx) => {
+                              const isEpisodeCover = selectedEpisodeCoverPageId === page.id || (!selectedEpisodeCoverPageId && idx === 0);
+
+                              return (
+                                <div
+                                  key={page.id}
+                                  className={`group relative rounded-lg border transition-all p-1.5 flex flex-col space-y-1 ${
+                                    isEpisodeCover
+                                      ? 'border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/30'
+                                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950'
+                                  }`}
+                                >
+                                  <div className="relative aspect-[3/4] rounded overflow-hidden bg-black/10 dark:bg-white/5">
+                                    <img
+                                      src={page.dataUrl}
+                                      alt={page.caption || `Page ${page.pageNumber}`}
+                                      className="w-full h-full object-cover"
+                                    />
+                                    <span className="absolute top-1 left-1 bg-black/75 backdrop-blur-sm text-white font-mono text-[9px] px-1.5 py-0.5 rounded font-bold">
+                                      P{page.pageNumber}
+                                    </span>
+                                    {isEpisodeCover && (
+                                      <span className="absolute top-1 right-1 bg-amber-500 text-slate-950 font-black text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded shadow-md">
+                                        ★ Cover
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedEpisodeCoverPageId(page.id)}
+                                    className={`w-full py-0.5 px-1 rounded text-[9px] font-bold cursor-pointer transition-colors ${
+                                      isEpisodeCover
+                                        ? 'bg-amber-500 text-slate-950'
+                                        : 'bg-slate-200 dark:bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-700 dark:text-slate-300'
+                                    }`}
+                                  >
+                                    {isEpisodeCover ? '✓ Episode Cover' : 'Set as Cover'}
+                                  </button>
+
+                                  <div className="flex items-center justify-between text-[10px] pt-0.5">
+                                    <span className="text-slate-500 truncate text-[9px] max-w-[45px]">{page.fileName}</span>
+                                    <div className="flex items-center gap-0.5">
+                                      <button
+                                        type="button"
+                                        disabled={idx === 0}
+                                        onClick={() => handleMoveEpisodePage(idx, 'up')}
+                                        className="p-0.5 text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                                        title="Move earlier"
+                                      >
+                                        <ArrowUp className="w-2.5 h-2.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={idx === episodeAttachedPages.length - 1}
+                                        onClick={() => handleMoveEpisodePage(idx, 'down')}
+                                        className="p-0.5 text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                                        title="Move later"
+                                      >
+                                        <ArrowDown className="w-2.5 h-2.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveEpisodePage(page.id)}
+                                        className="p-0.5 text-slate-400 hover:text-rose-500 cursor-pointer"
+                                        title="Remove page"
+                                      >
+                                        <Trash2 className="w-2.5 h-2.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3 pt-2">
+                      {episodeAttachedPages.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleOpenAuthorLivePreview}
+                          className="py-2.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Eye className="w-4 h-4 text-rose-500" />
+                          <span>Preview Reader View</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="submit"
+                        disabled={isPublishingEpisode}
+                        className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider transition-colors disabled:opacity-50 flex items-center justify-center gap-2 shadow-md cursor-pointer"
+                      >
+                        <Upload className="w-4 h-4" />
+                        <span>
+                          {isPublishingEpisode
+                            ? 'Publishing Episode...'
+                            : episodeAttachedPages.length > 0
+                            ? `Publish Episode with ${episodeAttachedPages.length} Photos`
+                            : 'Publish Episode to Aathirai Network'}
+                        </span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                {/* Existing Chapters & Episodes List with Direct Upload Buttons & Edit Controls */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                      Published Content in this Series:
+                    </h4>
+                    <span className="text-[11px] text-slate-400">
+                      {selectedComic.chapters.length} Chapters · Total {selectedComic.chapters.reduce((acc, c) => acc + c.episodes.length, 0)} Episodes
+                    </span>
+                  </div>
+
+                  {selectedComic.chapters.map((ch) => (
+                    <div
+                      key={ch.id}
+                      className={`p-4 rounded-xl border transition-all space-y-3 ${
+                        selectedChapterId === ch.id
+                          ? 'border-rose-400 dark:border-rose-900 bg-rose-50/20 dark:bg-rose-950/10'
+                          : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900'
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+                        {editingChapterId === ch.id ? (
+                          <div className="flex items-center gap-2 flex-1">
+                            <input
+                              type="text"
+                              value={editChapterTitle}
+                              onChange={(e) => setEditChapterTitle(e.target.value)}
+                              className="px-2.5 py-1 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 flex-1"
+                              placeholder="Chapter Title"
+                            />
+                            <button
+                              type="button"
+                              disabled={isUpdatingChapter}
+                              onClick={() => handleUpdateChapter(ch.id, editChapterTitle)}
+                              className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChapterId(null)}
+                              className="px-2 py-1 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[11px] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-slate-900 dark:text-white">
+                              Chapter {ch.chapterNumber}: {ch.title}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              ({ch.episodes.length} episodes)
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          {/* DIRECT CLICK TO UPLOAD FILES BUTTON */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedChapterId(ch.id);
+                              setActiveUploadChapterId(ch.id);
+                              document.getElementById('author-episode-upload-section')?.scrollIntoView({ behavior: 'smooth' });
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Click to upload files for this chapter"
+                          >
+                            <FileUp className="w-3 h-3" />
+                            <span>Click to Upload Files</span>
+                          </button>
+
+                          {editingChapterId !== ch.id && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingChapterId(ch.id);
+                                  setEditChapterTitle(ch.title);
+                                }}
+                                className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                                title="Edit Chapter Title"
+                              >
+                                <PenTool className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteChapter(ch.id)}
+                                className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
+                                title="Delete Chapter"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Episode list under chapter */}
+                      <div className="space-y-1.5 pl-2">
+                        {ch.episodes.length === 0 ? (
+                          <p className="text-[11px] text-slate-400 italic py-1">
+                            No episodes yet. Click &quot;Click to Upload Files&quot; above to add your first episode.
+                          </p>
+                        ) : (
+                          ch.episodes.map(ep => (
+                            <div
+                              key={ep.id}
+                              className="flex items-center justify-between text-xs py-1.5 px-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/40 border border-transparent hover:border-slate-200 dark:hover:border-slate-800 transition-colors"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <img
+                                  src={ep.coverImage || ep.pages?.[0]?.imageUrl || selectedComic.coverImage}
+                                  alt={ep.title}
+                                  className="w-8 h-11 rounded object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-xs"
+                                />
+                                <div className="min-w-0">
+                                  <span className="font-semibold text-slate-700 dark:text-slate-200 truncate block">
+                                    Ep {ep.episodeNumber}: {ep.title}
+                                  </span>
+                                  {ep.pages && ep.pages.length > 0 && (
+                                    <span className="text-[9px] text-slate-400 font-mono block">
+                                      {ep.pages.length} pages · Cover Assigned
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                {ep.isPremium ? (
+                                  <span className="text-[10px] font-bold text-amber-500 font-mono">₹{ep.priceInr}</span>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-emerald-500">Free</span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenEpisode(ep.id)}
+                                  className="text-[11px] text-rose-500 hover:underline font-semibold cursor-pointer"
+                                >
+                                  Preview
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartEditEpisode(ep, ch.id)}
+                                  className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                                  title="Edit Episode"
+                                >
+                                  <PenTool className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSendEpisodeDeleteRequest(ep, ch.id)}
+                                  className="py-1 px-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer border border-amber-500/30"
+                                  title="Send Episode Deletion Request to Admin"
+                                >
+                                  <Clock className="w-3 h-3" />
+                                  <span>Request Admin Delete</span>
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
                   ))}
@@ -759,89 +1883,91 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
-              Cover Image Selection
-            </label>
-            <div className="grid grid-cols-4 gap-3">
-              {[
-                { name: 'Virasen Warrior', path: '/src/assets/images/comic_cover_blade_1794269871791.jpg' },
-                { name: 'Neo Madras Cyber', path: '/src/assets/images/comic_cover_cyber_1794269871978.jpg' },
-                { name: 'Mahishur Mystic', path: '/src/assets/images/comic_cover_mystic_1794269871981.jpg' },
-                { name: 'Monsoon Romance', path: '/src/assets/images/comic_cover_chronicles_1794269872270.jpg' },
-              ].map(img => (
-                <div
-                  key={img.path}
-                  onClick={() => setNewCover(img.path)}
-                  className={`p-1 rounded-xl border cursor-pointer overflow-hidden transition-all ${
-                    newCover === img.path ? 'border-rose-500 ring-2 ring-rose-500/30' : 'border-slate-300 dark:border-slate-700'
-                  }`}
-                >
-                  <img src={img.path} alt={img.name} className="w-full aspect-[3/4] object-cover rounded-lg" />
-                  <span className="text-[10px] text-center block mt-1 truncate font-medium">{img.name}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Attach Comic Book File */}
-          <div>
+          {/* Attach Comic Book Files & Select Cover Page */}
+          <div className="space-y-3">
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Paperclip className="w-3.5 h-3.5 text-rose-500" />
-                <span>Attach Comic Book File *</span>
+                <span>Attach Comic Book Files / Pages (Multiple Supported) *</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-normal">
-                Supported: PDF, CBZ, CBR, ZIP, PNG, JPG (up to 50MB)
+              <span className="text-[10px] text-slate-400 font-mono">
+                {newComicAttachedPages.length} Files Attached
               </span>
             </label>
 
-            {!attachedComicFile ? (
-              <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-rose-500 dark:hover:border-rose-500 rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-slate-800/40 group">
-                <input
-                  type="file"
-                  accept=".pdf,.cbz,.cbr,.zip,.png,.jpg,.jpeg"
-                  onChange={handleAuthorFileChange}
-                  className="hidden"
-                />
-                <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-500 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
-                  <FileUp className="w-6 h-6" />
-                </div>
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                  Click to Browse or Drag &amp; Drop Comic File
-                </span>
-                <span className="text-[11px] text-slate-400 mt-0.5">
-                  Attach your completed comic manuscript, PDF issue, or archive of page panels
-                </span>
-              </label>
-            ) : (
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-500 flex items-center justify-center shrink-0 font-bold text-xs uppercase">
-                    {attachedComicFile.type.slice(0, 3)}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                      {attachedComicFile.name}
-                    </p>
-                    <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
-                      <span className="font-mono">{attachedComicFile.size}</span>
-                      <span>·</span>
-                      <span className="text-emerald-500 font-semibold flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> Ready to Submit
-                      </span>
-                    </div>
-                  </div>
+            <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-rose-500 dark:hover:border-rose-500 rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-slate-800/40 group">
+              <input
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={handleNewComicFilesChange}
+                className="hidden"
+              />
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-500 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                <FileUp className="w-6 h-6" />
+              </div>
+              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                Click to Select Multiple Comic Pages &amp; Images or Drag &amp; Drop
+              </span>
+              <span className="text-[11px] text-slate-400 mt-0.5">
+                Select your comic page images. You can choose which one to set as the cover image below.
+              </span>
+            </label>
+
+            {/* Attached Files Preview & Cover Selection */}
+            {newComicAttachedPages.length > 0 && (
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200">
+                  <span>Attached Pages Preview &amp; Cover Selector ({newComicAttachedPages.length})</span>
+                  <span className="text-[11px] text-emerald-500 font-semibold">Click &quot;Set as Cover Page&quot; on your preferred image</span>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setAttachedComicFile(null)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
-                  title="Remove attached file"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 max-h-72 overflow-y-auto p-1">
+                  {newComicAttachedPages.map((page) => {
+                    const isCover = selectedCoverPageId === page.id;
+                    return (
+                      <div
+                        key={page.id}
+                        className={`group relative rounded-xl border p-2 flex flex-col space-y-1.5 transition-all ${
+                          isCover
+                            ? 'border-rose-500 ring-2 ring-rose-500/30 bg-rose-500/5'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950'
+                        }`}
+                      >
+                        <div className="relative aspect-[3/4] rounded-lg overflow-hidden bg-black/10">
+                          <img
+                            src={page.dataUrl}
+                            alt={page.fileName}
+                            className="w-full h-full object-cover"
+                          />
+                          <span className="absolute top-1 left-1 bg-black/75 backdrop-blur-sm text-white font-mono text-[9px] px-1.5 py-0.5 rounded font-bold">
+                            P{page.pageNumber}
+                          </span>
+                          {isCover && (
+                            <span className="absolute bottom-1 left-1 right-1 bg-rose-600 text-white text-[9px] font-bold text-center py-0.5 rounded shadow">
+                              ★ COVER IMAGE
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col gap-1 pt-1">
+                          <span className="text-[10px] text-slate-500 truncate">{page.fileName}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedCoverPageId(page.id)}
+                            className={`py-1 px-2 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                              isCover
+                                ? 'bg-rose-600 text-white'
+                                : 'bg-slate-200 dark:bg-slate-800 hover:bg-rose-500 hover:text-white text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            {isCover ? 'Selected Cover' : 'Set as Cover'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -954,54 +2080,451 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         </form>
       )}
 
-      {/* TAB 3: EARNINGS & INDIAN PAYOUTS */}
-      {activeTab === 'earnings' && (
-        <div className="space-y-6 max-w-4xl mx-auto">
-          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-            <div className="flex items-center justify-between">
+      {/* LIVE READER PREVIEW MODAL FOR SELECTED PHOTOS */}
+      {showAuthorLivePreview && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col">
+          {/* Header Bar */}
+          <div className="h-14 border-b border-white/10 px-4 sm:px-6 flex items-center justify-between text-white bg-slate-950/80 shrink-0">
+            <div className="flex items-center gap-3">
+              <span className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400">
+                <Eye className="w-4 h-4" />
+              </span>
               <div>
-                <h3 className="font-extrabold text-base text-slate-900 dark:text-white font-heading">
-                  Creator Earnings &amp; Revenue Share
+                <h3 className="font-bold text-sm text-white truncate max-w-xs sm:max-w-md">
+                  Preview: {episodeTitle || 'Untitled Episode'}
                 </h3>
-                <p className="text-xs text-slate-500">
-                  You receive <strong className="text-emerald-500 font-bold">70%</strong> of gross INR sales from your premium episodes and comics.
+                <p className="text-[10px] text-slate-400">
+                  {episodeAttachedPages.length} Photos Attached · {selectedComic?.title}
                 </p>
-              </div>
-
-              <div className="text-right">
-                <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Available Balance</span>
-                <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono">
-                  ₹{analytics.totalEarningsInr.toFixed(2)}
-                </span>
               </div>
             </div>
 
-            {/* Payout Request Card */}
-            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
-                  Direct Bank Transfer / UPI Payout
-                </h4>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Minimum withdrawal threshold: ₹500. Transfer initiated within 2 business days.
-                </p>
+            {/* View Mode & Zoom Controls */}
+            <div className="flex items-center gap-2">
+              <div className="hidden sm:flex items-center bg-white/10 rounded-lg p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setPreviewViewMode('vertical')}
+                  className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                    previewViewMode === 'vertical' ? 'bg-rose-600 text-white' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  Vertical Scroll
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewViewMode('page')}
+                  className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                    previewViewMode === 'page' ? 'bg-rose-600 text-white' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  Page-by-Page
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1 bg-white/10 rounded-lg p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(z => Math.max(50, z - 15))}
+                  className="p-1 hover:text-rose-400 cursor-pointer"
+                  title="Zoom Out"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-[10px] font-mono px-1">{previewZoom}%</span>
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(z => Math.min(200, z + 15))}
+                  className="p-1 hover:text-rose-400 cursor-pointer"
+                  title="Zoom In"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
               </div>
 
               <button
-                onClick={() => setPayoutRequested(true)}
-                disabled={payoutRequested || analytics.totalEarningsInr < 500}
-                className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider shadow-md transition-colors disabled:opacity-40 shrink-0"
+                type="button"
+                onClick={() => setShowAuthorLivePreview(false)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer ml-2"
+                title="Close Preview"
               >
-                {payoutRequested ? 'Payout Request Pending Review' : 'Request Payout (₹' + analytics.totalEarningsInr.toFixed(2) + ')'}
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Reader Body */}
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-start bg-slate-900/60">
+            {previewViewMode === 'vertical' ? (
+              <div
+                className="flex flex-col items-center gap-4 transition-all"
+                style={{ width: `${Math.min(100, previewZoom)}%`, maxWidth: `${previewZoom * 8}px` }}
+              >
+                {episodeAttachedPages.map((page) => (
+                  <div
+                    key={page.id}
+                    className="relative w-full rounded-lg overflow-hidden bg-black/40 border border-white/10 shadow-2xl"
+                  >
+                    <img
+                      src={page.dataUrl}
+                      alt={page.caption || `Page ${page.pageNumber}`}
+                      className="w-full h-auto block"
+                    />
+                    <span className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-sm text-white font-mono text-[10px] px-2 py-0.5 rounded">
+                      Page {page.pageNumber} of {episodeAttachedPages.length}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center w-full max-w-3xl my-auto">
+                {episodeAttachedPages[previewCurrentPage - 1] && (
+                  <div className="relative rounded-xl overflow-hidden bg-black/40 border border-white/10 shadow-2xl max-h-[75vh]">
+                    <img
+                      src={episodeAttachedPages[previewCurrentPage - 1].dataUrl}
+                      alt={`Page ${previewCurrentPage}`}
+                      className="max-h-[75vh] w-auto object-contain mx-auto"
+                    />
+                    <span className="absolute bottom-3 right-3 bg-black/80 backdrop-blur-sm text-white font-mono text-xs px-2.5 py-1 rounded">
+                      Page {previewCurrentPage} / {episodeAttachedPages.length}
+                    </span>
+                  </div>
+                )}
+
+                {/* Slideshow Navigation */}
+                <div className="flex items-center gap-4 mt-4">
+                  <button
+                    type="button"
+                    disabled={previewCurrentPage <= 1}
+                    onClick={() => setPreviewCurrentPage(p => Math.max(1, p - 1))}
+                    className="px-4 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-bold disabled:opacity-30 cursor-pointer"
+                  >
+                    ← Previous Page
+                  </button>
+                  <span className="text-xs text-slate-300 font-mono">
+                    {previewCurrentPage} of {episodeAttachedPages.length}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={previewCurrentPage >= episodeAttachedPages.length}
+                    onClick={() => setPreviewCurrentPage(p => Math.min(episodeAttachedPages.length, p + 1))}
+                    className="px-4 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-bold disabled:opacity-30 cursor-pointer"
+                  >
+                    Next Page →
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer Actions */}
+          <div className="h-16 border-t border-white/10 px-6 flex items-center justify-between bg-slate-950 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowAuthorLivePreview(false)}
+              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-colors cursor-pointer"
+            >
+              ← Back to Edit Details &amp; Pages
+            </button>
+
+            <button
+              type="button"
+              disabled={isPublishingEpisode}
+              onClick={() => handleAddEpisode()}
+              className="px-6 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50"
+            >
+              <Upload className="w-4 h-4" />
+              <span>
+                {isPublishingEpisode
+                  ? 'Publishing Episode...'
+                  : `Looks Great! Publish ${episodeAttachedPages.length} Photos Now`}
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT COMIC DETAILS MODAL */}
+      {isEditingComicModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-rose-500/10 text-rose-500">
+                  <PenTool className="w-4 h-4" />
+                </span>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                  Edit Comic Details
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditingComicModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            {payoutRequested && (
-              <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Your withdrawal request for ₹{analytics.totalEarningsInr.toFixed(2)} has been queued for administrator bank processing!</span>
+            {comicEditError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-medium">
+                {comicEditError}
               </div>
             )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                  Comic Title *
+                </label>
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                  Synopsis &amp; Description
+                </label>
+                <textarea
+                  rows={3}
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+                />
+              </div>
+
+              {/* Genres / Categories */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                  Genres &amp; Categories
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {['Action', 'Fantasy', 'Mythology', 'Sci-Fi', 'Cyberpunk', 'Romance', 'Slice of Life', 'Horror', 'Comedy', 'Thriller'].map(g => {
+                    const isSelected = editGenres.includes(g);
+                    return (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) {
+                            setEditGenres(editGenres.filter(item => item !== g));
+                          } else {
+                            setEditGenres([...editGenres, g]);
+                          }
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {isSelected ? '✓ ' : '+ '}{g}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    type="text"
+                    placeholder="Add custom genre tag..."
+                    value={editCustomGenre}
+                    onChange={(e) => setEditCustomGenre(e.target.value)}
+                    className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (editCustomGenre.trim() && !editGenres.includes(editCustomGenre.trim())) {
+                        setEditGenres([...editGenres, editCustomGenre.trim()]);
+                        setEditCustomGenre('');
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    Add Tag
+                  </button>
+                </div>
+              </div>
+
+              {/* Cover Image */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                  Cover Image URL
+                </label>
+                <input
+                  type="text"
+                  value={editCover}
+                  onChange={(e) => setEditCover(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
+                />
+              </div>
+
+              {/* Monetization Model */}
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Access &amp; Pricing
+                </label>
+                <div className="flex items-center gap-6">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold">
+                    <input
+                      type="radio"
+                      name="editAccess"
+                      checked={editAccessType === 'free'}
+                      onChange={() => setEditAccessType('free')}
+                      className="text-rose-600"
+                    />
+                    <span>Free Comic</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold">
+                    <input
+                      type="radio"
+                      name="editAccess"
+                      checked={editAccessType === 'premium'}
+                      onChange={() => setEditAccessType('premium')}
+                      className="text-rose-600"
+                    />
+                    <span>Premium (Paywall)</span>
+                  </label>
+                </div>
+
+                {editAccessType === 'premium' && (
+                  <div className="pt-1">
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Full Comic Purchase Price (₹ INR)
+                    </label>
+                    <input
+                      type="number"
+                      min="5"
+                      value={editFullPrice}
+                      onChange={(e) => setEditFullPrice(Number(e.target.value))}
+                      className="w-32 px-3 py-1.5 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsEditingComicModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSavingComicEdit}
+                onClick={handleSaveComicEdit}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isSavingComicEdit ? 'Saving...' : 'Save Comic Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT EPISODE MODAL */}
+      {editingEpisode && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-rose-500/10 text-rose-500">
+                  <PenTool className="w-4 h-4" />
+                </span>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                  Edit Episode
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingEpisode(null)}
+                className="p-1 text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                  Episode Title *
+                </label>
+                <input
+                  type="text"
+                  value={editEpisodeTitle}
+                  onChange={(e) => setEditEpisodeTitle(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                  Episode Synopsis
+                </label>
+                <input
+                  type="text"
+                  value={editEpisodeSynopsis}
+                  onChange={(e) => setEditEpisodeSynopsis(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    checked={editEpisodeIsPremium}
+                    onChange={(e) => setEditEpisodeIsPremium(e.target.checked)}
+                    className="rounded text-rose-600 focus:ring-rose-500"
+                  />
+                  <span className="font-semibold text-slate-700 dark:text-slate-300">
+                    Premium Episode (Paywall)
+                  </span>
+                </label>
+
+                {editEpisodeIsPremium && (
+                  <div className="flex items-center gap-2 pt-1 text-xs">
+                    <span className="text-slate-500 font-medium">Price:</span>
+                    <span className="font-bold text-slate-900 dark:text-white">₹</span>
+                    <input
+                      type="number"
+                      min="5"
+                      max="100"
+                      value={editEpisodePrice}
+                      onChange={(e) => setEditEpisodePrice(Number(e.target.value))}
+                      className="w-20 px-2 py-1 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                    />
+                    <span className="text-slate-400 font-mono">INR</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setEditingEpisode(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isUpdatingEpisode}
+                onClick={handleSaveEpisodeEdit}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isUpdatingEpisode ? 'Saving...' : 'Save Episode'}
+              </button>
+            </div>
           </div>
         </div>
       )}

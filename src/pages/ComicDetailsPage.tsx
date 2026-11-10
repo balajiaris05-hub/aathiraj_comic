@@ -260,11 +260,13 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                       >
                         <div
                           onClick={() => onOpenEpisode(episode.id)}
-                          className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer group"
+                          className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer group"
                         >
-                          <div className="w-7 h-7 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center text-xs font-mono font-bold shrink-0 group-hover:bg-rose-600 group-hover:text-white transition-colors">
-                            {episode.episodeNumber}
-                          </div>
+                          <img
+                            src={episode.coverImage || episode.pages?.[0]?.imageUrl || comic.coverImage}
+                            alt={episode.title}
+                            className="w-10 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
+                          />
 
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
@@ -283,7 +285,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                               )}
                             </div>
                             <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                              {episode.synopsis || 'Read online in high quality manga viewer.'}
+                              {episode.synopsis || 'Read online in high quality manga viewer.'} · {episode.pages?.length || 1} Pages
                             </p>
                           </div>
                         </div>

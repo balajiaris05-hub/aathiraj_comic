@@ -11,11 +11,13 @@ import {
   CopyrightDoc,
   PlatformSettings,
   ActivityLog,
+  DeleteRequest,
 } from '../types/comic';
 
 export interface DatabaseSchema {
   users: User[];
   otps: Record<string, string>; // email -> OTP
+  adminOtp?: { code: string; expiresAt: number; channel: 'email' | 'sms'; sentTo: string };
   authorApplications: AuthorApplication[];
   comics: Comic[];
   comments: Comment[];
@@ -25,6 +27,7 @@ export interface DatabaseSchema {
   copyrightDocs: CopyrightDoc[];
   settings: PlatformSettings;
   activityLogs: ActivityLog[];
+  deleteRequests?: DeleteRequest[];
 }
 
 const DB_FILE = path.resolve(process.cwd(), 'aathirai_db.json');
@@ -147,8 +150,9 @@ export function getDefaultDatabase(): DatabaseSchema {
     users: [
       {
         id: 'usr_admin',
-        name: 'Aathirai Editorial Admin',
-        email: 'admin@aathirai.com',
+        name: 'Balaji Administrator',
+        email: 'balajiaris05@gmail.com',
+        phone: '+91 8610950780',
         role: 'admin',
         isVerified: true,
         avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
@@ -777,7 +781,20 @@ export class StorageEngine {
     try {
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        // Ensure administrator is registered with balajiaris05@gmail.com and +91 8610950780
+        if (Array.isArray(parsed.users)) {
+          const admin = parsed.users.find((u: any) => u.role === 'admin' || u.id === 'usr_admin');
+          if (admin) {
+            admin.email = 'balajiaris05@gmail.com';
+            admin.phone = '+91 8610950780';
+            admin.name = 'Balaji Administrator';
+          }
+        }
+        if (!parsed.deleteRequests) {
+          parsed.deleteRequests = [];
+        }
+        return parsed;
       }
     } catch (err) {
       console.error('Error reading DB_FILE, falling back to seed:', err);

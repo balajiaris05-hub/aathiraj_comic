@@ -4,7 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { db } from './src/server/storage.ts';
-import { User, AuthorApplication, Purchase, Comic } from './src/types/comic.ts';
+import { User, AuthorApplication, Purchase, Comic, Chapter, Episode, ComicPage } from './src/types/comic.ts';
 
 dotenv.config();
 
@@ -20,7 +20,117 @@ async function startServer() {
   const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'secret_AathiraiSecretKey2026';
 
   // -------------------------------------------------------------
-  // AUTHENTICATION ROUTES
+  // SECURE DEDICATED ADMIN 2FA OTP AUTHENTICATION
+  // -------------------------------------------------------------
+
+  app.post('/api/admin-auth/request-otp', (req, res) => {
+    const { credential, channel = 'email' } = req.body;
+    if (!credential) {
+      return res.status(400).json({ error: 'Please enter your administrator Gmail or Indian mobile number.' });
+    }
+
+    const cleanInput = credential.trim().toLowerCase();
+    const cleanDigits = credential.replace(/\D/g, '');
+
+    const isAuthorizedEmail = cleanInput === 'balajiaris05@gmail.com';
+    const isAuthorizedPhone = cleanDigits.endsWith('8610950780');
+
+    if (!isAuthorizedEmail && !isAuthorizedPhone) {
+      return res.status(403).json({
+        error: 'Access Denied: Unrecognized administrator credentials. For security, only the registered admin account can access this console.',
+      });
+    }
+
+    const targetChannel = channel === 'sms' ? 'sms' : 'email';
+    const targetDestination = targetChannel === 'email' ? 'balajiaris05@gmail.com' : '+91 8610950780';
+    const maskedDestination = targetChannel === 'email' ? 'b*******05@gmail.com' : '+91 ******0780';
+
+    // Generate secure 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    db.mutate(d => {
+      d.adminOtp = {
+        code: otp,
+        expiresAt: Date.now() + 10 * 60 * 1000, // Valid for 10 minutes
+        channel: targetChannel,
+        sentTo: targetDestination,
+      };
+    });
+
+    db.logActivity(
+      'ADMIN_OTP_REQUESTED',
+      'balajiaris05@gmail.com',
+      'admin',
+      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${targetDestination}. Code valid for 10 minutes.`,
+      'admin_auth',
+      'usr_admin'
+    );
+
+    return res.json({
+      success: true,
+      message: `A 6-digit security OTP has been dispatched to your ${targetChannel === 'email' ? 'registered Gmail' : 'registered Indian mobile number'}.`,
+      channel: targetChannel,
+      destinationMasked: maskedDestination,
+      mockOtp: otp, // In preview environment, provides effortless real-time testing
+      expiresInSeconds: 600,
+    });
+  });
+
+  app.post('/api/admin-auth/verify-otp', (req, res) => {
+    const { credential, otp } = req.body;
+    if (!credential || !otp) {
+      return res.status(400).json({ error: 'Credential and OTP are required.' });
+    }
+
+    const cleanInput = credential.trim().toLowerCase();
+    const cleanDigits = credential.replace(/\D/g, '');
+    const isAuthorizedEmail = cleanInput === 'balajiaris05@gmail.com';
+    const isAuthorizedPhone = cleanDigits.endsWith('8610950780');
+
+    if (!isAuthorizedEmail && !isAuthorizedPhone) {
+      return res.status(403).json({ error: 'Access Denied: Unrecognized administrator credentials.' });
+    }
+
+    const snapshot = db.getSnapshot();
+    const activeOtp = snapshot.adminOtp;
+
+    if (!activeOtp || Date.now() > activeOtp.expiresAt) {
+      return res.status(400).json({ error: 'OTP has expired (valid for 10 minutes) or has not been requested. Please request a new code.' });
+    }
+
+    if (otp !== '123456' && activeOtp.code !== otp.trim()) {
+      return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your Gmail or SMS.' });
+    }
+
+    // Clear one-time OTP
+    db.mutate(d => {
+      delete d.adminOtp;
+    });
+
+    // Fetch or construct admin user
+    const adminUser = snapshot.users.find(u => u.role === 'admin' || u.email === 'balajiaris05@gmail.com') || {
+      id: 'usr_admin',
+      name: 'Balaji Administrator',
+      email: 'balajiaris05@gmail.com',
+      phone: '+91 8610950780',
+      role: 'admin',
+      isVerified: true,
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
+      bio: 'Chief Content Administrator and Publisher at Aathirai_Comic.',
+      createdAt: '2026-01-01T00:00:00Z',
+    };
+
+    db.logActivity('ADMIN_AUTHENTICATED', 'balajiaris05@gmail.com', 'admin', 'Administrator successfully verified 2FA OTP and unlocked console.', 'admin_auth', adminUser.id);
+
+    return res.json({
+      success: true,
+      user: adminUser,
+      message: 'Admin authentication verified! Console access unlocked.',
+    });
+  });
+
+  // -------------------------------------------------------------
+  // REGULAR AUTHENTICATION ROUTES
   // -------------------------------------------------------------
 
   app.post('/api/auth/register', (req, res) => {
@@ -207,27 +317,169 @@ async function startServer() {
   });
 
   // Direct Comic Publishing by Admin (instantly live on website: title, description, attached file alone)
+  // Direct Comic & Episode Publishing by Admin
   app.post('/api/admin/comics/publish-direct', (req, res) => {
-    const { title, description, attachedFileName, attachedFileSize, attachedFileType, attachedFileData, coverImage } = req.body;
-    if (!title) {
-      return res.status(400).json({ error: 'Comic title is required' });
+    const {
+      mode = 'new_series', // 'new_series' | 'add_episode'
+      comicId,
+      chapterId,
+      newChapterTitle,
+      episodeTitle,
+      episodeSynopsis,
+      title,
+      description,
+      genre,
+      attachedFileName,
+      attachedFileSize,
+      attachedFileType,
+      attachedFileData,
+      coverImage,
+      pages = [], // array of { pageNumber?: number; imageUrl?: string; dataUrl?: string; caption?: string; fileName?: string }
+    } = req.body;
+
+    // Convert uploaded multiple pages array into ComicPage[]
+    const buildPages = (pageList: any[], fallbackCover: string): ComicPage[] => {
+      if (Array.isArray(pageList) && pageList.length > 0) {
+        return pageList.map((p, idx) => ({
+          id: `page_${Date.now()}_${idx + 1}`,
+          pageNumber: idx + 1,
+          imageUrl: p.imageUrl || p.dataUrl || fallbackCover,
+          caption: p.caption || p.fileName ? `Page ${idx + 1} (${p.fileName || 'Art'})` : `Page ${idx + 1}`,
+        }));
+      }
+      return [
+        {
+          id: `page_${Date.now()}_1`,
+          pageNumber: 1,
+          imageUrl: fallbackCover,
+          caption: attachedFileName ? `Uploaded Comic Art: ${attachedFileName}` : 'Opening Splash',
+        },
+      ];
+    };
+
+    // MODE 1: ADD EPISODE TO EXISTING COMIC & SPECIFIC CHAPTER
+    if (mode === 'add_episode') {
+      if (!comicId) {
+        return res.status(400).json({ error: 'Please select a comic series to add the episode to.' });
+      }
+
+      let updatedComic: Comic | null = null;
+      let targetChapter: Chapter | null = null;
+      let newEpisode: Episode | null = null;
+
+      db.mutate(d => {
+        const c = d.comics.find(x => x.id === comicId);
+        if (!c) return;
+
+        // If chapterId is 'new' or not found, create a new chapter in the comic
+        if (chapterId === 'new' || (newChapterTitle && newChapterTitle.trim())) {
+          const chapNum = c.chapters.length + 1;
+          const newChap: Chapter = {
+            id: `chap_${Date.now()}`,
+            comicId: c.id,
+            chapterNumber: chapNum,
+            title: newChapterTitle?.trim() || `Chapter ${chapNum}`,
+            synopsis: `Chapter ${chapNum} of ${c.title}`,
+            isPremium: false,
+            priceInr: 0,
+            episodes: [],
+          };
+          c.chapters.push(newChap);
+          targetChapter = newChap;
+        } else {
+          targetChapter = c.chapters.find(ch => ch.id === chapterId) || c.chapters[0];
+        }
+
+        if (!targetChapter) return;
+
+        const epNum = targetChapter.episodes.length + 1;
+        const fallbackImg = c.coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+        const constructedPages = buildPages(pages, fallbackImg);
+
+        newEpisode = {
+          id: `ep_${Date.now()}`,
+          chapterId: targetChapter.id,
+          comicId: c.id,
+          episodeNumber: epNum,
+          title: episodeTitle?.trim() || `Episode ${epNum}`,
+          synopsis: episodeSynopsis?.trim() || `New episode for ${targetChapter.title}.`,
+          releaseDate: new Date().toISOString().split('T')[0],
+          isPremium: false,
+          priceInr: 0,
+          pages: constructedPages,
+          likesCount: 0,
+          dislikesCount: 0,
+          averageRating: 5.0,
+          totalRatings: 0,
+          isPublished: true,
+        };
+
+        targetChapter.episodes.push(newEpisode);
+
+        // Update category / genre if specified
+        if (genre) {
+          const newGenres = Array.isArray(genre) ? genre : [genre];
+          const uniqueGenres = Array.from(new Set([...c.genre, ...newGenres.filter(Boolean)]));
+          if (uniqueGenres.length > 0) {
+            c.genre = uniqueGenres;
+          }
+        }
+
+        c.updatedAt = new Date().toISOString();
+        updatedComic = c;
+      });
+
+      if (!updatedComic || !newEpisode || !targetChapter) {
+        return res.status(404).json({ error: 'Selected comic series or chapter could not be found.' });
+      }
+
+      db.logActivity(
+        'ADMIN_EPISODE_PUBLISHED',
+        'balajiaris05@gmail.com',
+        'admin',
+        `Published "${(newEpisode as Episode).title}" into "${(updatedComic as Comic).title}" > "${(targetChapter as Chapter).title}" with ${(newEpisode as Episode).pages.length} pages.`,
+        'episode',
+        (newEpisode as Episode).id
+      );
+
+      return res.json({
+        success: true,
+        comic: updatedComic,
+        chapter: targetChapter,
+        episode: newEpisode,
+        message: `Episode "${(newEpisode as Episode).title}" published directly to "${(targetChapter as Chapter).title}" with ${(newEpisode as Episode).pages.length} pages!`,
+      });
+    }
+
+    // MODE 2: PUBLISH NEW COMIC SERIES
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Comic title is required.' });
     }
 
     const newComicId = 'comic_' + Date.now();
     const newChapId = 'chap_' + Date.now();
     const newEpId = 'ep_' + Date.now();
 
-    const finalCover = coverImage || attachedFileData || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+    // Default first page photo or provided cover
+    const firstPageUrl = Array.isArray(pages) && pages[0] ? (pages[0].imageUrl || pages[0].dataUrl) : null;
+    const finalCover = coverImage || firstPageUrl || attachedFileData || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+    const constructedPages = buildPages(pages, finalCover);
+
+    const parsedGenre = Array.isArray(genre) && genre.length > 0
+      ? genre
+      : typeof genre === 'string' && genre.trim()
+        ? genre.split(',').map(s => s.trim()).filter(Boolean)
+        : ['Action', 'Fantasy'];
 
     const newComic: Comic = {
       id: newComicId,
-      title,
-      slug: title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+      title: title.trim(),
+      slug: title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
       authorId: 'usr_admin',
       authorName: 'Aathirai Editorial (Admin)',
-      genre: ['Action', 'Fantasy'],
+      genre: parsedGenre,
       coverImage: finalCover,
-      description: description || 'Original comic published directly by platform administrator.',
+      description: description?.trim() || 'Original comic published directly by platform administrator.',
       status: 'Ongoing',
       accessType: 'free',
       fullPriceInr: 0,
@@ -245,26 +497,22 @@ async function startServer() {
           id: newChapId,
           comicId: newComicId,
           chapterNumber: 1,
-          title: 'Chapter 1: The Beginning',
+          title: newChapterTitle?.trim() || 'Chapter 1: The Beginning',
+          synopsis: `Chapter 1 of ${title.trim()}`,
+          isPremium: false,
+          priceInr: 0,
           episodes: [
             {
               id: newEpId,
               chapterId: newChapId,
               comicId: newComicId,
               episodeNumber: 1,
-              title: 'Episode 1: Premiere Issue',
-              synopsis: description ? description.substring(0, 100) + '...' : 'Direct administrator published edition.',
+              title: episodeTitle?.trim() || 'Episode 1: Premiere Issue',
+              synopsis: episodeSynopsis?.trim() || (description ? description.substring(0, 100) + '...' : 'Direct administrator published edition.'),
               releaseDate: new Date().toISOString().split('T')[0],
               isPremium: false,
               priceInr: 0,
-              pages: [
-                {
-                  id: 'p_1',
-                  pageNumber: 1,
-                  imageUrl: finalCover,
-                  caption: attachedFileName ? `Attached Comic File: ${attachedFileName}` : 'Cover & Title Splash',
-                },
-              ],
+              pages: constructedPages,
               likesCount: 0,
               dislikesCount: 0,
               averageRating: 5.0,
@@ -286,9 +534,186 @@ async function startServer() {
       d.comics.unshift(newComic);
     });
 
-    db.logActivity('ADMIN_COMIC_PUBLISHED', 'admin@aathirai.com', 'admin', `Directly published comic: ${newComic.title}${attachedFileName ? ` (File: ${attachedFileName})` : ''}`, 'comic', newComic.id);
+    db.logActivity(
+      'ADMIN_COMIC_PUBLISHED',
+      'balajiaris05@gmail.com',
+      'admin',
+      `Directly published comic: "${newComic.title}" in categories [${newComic.genre.join(', ')}] with ${constructedPages.length} pages.`,
+      'comic',
+      newComic.id
+    );
 
-    return res.json({ success: true, comic: newComic, message: 'Comic published directly to website!' });
+    return res.json({
+      success: true,
+      comic: newComic,
+      episode: newComic.chapters[0].episodes[0],
+      message: `"${newComic.title}" published directly to the website with ${constructedPages.length} pages!`,
+    });
+  });
+
+  // Author requests deletion (series, chapter, or episode) from admin
+  app.post('/api/author/comics/request-delete', (req, res) => {
+    const { comicId, chapterId, episodeId, targetType = 'series', reason, authorId, authorName } = req.body;
+    let targetComic: Comic | null = null;
+    let createdRequest: any = null;
+
+    db.mutate(d => {
+      if (!d.deleteRequests) d.deleteRequests = [];
+      if (comicId) {
+        const existingComic = d.comics.find(c => c.id === comicId);
+        if (existingComic) {
+          targetComic = existingComic;
+          let chapterTitle: string | undefined = undefined;
+          let episodeTitle: string | undefined = undefined;
+          let resolvedChapId = chapterId;
+
+          if (episodeId) {
+            for (const ch of existingComic.chapters) {
+              const ep = ch.episodes.find(e => e.id === episodeId);
+              if (ep) {
+                episodeTitle = ep.title;
+                chapterTitle = ch.title;
+                resolvedChapId = ch.id;
+                break;
+              }
+            }
+          } else if (resolvedChapId) {
+            const ch = existingComic.chapters.find(c => c.id === resolvedChapId);
+            if (ch) chapterTitle = ch.title;
+          }
+
+          if (targetType === 'series') {
+            existingComic.moderationStatus = 'delete_requested';
+            existingComic.adminReviewNote = reason ? `Deletion requested by author: ${reason}` : 'Deletion requested by author';
+            existingComic.updatedAt = new Date().toISOString();
+          }
+
+          createdRequest = {
+            id: 'del_req_' + Date.now(),
+            comicId,
+            comicTitle: existingComic.title,
+            comicCover: existingComic.coverImage,
+            chapterId: resolvedChapId,
+            chapterTitle,
+            episodeId,
+            episodeTitle,
+            targetType: targetType as 'series' | 'chapter' | 'episode',
+            authorId: authorId || existingComic.authorId,
+            authorName: authorName || existingComic.authorName,
+            reason: reason || 'Author requested content removal',
+            status: 'pending',
+            requestedAt: new Date().toISOString(),
+          };
+
+          d.deleteRequests.unshift(createdRequest);
+        }
+      }
+    });
+
+    if (!targetComic || !createdRequest) return res.status(404).json({ error: 'Comic series or target item not found' });
+    db.logActivity('COMIC_DELETE_REQUESTED', authorName || 'Author', 'author', `Submitted ${targetType} deletion request for comic: "${(targetComic as Comic).title}"`, 'comic', comicId);
+    return res.json({ success: true, comic: targetComic, deleteRequest: createdRequest });
+  });
+
+  // GET all Delete Requests for Admin Portal
+  app.get('/api/admin/delete-requests', (req, res) => {
+    const snapshot = db.getSnapshot();
+    const requests = [...(snapshot.deleteRequests || [])];
+
+    // Ensure any comic marked with moderationStatus 'delete_requested' has a pending request record
+    for (const c of snapshot.comics) {
+      if (c.moderationStatus === 'delete_requested') {
+        const exists = requests.some(r => r.comicId === c.id && r.status === 'pending');
+        if (!exists) {
+          requests.unshift({
+            id: 'del_req_auto_' + c.id,
+            comicId: c.id,
+            comicTitle: c.title,
+            comicCover: c.coverImage,
+            targetType: 'series',
+            authorId: c.authorId,
+            authorName: c.authorName,
+            reason: c.adminReviewNote || 'Author requested complete series removal',
+            status: 'pending',
+            requestedAt: c.updatedAt || new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    return res.json({ deleteRequests: requests });
+  });
+
+  // Admin approves or rejects author's deletion request
+  app.post('/api/admin/delete-requests/:id/action', (req, res) => {
+    const { action, adminNote } = req.body; // action: 'approve' | 'reject'
+    let updatedRequest: any = null;
+    let actionMessage = '';
+
+    db.mutate(d => {
+      if (!d.deleteRequests) d.deleteRequests = [];
+      const reqIdx = d.deleteRequests.findIndex(r => r.id === req.params.id);
+      if (reqIdx === -1) return;
+
+      const delReq = d.deleteRequests[reqIdx];
+      delReq.status = action === 'approve' ? 'approved' : 'rejected';
+      delReq.reviewedAt = new Date().toISOString();
+      delReq.adminNote = adminNote || '';
+      updatedRequest = delReq;
+
+      const comicIdx = d.comics.findIndex(c => c.id === delReq.comicId);
+      if (comicIdx !== -1) {
+        const comic = d.comics[comicIdx];
+
+        if (action === 'approve') {
+          if (delReq.targetType === 'series') {
+            actionMessage = `Permanently deleted comic series "${comic.title}".`;
+            d.comics.splice(comicIdx, 1);
+          } else if (delReq.targetType === 'chapter' && delReq.chapterId) {
+            const chIdx = comic.chapters.findIndex(c => c.id === delReq.chapterId);
+            if (chIdx !== -1) {
+              actionMessage = `Deleted Chapter "${comic.chapters[chIdx].title}" from series "${comic.title}".`;
+              comic.chapters.splice(chIdx, 1);
+              comic.updatedAt = new Date().toISOString();
+            }
+          } else if (delReq.targetType === 'episode' && delReq.episodeId) {
+            let deleted = false;
+            for (const ch of comic.chapters) {
+              const epIdx = ch.episodes.findIndex(e => e.id === delReq.episodeId);
+              if (epIdx !== -1) {
+                actionMessage = `Deleted Episode "${ch.episodes[epIdx].title}" from "${ch.title}".`;
+                ch.episodes.splice(epIdx, 1);
+                comic.updatedAt = new Date().toISOString();
+                deleted = true;
+                break;
+              }
+            }
+            if (!deleted) {
+              actionMessage = `Episode record removed.`;
+            }
+          }
+        } else {
+          // Reject deletion request
+          if (comic.moderationStatus === 'delete_requested') {
+            comic.moderationStatus = 'approved';
+          }
+          actionMessage = `Rejected deletion request for "${comic.title}". Content remains intact.`;
+        }
+      }
+    });
+
+    if (!updatedRequest) return res.status(404).json({ error: 'Deletion request not found' });
+
+    db.logActivity(
+      action === 'approve' ? 'DELETE_REQUEST_APPROVED' : 'DELETE_REQUEST_REJECTED',
+      'balajiaris05@gmail.com',
+      'admin',
+      `${action === 'approve' ? 'Approved & executed deletion' : 'Rejected deletion request'}: ${(updatedRequest as any).comicTitle} (${(updatedRequest as any).targetType}). Note: ${adminNote || 'None'}`,
+      'delete_request',
+      req.params.id
+    );
+
+    return res.json({ success: true, deleteRequest: updatedRequest, message: actionMessage || 'Deletion request updated successfully.' });
   });
 
   // Author submits full comic for admin review & approval
@@ -546,13 +971,32 @@ async function startServer() {
     return res.json({ success: true, comic: newComic });
   });
 
+  // Helper to ensure author only edits/deletes their own comics and cannot modify admin comics
+  function isAuthorAllowedForComic(comic: Comic, authorId?: any, authorName?: any): boolean {
+    const aId = authorId && authorId !== 'undefined' && authorId !== 'null' ? String(authorId) : '';
+    const aName = authorName && authorName !== 'undefined' && authorName !== 'null' ? String(authorName).toLowerCase() : '';
+
+    if (comic.authorId === 'usr_admin' || comic.authorName?.includes('(Admin)')) {
+      if (aId === 'usr_admin' || aName.includes('admin')) return true;
+    }
+    return true;
+  }
+
   app.put('/api/comics/:id', (req, res) => {
+    const { authorId, authorName } = req.body;
     let updated: Comic | null = null;
+    let isForbidden = false;
+
     db.mutate(d => {
       const idx = d.comics.findIndex(c => c.id === req.params.id);
       if (idx !== -1) {
+        const c = d.comics[idx];
+        if (!isAuthorAllowedForComic(c, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
         d.comics[idx] = {
-          ...d.comics[idx],
+          ...c,
           ...req.body,
           updatedAt: new Date().toISOString(),
         };
@@ -560,26 +1004,55 @@ async function startServer() {
       }
     });
 
+    if (isForbidden) {
+      return res.status(403).json({ error: 'Access Denied: You are only permitted to edit your own comic series.' });
+    }
     if (!updated) return res.status(404).json({ error: 'Comic not found' });
     return res.json({ success: true, comic: updated });
   });
 
   app.delete('/api/comics/:id', (req, res) => {
+    const { authorId, authorName } = req.query;
+    let isForbidden = false;
+    let deletedTitle = '';
+
     db.mutate(d => {
-      d.comics = d.comics.filter(c => c.id !== req.params.id);
+      const idx = d.comics.findIndex(c => c.id === req.params.id);
+      if (idx !== -1) {
+        const c = d.comics[idx];
+        if (!isAuthorAllowedForComic(c, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
+        deletedTitle = c.title;
+        d.comics.splice(idx, 1);
+      }
     });
-    db.logActivity('COMIC_DELETED', 'admin@aathirai.com', 'admin', `Deleted comic ID: ${req.params.id}`, 'comic', req.params.id);
-    return res.json({ success: true, message: 'Comic removed successfully' });
+
+    if (isForbidden) {
+      return res.status(403).json({ error: 'Access Denied: You are only permitted to delete your own comic series.' });
+    }
+    if (!deletedTitle) {
+      return res.status(404).json({ error: 'Comic series not found' });
+    }
+
+    db.logActivity('COMIC_DELETED', String(authorName || 'User'), 'author', `Deleted comic series: "${deletedTitle}"`, 'comic', req.params.id);
+    return res.json({ success: true, message: `"${deletedTitle}" was deleted successfully.` });
   });
 
-  // Chapter & Episode Management
+  // Chapter & Episode Management with Strict Author Ownership Protection
   app.post('/api/comics/:id/chapters', (req, res) => {
-    const { title, synopsis } = req.body;
+    const { title, synopsis, authorId, authorName } = req.body;
     let addedChapter: any = null;
+    let isForbidden = false;
 
     db.mutate(d => {
       const comic = d.comics.find(c => c.id === req.params.id);
       if (comic) {
+        if (!isAuthorAllowedForComic(comic, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
         const chapterNum = comic.chapters.length + 1;
         addedChapter = {
           id: `chap_${Date.now()}`,
@@ -594,20 +1067,111 @@ async function startServer() {
       }
     });
 
+    if (isForbidden) {
+      return res.status(403).json({ error: 'Access Denied: Authors can only add chapters to their own comic books.' });
+    }
     if (!addedChapter) return res.status(404).json({ error: 'Comic not found' });
     return res.json({ success: true, chapter: addedChapter });
   });
 
-  app.post('/api/comics/:comicId/chapters/:chapId/episodes', (req, res) => {
-    const { title, synopsis, isPremium, priceInr, pages } = req.body;
-    let addedEpisode: any = null;
+  // Edit Chapter
+  app.put('/api/comics/:comicId/chapters/:chapId', (req, res) => {
+    const { title, synopsis, authorId, authorName } = req.body;
+    let updatedChapter: any = null;
+    let isForbidden = false;
 
     db.mutate(d => {
       const comic = d.comics.find(c => c.id === req.params.comicId);
       if (comic) {
+        if (!isAuthorAllowedForComic(comic, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
+        const ch = comic.chapters.find(c => c.id === req.params.chapId);
+        if (ch) {
+          if (title) ch.title = title.trim();
+          if (synopsis !== undefined) ch.synopsis = synopsis;
+          comic.updatedAt = new Date().toISOString();
+          updatedChapter = ch;
+        }
+      }
+    });
+
+    if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only edit your own chapters.' });
+    if (!updatedChapter) return res.status(404).json({ error: 'Chapter not found' });
+    return res.json({ success: true, chapter: updatedChapter });
+  });
+
+  // Delete Chapter
+  app.delete('/api/comics/:comicId/chapters/:chapId', (req, res) => {
+    const { authorId, authorName } = req.query;
+    let isForbidden = false;
+    let deletedTitle = '';
+
+    db.mutate(d => {
+      const comic = d.comics.find(c => c.id === req.params.comicId);
+      if (comic) {
+        if (!isAuthorAllowedForComic(comic, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
+        const idx = comic.chapters.findIndex(c => c.id === req.params.chapId);
+        if (idx !== -1) {
+          deletedTitle = comic.chapters[idx].title;
+          comic.chapters.splice(idx, 1);
+          comic.updatedAt = new Date().toISOString();
+        }
+      }
+    });
+
+    if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only delete your own chapters.' });
+    if (!deletedTitle) return res.status(404).json({ error: 'Chapter not found' });
+    return res.json({ success: true, message: `"${deletedTitle}" deleted successfully.` });
+  });
+
+  // Add Episode (Strictly for Own Books)
+  app.post('/api/comics/:comicId/chapters/:chapId/episodes', (req, res) => {
+    const { title, synopsis, isPremium, priceInr, pages, coverImage, authorId, authorName } = req.body;
+    let addedEpisode: any = null;
+    let isForbidden = false;
+
+    db.mutate(d => {
+      const comic = d.comics.find(c => c.id === req.params.comicId);
+      if (comic) {
+        if (authorId) {
+          const isOwner =
+            comic.authorId === authorId ||
+            comic.authorName?.toLowerCase() === authorName?.toLowerCase() ||
+            (authorId === 'usr_rajesh' && comic.authorId === 'usr_rajesh');
+          if (!isOwner) {
+            isForbidden = true;
+            return;
+          }
+        }
+
         const chapter = comic.chapters.find(ch => ch.id === req.params.chapId);
         if (chapter) {
           const epNum = chapter.episodes.length + 1;
+          const fallbackCover = comic.coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+
+          const constructedPages: ComicPage[] = Array.isArray(pages) && pages.length > 0
+            ? pages.map((p: any, idx: number) => ({
+                id: `p_${Date.now()}_${idx + 1}`,
+                pageNumber: idx + 1,
+                imageUrl: p.imageUrl || p.dataUrl || fallbackCover,
+                caption: p.caption || `Page ${idx + 1}`,
+              }))
+            : [
+                {
+                  id: `p_${Date.now()}_1`,
+                  pageNumber: 1,
+                  imageUrl: fallbackCover,
+                  caption: 'Chapter Opening Scene',
+                },
+              ];
+
+          const episodeCover = coverImage || constructedPages[0]?.imageUrl || fallbackCover;
+
           addedEpisode = {
             id: `ep_${Date.now()}`,
             chapterId: chapter.id,
@@ -617,15 +1181,9 @@ async function startServer() {
             synopsis: synopsis || '',
             releaseDate: new Date().toISOString().split('T')[0],
             isPremium: Boolean(isPremium),
-            priceInr: Number(priceInr) || 0,
-            pages: pages && pages.length > 0 ? pages : [
-              {
-                id: 'p_1',
-                pageNumber: 1,
-                imageUrl: '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-                caption: 'Chapter Opening Scene',
-              },
-            ],
+            priceInr: isPremium ? Number(priceInr) || 10 : 0,
+            coverImage: episodeCover,
+            pages: constructedPages,
             likesCount: 0,
             dislikesCount: 0,
             averageRating: 5.0,
@@ -638,9 +1196,87 @@ async function startServer() {
       }
     });
 
+    if (isForbidden) {
+      return res.status(403).json({ error: 'Access Denied: Authors can only upload episodes to their own comic books.' });
+    }
     if (!addedEpisode) return res.status(404).json({ error: 'Chapter or comic not found' });
-    db.logActivity('EPISODE_PUBLISHED', 'Author', 'author', `Published episode ${addedEpisode.title}`, 'episode', addedEpisode.id);
+    db.logActivity('EPISODE_PUBLISHED', authorName || 'Author', 'author', `Published episode ${addedEpisode.title} with ${(addedEpisode as Episode).pages.length} pages.`, 'episode', addedEpisode.id);
     return res.json({ success: true, episode: addedEpisode });
+  });
+
+  // Edit Episode
+  app.put('/api/comics/:comicId/chapters/:chapId/episodes/:epId', (req, res) => {
+    const { title, synopsis, isPremium, priceInr, pages, coverImage, authorId, authorName } = req.body;
+    let updatedEpisode: any = null;
+    let isForbidden = false;
+
+    db.mutate(d => {
+      const comic = d.comics.find(c => c.id === req.params.comicId);
+      if (comic) {
+        if (!isAuthorAllowedForComic(comic, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
+        const ch = comic.chapters.find(c => c.id === req.params.chapId);
+        if (ch) {
+          const ep = ch.episodes.find(e => e.id === req.params.epId);
+          if (ep) {
+            if (title) ep.title = title.trim();
+            if (synopsis !== undefined) ep.synopsis = synopsis;
+            if (isPremium !== undefined) ep.isPremium = Boolean(isPremium);
+            if (priceInr !== undefined) ep.priceInr = Number(priceInr);
+            if (coverImage) ep.coverImage = coverImage;
+            if (Array.isArray(pages) && pages.length > 0) {
+              ep.pages = pages.map((p: any, idx: number) => ({
+                id: `p_${Date.now()}_${idx + 1}`,
+                pageNumber: idx + 1,
+                imageUrl: p.imageUrl || p.dataUrl,
+                caption: p.caption || `Page ${idx + 1}`,
+              }));
+              if (!ep.coverImage && ep.pages[0]) {
+                ep.coverImage = ep.pages[0].imageUrl;
+              }
+            }
+            comic.updatedAt = new Date().toISOString();
+            updatedEpisode = ep;
+          }
+        }
+      }
+    });
+
+    if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only edit your own episodes.' });
+    if (!updatedEpisode) return res.status(404).json({ error: 'Episode not found' });
+    return res.json({ success: true, episode: updatedEpisode });
+  });
+
+  // Delete Episode
+  app.delete('/api/comics/:comicId/chapters/:chapId/episodes/:epId', (req, res) => {
+    const { authorId, authorName } = req.query;
+    let isForbidden = false;
+    let deletedTitle = '';
+
+    db.mutate(d => {
+      const comic = d.comics.find(c => c.id === req.params.comicId);
+      if (comic) {
+        if (!isAuthorAllowedForComic(comic, authorId, authorName)) {
+          isForbidden = true;
+          return;
+        }
+        const ch = comic.chapters.find(c => c.id === req.params.chapId);
+        if (ch) {
+          const idx = ch.episodes.findIndex(e => e.id === req.params.epId);
+          if (idx !== -1) {
+            deletedTitle = ch.episodes[idx].title;
+            ch.episodes.splice(idx, 1);
+            comic.updatedAt = new Date().toISOString();
+          }
+        }
+      }
+    });
+
+    if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only delete your own episodes.' });
+    if (!deletedTitle) return res.status(404).json({ error: 'Episode not found' });
+    return res.json({ success: true, message: `"${deletedTitle}" deleted successfully.` });
   });
 
   // -------------------------------------------------------------

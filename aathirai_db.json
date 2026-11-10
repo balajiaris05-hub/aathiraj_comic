@@ -2,13 +2,14 @@
   "users": [
     {
       "id": "usr_admin",
-      "name": "Aathirai Editorial Admin",
-      "email": "admin@aathirai.com",
+      "name": "Balaji Administrator",
+      "email": "balajiaris05@gmail.com",
       "role": "admin",
       "isVerified": true,
       "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80",
       "bio": "Chief Content Administrator and Publisher at Aathirai_Comic.",
-      "createdAt": "2026-01-01T00:00:00Z"
+      "createdAt": "2026-01-01T00:00:00Z",
+      "phone": "+91 8610950780"
     },
     {
       "id": "usr_rajesh",
@@ -72,7 +73,8 @@
       "authorName": "Aathirai Editorial (Admin)",
       "genre": [
         "Action",
-        "Fantasy"
+        "Fantasy",
+        "Manga"
       ],
       "coverImage": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
       "description": "Epic historical comic book issue.",
@@ -118,14 +120,68 @@
               "averageRating": 5,
               "totalRatings": 0,
               "isPublished": true
+            },
+            {
+              "id": "ep_1794329372568",
+              "chapterId": "chap_1794272179041",
+              "comicId": "comic_1794272179041",
+              "episodeNumber": 2,
+              "title": "Episode 3: Strike of the Sentinel",
+              "synopsis": "A major confrontation occurs at the mountain pass.",
+              "releaseDate": "2026-11-10",
+              "isPremium": false,
+              "priceInr": 0,
+              "pages": [
+                {
+                  "id": "page_1794329372568_1",
+                  "pageNumber": 1,
+                  "imageUrl": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+                  "caption": "Page 1 (Art)"
+                },
+                {
+                  "id": "page_1794329372568_2",
+                  "pageNumber": 2,
+                  "imageUrl": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+                  "caption": "Page 2 (Art)"
+                }
+              ],
+              "likesCount": 0,
+              "dislikesCount": 0,
+              "averageRating": 5,
+              "totalRatings": 0,
+              "isPublished": true
+            },
+            {
+              "id": "ep_1794331017555",
+              "chapterId": "chap_1794272179041",
+              "comicId": "comic_1794272179041",
+              "episodeNumber": 3,
+              "title": "Hacker Ep",
+              "synopsis": "",
+              "releaseDate": "2026-11-10",
+              "isPremium": false,
+              "priceInr": 0,
+              "pages": [
+                {
+                  "id": "p_1",
+                  "pageNumber": 1,
+                  "imageUrl": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+                  "caption": "Chapter Opening Scene"
+                }
+              ],
+              "likesCount": 0,
+              "dislikesCount": 0,
+              "averageRating": 5,
+              "totalRatings": 0,
+              "isPublished": true
             }
           ]
         }
       ],
-      "totalViews": 0,
+      "totalViews": 1,
       "averageRating": 5,
       "createdAt": "2026-11-10T00:56:19.041Z",
-      "updatedAt": "2026-11-10T00:56:19.041Z",
+      "updatedAt": "2026-11-10T17:16:57.555Z",
       "moderationStatus": "approved",
       "isPublishedDirectlyByAdmin": true
     },
@@ -950,6 +1006,76 @@
     "copyrightNotice": "© 2026 Aathirai_Comic. Empowering storytellers across India and the globe. All rights reserved."
   },
   "activityLogs": [
+    {
+      "id": "log_1794331017562",
+      "timestamp": "2026-11-10T17:16:57.562Z",
+      "action": "EPISODE_PUBLISHED",
+      "actorEmail": "Author",
+      "actorRole": "author",
+      "details": "Published episode Hacker Ep",
+      "targetType": "episode",
+      "targetId": "ep_1794331017555"
+    },
+    {
+      "id": "log_1794329372573",
+      "timestamp": "2026-11-10T16:49:32.573Z",
+      "action": "ADMIN_EPISODE_PUBLISHED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Published \"Episode 3: Strike of the Sentinel\" into \"Battle of Talikota\" > \"Chapter 1: The Beginning\" with 2 pages.",
+      "targetType": "episode",
+      "targetId": "ep_1794329372568"
+    },
+    {
+      "id": "log_1794328526519",
+      "timestamp": "2026-11-10T16:35:26.519Z",
+      "action": "COMIC_DELETED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Permanently deleted comic series: \"Test Delete Series\"",
+      "targetType": "comic",
+      "targetId": "comic_1794328519867"
+    },
+    {
+      "id": "log_1794328519881",
+      "timestamp": "2026-11-10T16:35:19.881Z",
+      "action": "COMIC_CREATED",
+      "actorEmail": "Test Author",
+      "actorRole": "author",
+      "details": "Created new comic series: Test Delete Series",
+      "targetType": "comic",
+      "targetId": "comic_1794328519867"
+    },
+    {
+      "id": "log_1794328269287",
+      "timestamp": "2026-11-10T16:31:09.287Z",
+      "action": "ADMIN_AUTHENTICATED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Administrator successfully verified 2FA OTP and unlocked console.",
+      "targetType": "admin_auth",
+      "targetId": "usr_admin"
+    },
+    {
+      "id": "log_1794328260667",
+      "timestamp": "2026-11-10T16:31:00.667Z",
+      "action": "ADMIN_OTP_REQUESTED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Admin requested 2FA OTP via SMS to +91 8610950780. Code valid for 10 minutes.",
+      "targetType": "admin_auth",
+      "targetId": "usr_admin"
+    },
+    {
+      "id": "log_1794328255773",
+      "timestamp": "2026-11-10T16:30:55.773Z",
+      "action": "ADMIN_OTP_REQUESTED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Admin requested 2FA OTP via EMAIL to balajiaris05@gmail.com. Code valid for 10 minutes.",
+      "targetType": "admin_auth",
+      "targetId": "usr_admin"
+    },
     {
       "id": "log_1794272179047",
       "timestamp": "2026-11-10T00:56:19.047Z",
