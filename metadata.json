@@ -1,0 +1,6 @@
+{
+  "name": "Aathirai_Comic",
+  "description": "Online comic publishing platform with reader and author ecosystems, chapter/episode hierarchies, interactive manga reader, and INR Razorpay payments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
