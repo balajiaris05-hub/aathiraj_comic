@@ -1512,114 +1512,150 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                         </span>
                       </label>
 
-                      {/* Photo Previews with Reorder & Deletion */}
+                      {/* Attached Files Preview & Cover Selection */}
                       {episodeAttachedPages.length > 0 && (
-                        <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-slate-900 dark:text-white">
-                                Selected Photos Preview ({episodeAttachedPages.length})
+                        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+                            <div>
+                              <span className="text-xs font-extrabold text-slate-900 dark:text-white uppercase tracking-wider block font-heading">
+                                Select Cover Page for Episode
                               </span>
-                              <span className="text-[10px] text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" /> Ready
+                              <span className="text-[11px] text-rose-500 font-semibold">
+                                Choose any image from your uploaded files to set as the official episode cover
                               </span>
                             </div>
+                            <span className="text-[10px] text-emerald-500 font-mono font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                              ✓ {episodeAttachedPages.length} Files Attached
+                            </span>
+                          </div>
 
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={handleOpenAuthorLivePreview}
-                                className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                <span>Preview Selected Photos</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEpisodeAttachedPages([])}
-                                className="text-[11px] text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
-                              >
-                                Clear All
-                              </button>
-                            </div>
+                          {/* Direct Dropdown Cover Selector */}
+                          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center gap-3">
+                            <label className="text-xs font-bold text-slate-700 dark:text-slate-300 shrink-0 uppercase tracking-wider">
+                              Select Cover Page Image:
+                            </label>
+                            <select
+                              value={selectedEpisodeCoverPageId || (episodeAttachedPages[0]?.id || '')}
+                              onChange={(e) => setSelectedEpisodeCoverPageId(e.target.value)}
+                              className="flex-1 px-3 py-2 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-rose-500"
+                            >
+                              {episodeAttachedPages.map((p, idx) => (
+                                <option key={p.id} value={p.id}>
+                                  {selectedEpisodeCoverPageId === p.id || (!selectedEpisodeCoverPageId && idx === 0) ? '★ ' : ''}
+                                  Page {p.pageNumber}: {p.fileName} ({p.size}) {selectedEpisodeCoverPageId === p.id || (!selectedEpisodeCoverPageId && idx === 0) ? '[CURRENT COVER]' : ''}
+                                </option>
+                              ))}
+                            </select>
                           </div>
 
                           {/* Thumbnails Grid */}
-                          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2.5 max-h-72 overflow-y-auto p-1">
-                            {episodeAttachedPages.map((page, idx) => {
-                              const isEpisodeCover = selectedEpisodeCoverPageId === page.id || (!selectedEpisodeCoverPageId && idx === 0);
-
-                              return (
-                                <div
-                                  key={page.id}
-                                  className={`group relative rounded-lg border transition-all p-1.5 flex flex-col space-y-1 ${
-                                    isEpisodeCover
-                                      ? 'border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/30'
-                                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950'
-                                  }`}
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 dark:text-slate-400">
+                              <span>Uploaded Files Gallery (Click any image to select as Cover):</span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={handleOpenAuthorLivePreview}
+                                  className="text-rose-600 hover:underline cursor-pointer"
                                 >
-                                  <div className="relative aspect-[3/4] rounded overflow-hidden bg-black/10 dark:bg-white/5">
-                                    <img
-                                      src={page.dataUrl}
-                                      alt={page.caption || `Page ${page.pageNumber}`}
-                                      className="w-full h-full object-cover"
-                                    />
-                                    <span className="absolute top-1 left-1 bg-black/75 backdrop-blur-sm text-white font-mono text-[9px] px-1.5 py-0.5 rounded font-bold">
-                                      P{page.pageNumber}
-                                    </span>
-                                    {isEpisodeCover && (
-                                      <span className="absolute top-1 right-1 bg-amber-500 text-slate-950 font-black text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded shadow-md">
-                                        ★ Cover
-                                      </span>
-                                    )}
-                                  </div>
+                                  Preview Pages
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEpisodeAttachedPages([]);
+                                    setSelectedEpisodeCoverPageId(null);
+                                  }}
+                                  className="text-rose-500 hover:underline cursor-pointer"
+                                >
+                                  Remove All
+                                </button>
+                              </div>
+                            </div>
 
-                                  <button
-                                    type="button"
+                            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 max-h-80 overflow-y-auto p-1">
+                              {episodeAttachedPages.map((page, idx) => {
+                                const isEpisodeCover = selectedEpisodeCoverPageId === page.id || (!selectedEpisodeCoverPageId && idx === 0);
+
+                                return (
+                                  <div
+                                    key={page.id}
                                     onClick={() => setSelectedEpisodeCoverPageId(page.id)}
-                                    className={`w-full py-0.5 px-1 rounded text-[9px] font-bold cursor-pointer transition-colors ${
+                                    className={`group relative rounded-xl border p-2 flex flex-col space-y-1.5 transition-all cursor-pointer ${
                                       isEpisodeCover
-                                        ? 'bg-amber-500 text-slate-950'
-                                        : 'bg-slate-200 dark:bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-700 dark:text-slate-300'
+                                        ? 'border-amber-500 ring-2 ring-amber-500/40 bg-amber-500/10 shadow-md scale-102'
+                                        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 hover:border-slate-400'
                                     }`}
                                   >
-                                    {isEpisodeCover ? '✓ Episode Cover' : 'Set as Cover'}
-                                  </button>
+                                    <div className="relative aspect-[3/4] rounded-lg overflow-hidden bg-black/10">
+                                      <img
+                                        src={page.dataUrl}
+                                        alt={page.caption || `Page ${page.pageNumber}`}
+                                        className="w-full h-full object-cover"
+                                      />
+                                      <span className="absolute top-1 left-1 bg-black/75 backdrop-blur-sm text-white font-mono text-[9px] px-1.5 py-0.5 rounded font-bold">
+                                        P{page.pageNumber}
+                                      </span>
+                                      {isEpisodeCover && (
+                                        <span className="absolute bottom-1 left-1 right-1 bg-amber-500 text-slate-950 font-extrabold text-center py-1 rounded shadow-md uppercase tracking-wider text-[9px]">
+                                          ★ COVER PAGE
+                                        </span>
+                                      )}
+                                    </div>
 
-                                  <div className="flex items-center justify-between text-[10px] pt-0.5">
-                                    <span className="text-slate-500 truncate text-[9px] max-w-[45px]">{page.fileName}</span>
-                                    <div className="flex items-center gap-0.5">
-                                      <button
-                                        type="button"
-                                        disabled={idx === 0}
-                                        onClick={() => handleMoveEpisodePage(idx, 'up')}
-                                        className="p-0.5 text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
-                                        title="Move earlier"
-                                      >
-                                        <ArrowUp className="w-2.5 h-2.5" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        disabled={idx === episodeAttachedPages.length - 1}
-                                        onClick={() => handleMoveEpisodePage(idx, 'down')}
-                                        className="p-0.5 text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
-                                        title="Move later"
-                                      >
-                                        <ArrowDown className="w-2.5 h-2.5" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemoveEpisodePage(page.id)}
-                                        className="p-0.5 text-slate-400 hover:text-rose-500 cursor-pointer"
-                                        title="Remove page"
-                                      >
-                                        <Trash2 className="w-2.5 h-2.5" />
-                                      </button>
+                                    <div className="flex flex-col gap-1 pt-1">
+                                      <span className="text-[10px] text-slate-500 truncate" title={page.fileName}>
+                                        {page.fileName}
+                                      </span>
+                                      <div className="flex items-center justify-between gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setSelectedEpisodeCoverPageId(page.id);
+                                          }}
+                                          className={`flex-1 py-1 px-1 rounded text-[9px] font-extrabold transition-all cursor-pointer ${
+                                            isEpisodeCover
+                                              ? 'bg-amber-500 text-slate-950 shadow-xs'
+                                              : 'bg-slate-200 dark:bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-700 dark:text-slate-300'
+                                          }`}
+                                        >
+                                          {isEpisodeCover ? '★ Selected' : 'Set Cover'}
+                                        </button>
+                                        <div className="flex items-center gap-0.5">
+                                          <button
+                                            type="button"
+                                            disabled={idx === 0}
+                                            onClick={(e) => { e.stopPropagation(); handleMoveEpisodePage(idx, 'up'); }}
+                                            className="p-1 rounded text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                                            title="Move earlier"
+                                          >
+                                            <ArrowUp className="w-3 h-3" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={idx === episodeAttachedPages.length - 1}
+                                            onClick={(e) => { e.stopPropagation(); handleMoveEpisodePage(idx, 'down'); }}
+                                            className="p-1 rounded text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                                            title="Move later"
+                                          >
+                                            <ArrowDown className="w-3 h-3" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); handleRemoveEpisodePage(page.id); }}
+                                            className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
+                                            title="Remove page"
+                                          >
+                                            <Trash2 className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -1916,57 +1952,109 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
 
             {/* Attached Files Preview & Cover Selection */}
             {newComicAttachedPages.length > 0 && (
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
-                <div className="flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200">
-                  <span>Attached Pages Preview &amp; Cover Selector ({newComicAttachedPages.length})</span>
-                  <span className="text-[11px] text-emerald-500 font-semibold">Click &quot;Set as Cover Page&quot; on your preferred image</span>
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <div>
+                    <span className="text-xs font-extrabold text-slate-900 dark:text-white uppercase tracking-wider block font-heading">
+                      Select Cover Page for Comic Series
+                    </span>
+                    <span className="text-[11px] text-rose-500 font-semibold">
+                      Choose any image from your uploaded drag &amp; drop files to set as the official cover
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-emerald-500 font-mono font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                    ✓ {newComicAttachedPages.length} Files Uploaded
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 max-h-72 overflow-y-auto p-1">
-                  {newComicAttachedPages.map((page) => {
-                    const isCover = selectedCoverPageId === page.id;
-                    return (
-                      <div
-                        key={page.id}
-                        className={`group relative rounded-xl border p-2 flex flex-col space-y-1.5 transition-all ${
-                          isCover
-                            ? 'border-rose-500 ring-2 ring-rose-500/30 bg-rose-500/5'
-                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950'
-                        }`}
-                      >
-                        <div className="relative aspect-[3/4] rounded-lg overflow-hidden bg-black/10">
-                          <img
-                            src={page.dataUrl}
-                            alt={page.fileName}
-                            className="w-full h-full object-cover"
-                          />
-                          <span className="absolute top-1 left-1 bg-black/75 backdrop-blur-sm text-white font-mono text-[9px] px-1.5 py-0.5 rounded font-bold">
-                            P{page.pageNumber}
-                          </span>
-                          {isCover && (
-                            <span className="absolute bottom-1 left-1 right-1 bg-rose-600 text-white text-[9px] font-bold text-center py-0.5 rounded shadow">
-                              ★ COVER IMAGE
-                            </span>
-                          )}
-                        </div>
+                {/* Direct Dropdown Cover Selector */}
+                <div className="p-3 rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center gap-3">
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 shrink-0 uppercase tracking-wider">
+                    Select Cover Page Image:
+                  </label>
+                  <select
+                    value={selectedCoverPageId || (newComicAttachedPages[0]?.id || '')}
+                    onChange={(e) => setSelectedCoverPageId(e.target.value)}
+                    className="flex-1 px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  >
+                    {newComicAttachedPages.map((p, idx) => (
+                      <option key={p.id} value={p.id}>
+                        {selectedCoverPageId === p.id || (!selectedCoverPageId && idx === 0) ? '★ ' : ''}
+                        Page {p.pageNumber}: {p.fileName} ({p.size}) {selectedCoverPageId === p.id || (!selectedCoverPageId && idx === 0) ? '[CURRENT COVER]' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                        <div className="flex flex-col gap-1 pt-1">
-                          <span className="text-[10px] text-slate-500 truncate">{page.fileName}</span>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedCoverPageId(page.id)}
-                            className={`py-1 px-2 rounded text-[10px] font-bold transition-colors cursor-pointer ${
-                              isCover
-                                ? 'bg-rose-600 text-white'
-                                : 'bg-slate-200 dark:bg-slate-800 hover:bg-rose-500 hover:text-white text-slate-700 dark:text-slate-300'
-                            }`}
-                          >
-                            {isCover ? 'Selected Cover' : 'Set as Cover'}
-                          </button>
+                {/* Thumbnails Grid with Click-to-Set Cover */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 dark:text-slate-400">
+                    <span>Uploaded Files Gallery (Click any image to select as Cover Page):</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewComicAttachedPages([]);
+                        setSelectedCoverPageId(null);
+                      }}
+                      className="text-rose-500 hover:underline cursor-pointer"
+                    >
+                      Remove All Files
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 max-h-80 overflow-y-auto p-1">
+                    {newComicAttachedPages.map((page, idx) => {
+                      const isCover = selectedCoverPageId === page.id || (!selectedCoverPageId && idx === 0);
+
+                      return (
+                        <div
+                          key={page.id}
+                          onClick={() => setSelectedCoverPageId(page.id)}
+                          className={`group relative rounded-xl border p-2 flex flex-col space-y-1.5 transition-all cursor-pointer ${
+                            isCover
+                              ? 'border-rose-500 ring-2 ring-rose-500/40 bg-rose-500/10 shadow-md scale-102'
+                              : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 hover:border-slate-400'
+                          }`}
+                        >
+                          <div className="relative aspect-[3/4] rounded-lg overflow-hidden bg-black/10">
+                            <img
+                              src={page.dataUrl}
+                              alt={page.fileName}
+                              className="w-full h-full object-cover"
+                            />
+                            <span className="absolute top-1 left-1 bg-black/75 backdrop-blur-sm text-white font-mono text-[9px] px-1.5 py-0.5 rounded font-bold">
+                              P{page.pageNumber}
+                            </span>
+                            {isCover && (
+                              <span className="absolute bottom-1 left-1 right-1 bg-rose-600 text-white text-[9px] font-extrabold text-center py-1 rounded shadow-md uppercase tracking-wider">
+                                ★ COVER PAGE
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-col gap-1 pt-1">
+                            <span className="text-[10px] text-slate-500 truncate" title={page.fileName}>
+                              {page.fileName}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedCoverPageId(page.id);
+                              }}
+                              className={`py-1 px-2 rounded text-[10px] font-extrabold transition-all cursor-pointer ${
+                                isCover
+                                  ? 'bg-rose-600 text-white shadow-xs'
+                                  : 'bg-slate-200 dark:bg-slate-800 hover:bg-rose-500 hover:text-white text-slate-700 dark:text-slate-300'
+                              }`}
+                            >
+                              {isCover ? '★ Selected Cover' : 'Set as Cover'}
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}

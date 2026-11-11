@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Comic, AuthorApplication, Purchase, CopyrightDoc, PlatformSettings, ActivityLog, DeleteRequest } from '../types/comic';
+import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
 import {
   Shield,
   Users,
@@ -62,7 +63,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 }) => {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'comics' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
+    'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'comics' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
   >(() => {
     if (initialSubTab === 'delete-requests') return 'delete-requests';
     return 'overview';
@@ -175,60 +176,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Fetch all admin data (including pending comics and delete requests)
   const fetchAdminData = async () => {
-    try {
-      const [statsRes, authRes, txRes, cpyRes, setRes, logRes, cmtRes, ratRes, allComicsRes, delReqRes] = await Promise.all([
-        fetch('/api/admin/stats'),
-        fetch('/api/admin/authors'),
-        fetch('/api/admin/transactions'),
-        fetch('/api/admin/copyright'),
-        fetch('/api/admin/settings'),
-        fetch('/api/admin/logs'),
-        fetch('/api/admin/comments'),
-        fetch('/api/admin/ratings'),
-        fetch('/api/comics?includePending=true&role=admin'),
-        fetch('/api/admin/delete-requests'),
-      ]);
+    // Helper to safely fetch and set data
+    const safeFetch = async (url: string, setter: (data: any) => void, key?: string) => {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          const d = await res.json();
+          setter(key ? d[key] : d);
+        }
+      } catch (e) {
+        console.error(`Error fetching ${url}:`, e);
+      }
+    };
 
-      if (statsRes.ok) setStats(await statsRes.json());
-      if (authRes.ok) {
-        const d = await authRes.json();
-        setApplications(d.applications || []);
-      }
-      if (txRes.ok) {
-        const d = await txRes.json();
-        setTransactions(d.transactions || []);
-      }
-      if (cpyRes.ok) {
-        const d = await cpyRes.json();
-        setCopyrightDocs(d.copyrightDocs || []);
-      }
-      if (setRes.ok) {
-        const d = await setRes.json();
-        setSettings(d.settings);
-      }
-      if (logRes.ok) {
-        const d = await logRes.json();
-        setActivityLogs(d.logs || []);
-      }
-      if (cmtRes.ok) {
-        const d = await cmtRes.json();
-        setAllComments(d.comments || []);
-      }
-      if (ratRes.ok) {
-        const d = await ratRes.json();
-        setAllRatings(d.ratings || []);
-      }
-      if (allComicsRes.ok) {
-        const d = await allComicsRes.json();
-        setAllComicsWithPending(d.comics || []);
-      }
-      if (delReqRes.ok) {
-        const d = await delReqRes.json();
-        setDeleteRequests(d.deleteRequests || []);
-      }
-    } catch (e) {
-      console.error('Error fetching admin data:', e);
-    }
+    await Promise.all([
+      safeFetch('/api/admin/stats', setStats),
+      safeFetch('/api/admin/authors', (d) => setApplications(d.applications || []), 'applications'),
+      safeFetch('/api/admin/transactions', (d) => setTransactions(d.transactions || []), 'transactions'),
+      safeFetch('/api/admin/copyright', (d) => setCopyrightDocs(d.copyrightDocs || []), 'copyrightDocs'),
+      safeFetch('/api/admin/settings', (d) => setSettings(d.settings), 'settings'),
+      safeFetch('/api/admin/logs', (d) => setActivityLogs(d.logs || []), 'logs'),
+      safeFetch('/api/admin/comments', (d) => setAllComments(d.comments || []), 'comments'),
+      safeFetch('/api/admin/ratings', (d) => setAllRatings(d.ratings || []), 'ratings'),
+      safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(d.comics || []), 'comics'),
+      safeFetch('/api/admin/delete-requests', (d) => setDeleteRequests(d.deleteRequests || []), 'deleteRequests'),
+    ]);
   };
 
   // Admin approves or rejects author's deletion request
@@ -1075,13 +1047,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setActiveTab('publish-direct')}
-            className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Publish My Comic</span>
-          </button>
 
           <button
             onClick={handleLockAdminConsole}
@@ -1106,7 +1071,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="flex items-center gap-1 overflow-x-auto pb-1 text-xs font-bold border-b border-slate-200 dark:border-slate-800">
         {[
           { id: 'overview', label: 'Overview Metrics' },
-          { id: 'publish-direct', label: '★ Publish My Comic (Direct)' },
+          { id: 'my-comics-episodes-upload', label: 'My Comic & Episode / Upload New Comic' },
           { id: 'comic-queue', label: `Comic Approvals Queue (${pendingComics.length})` },
           { id: 'delete-requests', label: `🗑️ Delete Requests (${deleteRequests.filter(r => r.status === 'pending').length})` },
           { id: 'comics', label: 'Paywall & Catalog Moderation' },
@@ -1183,17 +1148,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* Quick Shortcuts */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div
-              onClick={() => setActiveTab('publish-direct')}
+              onClick={() => setActiveTab('my-comics-episodes-upload')}
               className="p-6 rounded-2xl bg-gradient-to-tr from-rose-500/10 to-amber-500/10 border border-rose-500/30 hover:border-rose-500 transition-all cursor-pointer space-y-2 group"
             >
               <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center font-bold">
                 <Upload className="w-5 h-5" />
               </div>
               <h3 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-rose-500">
-                Direct Comic Publisher
+                My Comic &amp; Episode / Upload New Comic
               </h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Publish your own comics immediately to the catalog without going through moderation queues.
+                Manage chapters, upload episodes with artwork photos, choose cover pages, and create new series.
               </p>
             </div>
 
@@ -1230,690 +1195,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* TAB 2: DIRECT COMIC & EPISODE PUBLISHING */}
-      {activeTab === 'publish-direct' && (
-        <div className="max-w-4xl mx-auto space-y-6">
-          
-          {/* Header Card */}
-          <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-              <div>
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 mb-1">
-                  <Globe2 className="w-3 h-3" />
-                  <span>Admin Direct Publishing Studio</span>
-                </div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white font-heading">
-                  Publish Comic &amp; New Episodes
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  Attach multiple high-resolution photos for your episode, pick previous chapter categories, and preview live before publishing to the website.
-                </p>
-              </div>
-
-              {/* Mode Switcher Toggle */}
-              <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setPublishMode('add_episode')}
-                  className={`py-1.5 px-3 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                    publishMode === 'add_episode'
-                      ? 'bg-rose-600 text-white shadow-sm'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  <span>Add Episode to Chapter</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPublishMode('new_series')}
-                  className={`py-1.5 px-3 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                    publishMode === 'new_series'
-                      ? 'bg-rose-600 text-white shadow-sm'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>New Comic Series</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Success Celebration Toast */}
-            {directPublishSuccess && (
-              <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold space-y-2 animate-fade-in">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-500" />
-                  <span className="font-bold text-sm">{directPublishSuccess}</span>
-                </div>
-                {publishedEpisodeInfo && (
-                  <div className="pl-7 flex flex-wrap items-center gap-3 pt-1">
-                    <span className="text-slate-600 dark:text-slate-300">
-                      Published to: <strong>{publishedEpisodeInfo.comicTitle}</strong> &gt; {publishedEpisodeInfo.chapterTitle} &gt; {publishedEpisodeInfo.episodeTitle} ({publishedEpisodeInfo.pageCount} Pages)
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setCurrentTab('books')}
-                      className="py-1 px-3 rounded-lg bg-emerald-600 text-white font-bold text-[11px] hover:bg-emerald-500 transition-colors cursor-pointer"
-                    >
-                      View Live on Books Page
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Error Banner */}
-            {previewError && (
-              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>{previewError}</span>
-              </div>
-            )}
-
-            {/* PUBLISH FORM */}
-            <form onSubmit={handleOpenLivePreview} className="space-y-6 pt-2">
-              
-              {/* SECTION 1: TARGET COMIC & CHAPTER SELECTION (When in add_episode mode) */}
-              {publishMode === 'add_episode' ? (
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-4">
-                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                    <Layers className="w-4 h-4 text-amber-500" />
-                    <span>1. Target Comic Series &amp; Specific Chapter</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Select Comic Series */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                        Choose Comic Series *
-                      </label>
-                      <select
-                        value={selectedComicId}
-                        onChange={(e) => handleSelectComic(e.target.value)}
-                        className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 text-slate-900 dark:text-white font-medium"
-                      >
-                        {(allComicsWithPending.length > 0 ? allComicsWithPending : comics).map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.title} ({c.chapters.length} Chapters) · {c.authorName}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* Select Chapter */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
-                        <span>Choose Specific Chapter *</span>
-                        <span className="text-[10px] text-slate-400 font-normal">Add episode into chapter</span>
-                      </label>
-                      {(() => {
-                        const list = allComicsWithPending.length > 0 ? allComicsWithPending : comics;
-                        const currentComic = list.find(c => c.id === selectedComicId) || list[0];
-                        return (
-                          <select
-                            value={selectedChapterId}
-                            onChange={(e) => handleSelectChapter(e.target.value)}
-                            className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 text-slate-900 dark:text-white font-medium"
-                          >
-                            {currentComic?.chapters.map(ch => (
-                              <option key={ch.id} value={ch.id}>
-                                {ch.title} ({ch.episodes.length} Episodes currently)
-                              </option>
-                            ))}
-                            <option value="new">+ Add New Chapter to this Comic</option>
-                          </select>
-                        );
-                      })()}
-                    </div>
-                  </div>
-
-                  {/* If user selected "Add New Chapter" */}
-                  {selectedChapterId === 'new' && (
-                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-1.5 animate-fade-in">
-                      <label className="block text-xs font-bold text-amber-700 dark:text-amber-300">
-                        New Chapter Title *
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Chapter 3: The Coromandel Siege"
-                        value={newChapterTitle}
-                        onChange={(e) => setNewChapterTitle(e.target.value)}
-                        className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-slate-900 dark:text-white focus:outline-none"
-                        required
-                      />
-                    </div>
-                  )}
-
-                  {/* Episode Title & Synopsis */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                        Episode Title *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Episode 4: Fire on the Waters"
-                        value={episodeTitle}
-                        onChange={(e) => setEpisodeTitle(e.target.value)}
-                        className="w-full px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 text-slate-900 dark:text-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                        Episode Synopsis (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Brief summary of this episode..."
-                        value={episodeSynopsis}
-                        onChange={(e) => setEpisodeSynopsis(e.target.value)}
-                        className="w-full px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 text-slate-900 dark:text-white"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                /* SECTION 1B: NEW COMIC BOOK DETAILS (When in new_series mode) */
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-4">
-                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                    <Sparkles className="w-4 h-4 text-rose-500" />
-                    <span>1. New Comic Series Details</span>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                      Comic Series Title *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Guardians of Kumari Kandam"
-                      value={directTitle}
-                      onChange={(e) => setDirectTitle(e.target.value)}
-                      className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 text-slate-900 dark:text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                      Comic Series Description &amp; Premise *
-                    </label>
-                    <textarea
-                      rows={3}
-                      required
-                      placeholder="Provide the premise, character lore, and story overview..."
-                      value={directDesc}
-                      onChange={(e) => setDirectDesc(e.target.value)}
-                      className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 text-slate-900 dark:text-white resize-none"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                        Initial Chapter Title
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Chapter 1: The Beginning"
-                        value={newChapterTitle}
-                        onChange={(e) => setNewChapterTitle(e.target.value)}
-                        className="w-full px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none text-slate-900 dark:text-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                        Premiere Episode Title
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Episode 1: Premiere Issue"
-                        value={episodeTitle}
-                        onChange={(e) => setEpisodeTitle(e.target.value)}
-                        className="w-full px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none text-slate-900 dark:text-white"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* SECTION 2: CATEGORY / GENRE SELECTION & INHERITANCE */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                    <Filter className="w-4 h-4 text-emerald-500" />
-                    <span>2. Comic Categories &amp; Genres</span>
-                  </div>
-                  {publishMode === 'add_episode' && (
-                    <span className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
-                      Inherited from selected comic: {selectedGenres.join(', ')}
-                    </span>
-                  )}
-                </div>
-
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Select previously used categories or add new ones. Readers browse and filter comics using these categories.
-                </p>
-
-                {/* Preset Category Badges */}
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {[
-                    'Action', 'Fantasy', 'Manga', 'Webtoon', 'Sci-Fi', 'Historical',
-                    'Romance', 'Thriller', 'Supernatural', 'Comedy', 'Drama', 'Adventure',
-                    'Mythology', 'Mystery', 'Martial Arts', 'Horror', 'Slice of Life'
-                  ].map(cat => {
-                    const isSelected = selectedGenres.includes(cat);
-                    return (
-                      <button
-                        type="button"
-                        key={cat}
-                        onClick={() => handleToggleGenre(cat)}
-                        className={`py-1 px-2.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-rose-600 text-white shadow-sm'
-                            : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-400'
-                        }`}
-                      >
-                        {isSelected ? '✓ ' : '+ '}{cat}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Add Custom Category Input */}
-                <div className="flex items-center gap-2 pt-2 max-w-md">
-                  <input
-                    type="text"
-                    placeholder="Add custom category (e.g. Steampunk, Cyberpunk)..."
-                    value={customGenreInput}
-                    onChange={(e) => setCustomGenreInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleAddCustomGenre(e);
-                      }
-                    }}
-                    className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddCustomGenre}
-                    className="py-1.5 px-3 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold hover:bg-slate-300 transition-colors cursor-pointer"
-                  >
-                    + Add Category
-                  </button>
-                </div>
-              </div>
-
-              {/* SECTION 3: ATTACH MULTIPLE PHOTOS (COMIC PAGES) */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                    <Images className="w-4 h-4 text-rose-500" />
-                    <span>3. Attach Comic Pages (Multiple Photos Allowed) *</span>
-                  </div>
-                  <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">
-                    📸 {attachedPages.length} Pages Attached
-                  </span>
-                </div>
-
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Select and attach multiple photo pages for your comic episode. You can upload several images at once or add more pages sequentially.
-                </p>
-
-                {/* File Upload Trigger Dropzone */}
-                <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-rose-500 dark:hover:border-rose-500 rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-white dark:bg-slate-900 group">
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,.png,.jpg,.jpeg,.webp,.avif"
-                    onChange={handleMultiplePagesUpload}
-                    className="hidden"
-                  />
-                  <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-500 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
-                    <FileUp className="w-6 h-6" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                    Click to Select Multiple Photos or Drag &amp; Drop
-                  </span>
-                  <span className="text-[11px] text-slate-400 mt-0.5">
-                    Select 1 to 50+ comic art pages (JPG, PNG, WebP)
-                  </span>
-                </label>
-
-                {/* Attached Multiple Photos Gallery */}
-                {attachedPages.length > 0 && (
-                  <div className="space-y-3 pt-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                        Uploaded Episode Sequence ({attachedPages.length} Pages):
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <label className="py-1 px-2.5 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-1">
-                          <Plus className="w-3 h-3" />
-                          <span>Add More Pages</span>
-                          <input
-                            type="file"
-                            multiple
-                            accept="image/*,.png,.jpg,.jpeg,.webp,.avif"
-                            onChange={handleMultiplePagesUpload}
-                            className="hidden"
-                          />
-                        </label>
-
-                        <button
-                          type="button"
-                          onClick={() => setAttachedPages([])}
-                          className="py-1 px-2.5 rounded-lg border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 text-[11px] font-semibold transition-colors"
-                        >
-                          Clear All
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Page Cards Grid */}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-96 overflow-y-auto p-1">
-                      {attachedPages.map((page, idx) => (
-                        <div
-                          key={page.id}
-                          className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-sm space-y-2 relative group"
-                        >
-                          <div className="relative aspect-[3/4] rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-950">
-                            <img
-                              src={page.dataUrl}
-                              alt={page.caption}
-                              className="w-full h-full object-cover"
-                            />
-                            <span className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded bg-black/75 text-white font-mono font-bold text-[10px] backdrop-blur-xs">
-                              Page {page.pageNumber}
-                            </span>
-                          </div>
-
-                          <div className="text-[10px] text-slate-500 truncate" title={page.fileName}>
-                            {page.fileName}
-                          </div>
-
-                          <div className="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
-                            <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                disabled={idx === 0}
-                                onClick={() => handleMovePage(idx, 'up')}
-                                className="p-1 rounded text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-20 cursor-pointer"
-                                title="Move Earlier"
-                              >
-                                <ArrowUp className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={idx === attachedPages.length - 1}
-                                onClick={() => handleMovePage(idx, 'down')}
-                                className="p-1 rounded text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-20 cursor-pointer"
-                                title="Move Later"
-                              >
-                                <ArrowDown className="w-3 h-3" />
-                              </button>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={() => handleRemovePage(page.id)}
-                              className="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 cursor-pointer"
-                              title="Delete Page"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* ACTION BUTTONS: PREVIEW FIRST & PUBLISH */}
-              <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenLivePreview()}
-                  className="w-full sm:flex-1 py-3.5 px-6 rounded-xl border-2 border-rose-600 text-rose-600 dark:text-rose-400 hover:bg-rose-600 hover:text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-                >
-                  <Eye className="w-4 h-4" />
-                  <span>Preview Before Publishing</span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isDirectPublishing}
-                  onClick={() => handleDirectPublish()}
-                  className="w-full sm:flex-1 py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                >
-                  <Globe2 className="w-4 h-4" />
-                  <span>{isDirectPublishing ? 'Publishing Live...' : 'Publish Directly to Website'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-
-          {/* INTERACTIVE LIVE PREVIEW MODAL */}
-          {showLivePreview && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-              <div className="w-full max-w-5xl h-[92vh] flex flex-col rounded-3xl bg-slate-950 border border-slate-800 shadow-2xl overflow-hidden text-slate-100">
-                
-                {/* Modal Header */}
-                <div className="p-4 sm:p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0 bg-slate-900/80">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1 font-mono uppercase">
-                        <Eye className="w-3 h-3" /> Live Reader Preview
-                      </span>
-                      <span className="text-xs text-slate-400">How readers will view this episode</span>
-                    </div>
-
-                    <h3 className="text-base font-extrabold text-white font-heading">
-                      {publishMode === 'add_episode' ? (
-                        <>
-                          {(() => {
-                            const list = allComicsWithPending.length > 0 ? allComicsWithPending : comics;
-                            const cur = list.find(c => c.id === selectedComicId) || list[0];
-                            const ch = cur?.chapters.find(c => c.id === selectedChapterId) || cur?.chapters[0];
-                            return `${cur?.title || 'Comic'} > ${selectedChapterId === 'new' ? (newChapterTitle || 'New Chapter') : (ch?.title || 'Chapter')} > ${episodeTitle || 'Episode'}`;
-                          })()}
-                        </>
-                      ) : (
-                        `${directTitle || 'Untitled Series'} > ${newChapterTitle || 'Chapter 1'} > ${episodeTitle || 'Episode 1'}`
-                      )}
-                    </h3>
-
-                    {/* Categories Strip */}
-                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                      <span className="text-[10px] text-slate-400">Categories:</span>
-                      {selectedGenres.map(g => (
-                        <span key={g} className="px-2 py-0.2 rounded text-[10px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                          {g}
-                        </span>
-                      ))}
-                      <span className="text-[10px] text-emerald-400 font-bold ml-2">
-                        ● 100% Free · 📸 {attachedPages.length} Pages
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Mode & Zoom Controls */}
-                  <div className="flex items-center gap-2 self-end sm:self-center">
-                    <div className="flex items-center p-1 rounded-xl bg-slate-800 border border-slate-700 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setPreviewViewMode('vertical')}
-                        className={`py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
-                          previewViewMode === 'vertical' ? 'bg-amber-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Vertical Scroll
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPreviewViewMode('page')}
-                        className={`py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
-                          previewViewMode === 'page' ? 'bg-amber-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Page-by-Page
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-1 text-slate-400 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setPreviewZoom(z => Math.max(75, z - 25))}
-                        className="p-1.5 rounded-lg hover:bg-slate-800 hover:text-white cursor-pointer"
-                        title="Zoom out"
-                      >
-                        <ZoomOut className="w-4 h-4" />
-                      </button>
-                      <span className="font-mono text-[11px] px-1">{previewZoom}%</span>
-                      <button
-                        type="button"
-                        onClick={() => setPreviewZoom(z => Math.min(150, z + 25))}
-                        className="p-1.5 rounded-lg hover:bg-slate-800 hover:text-white cursor-pointer"
-                        title="Zoom in"
-                      >
-                        <ZoomIn className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowLivePreview(false)}
-                      className="p-2 rounded-xl text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 cursor-pointer"
-                      title="Close Preview"
-                    >
-                      <XCircle className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Modal Body: High Resolution Reader Content */}
-                <div className="flex-1 overflow-y-auto p-4 sm:p-8 flex justify-center bg-slate-950/60">
-                  {previewViewMode === 'vertical' ? (
-                    /* VERTICAL CONTINUOUS WEBTOON SCROLL */
-                    <div
-                      className="space-y-4 transition-all duration-200"
-                      style={{ width: `${Math.min(95, previewZoom)}%`, maxWidth: '780px' }}
-                    >
-                      {attachedPages.map((p, idx) => (
-                        <div
-                          key={p.id}
-                          className="relative rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl group"
-                        >
-                          <img
-                            src={p.dataUrl}
-                            alt={p.caption || `Page ${idx + 1}`}
-                            className="w-full h-auto object-contain block"
-                          />
-                          <div className="p-2.5 bg-slate-900/90 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400 font-mono">
-                            <span>Page {p.pageNumber} of {attachedPages.length}</span>
-                            <span>{p.fileName}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    /* PAGE-BY-PAGE SLIDESHOW VIEW */
-                    <div className="flex flex-col items-center justify-center w-full max-w-2xl h-full space-y-4">
-                      {attachedPages[previewCurrentPage - 1] && (
-                        <div
-                          className="relative rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl max-h-[65vh] flex items-center justify-center transition-all"
-                          style={{ transform: `scale(${previewZoom / 100})` }}
-                        >
-                          <img
-                            src={attachedPages[previewCurrentPage - 1].dataUrl}
-                            alt={`Page ${previewCurrentPage}`}
-                            className="max-h-[65vh] w-auto object-contain rounded-xl"
-                          />
-                          <span className="absolute top-3 left-3 px-2.5 py-1 rounded bg-black/80 text-white font-mono text-xs font-bold backdrop-blur-xs">
-                            Page {previewCurrentPage} of {attachedPages.length}
-                          </span>
-                        </div>
-                      )}
-
-                      {/* Pagination Chevrons */}
-                      <div className="flex items-center gap-4">
-                        <button
-                          type="button"
-                          disabled={previewCurrentPage <= 1}
-                          onClick={() => setPreviewCurrentPage(p => Math.max(1, p - 1))}
-                          className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white text-xs font-bold transition-colors cursor-pointer"
-                        >
-                          &larr; Previous Page
-                        </button>
-                        <span className="text-xs font-mono text-slate-400">
-                          {previewCurrentPage} / {attachedPages.length}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={previewCurrentPage >= attachedPages.length}
-                          onClick={() => setPreviewCurrentPage(p => Math.min(attachedPages.length, p + 1))}
-                          className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-white text-xs font-bold transition-colors cursor-pointer"
-                        >
-                          Next Page &rarr;
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Bottom Thumbnail Strip */}
-                <div className="p-3 bg-slate-900 border-t border-slate-800 overflow-x-auto flex items-center gap-2.5 shrink-0">
-                  {attachedPages.map((p, idx) => (
-                    <button
-                      type="button"
-                      key={p.id}
-                      onClick={() => {
-                        setPreviewCurrentPage(idx + 1);
-                      }}
-                      className={`relative w-12 h-16 rounded-lg overflow-hidden shrink-0 border-2 transition-transform cursor-pointer ${
-                        previewCurrentPage === idx + 1
-                          ? 'border-amber-500 scale-105 shadow-md'
-                          : 'border-slate-700 opacity-60 hover:opacity-100'
-                      }`}
-                    >
-                      <img src={p.dataUrl} alt={`Thumb ${idx + 1}`} className="w-full h-full object-cover" />
-                      <span className="absolute bottom-0 inset-x-0 bg-black/80 text-[8px] text-center font-mono py-0.5 text-white">
-                        #{idx + 1}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Modal Action Footer */}
-                <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-4 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setShowLivePreview(false)}
-                    className="py-2.5 px-5 rounded-xl border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 text-xs font-bold transition-colors cursor-pointer"
-                  >
-                    &larr; Edit Details &amp; Pages
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={isDirectPublishing}
-                    onClick={() => handleDirectPublish()}
-                    className="py-2.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/30 transition-all flex items-center gap-2 cursor-pointer"
-                  >
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>{isDirectPublishing ? 'Publishing Live...' : 'Looks Great! Publish Live on Website'}</span>
-                  </button>
-                </div>
-
-              </div>
-            </div>
-          )}
-
-        </div>
+      {/* TAB 2: MY COMIC & EPISODE / UPLOAD NEW COMIC */}
+      {(activeTab === "my-comics-episodes-upload" || activeTab === "publish-direct") && (
+        <AdminPublishingStudio
+          comics={allComicsWithPending.length > 0 ? allComicsWithPending : comics}
+          onRefreshComics={onRefreshComics}
+          fetchAdminData={fetchAdminData}
+          user={user}
+        />
       )}
 
       {/* TAB 3: COMIC SUBMISSION APPROVALS QUEUE */}
@@ -2763,7 +2052,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       )}
-
     </div>
   );
 };
