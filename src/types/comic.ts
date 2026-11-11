@@ -1,15 +1,32 @@
 export type UserRole = 'reader' | 'author' | 'admin';
 
+export interface PremiumPaymentDetail {
+  plan: '1_month' | '6_months' | 'free';
+  amountPaidInr: number;
+  paymentMethod?: string;
+  transactionId?: string;
+  receiptNumber?: string;
+  paidAt?: string;
+  expiresAt?: string;
+  status: 'paid' | 'unpaid';
+}
+
 export interface User {
   id: string;
   name: string;
   email: string;
+  age?: number;
   role: UserRole;
   isVerified: boolean;
   avatar: string;
   phone?: string;
   bio?: string;
   createdAt: string;
+  lastLoginAt?: string;
+  premiumPlan?: '1_month' | '6_months' | null;
+  premiumStartedAt?: string;
+  premiumExpiresAt?: string;
+  premiumPaymentDetail?: PremiumPaymentDetail;
 }
 
 export interface AuthorApplication {
@@ -133,11 +150,15 @@ export interface Purchase {
   id: string;
   userId: string;
   userEmail: string;
+  userPhone?: string;
+  userAge?: number;
   comicId: string;
   comicTitle: string;
   chapterId?: string;
   episodeId?: string;
   type: 'full_comic' | 'chapter' | 'episode' | 'subscription';
+  subscriptionPlan?: '1_month' | '6_months';
+  expiresAt?: string;
   amountInr: number;
   currency: 'INR';
   paymentMethod: string;

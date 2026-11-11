@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { Shield } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Navbar } from './components/Navbar';
@@ -15,13 +14,14 @@ import { AuthorDashboard } from './pages/AuthorDashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { PremiumPage } from './pages/PremiumPage';
 import { MyPurchasesPage } from './pages/MyPurchasesPage';
+import { ReaderProfilePage } from './pages/ReaderProfilePage';
 import { AboutUsPage } from './pages/AboutUsPage';
 import { TermsPage } from './pages/TermsPage';
 import { CopyrightPage } from './pages/CopyrightPage';
 import { Comic } from './types/comic';
 
 function MainAppContent() {
-  const { user, role, refreshUser } = useAuth();
+  const { user } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('home');
   const [selectedComic, setSelectedComic] = useState<Comic | null>(null);
   const [activeReaderEpisodeId, setActiveReaderEpisodeId] = useState<string | null>(null);
@@ -146,6 +146,16 @@ function MainAppContent() {
               />
             )}
 
+            {(currentTab === 'reader_profile' || currentTab === 'reader_login') && (
+              <ReaderProfilePage
+                comics={publicComics}
+                onSelectComic={handleSelectComic}
+                onOpenEpisode={handleOpenEpisode}
+                setCurrentTab={handleTabChange}
+                initialMode={currentTab === 'reader_login' ? 'login' : 'profile'}
+              />
+            )}
+
             {currentTab === 'premium' && (
               <PremiumPage
                 openAuthModal={() => setAuthModalOpen(true)}
@@ -191,6 +201,7 @@ function MainAppContent() {
       <AuthModal
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
+        onOpenFullReaderPage={() => handleTabChange(user ? 'reader_profile' : 'reader_login')}
       />
 
       {/* Footer - Hidden when viewing dedicated separate Admin Console */}

@@ -27,6 +27,7 @@ interface CheckoutProps {
   episodeId?: string;
   itemTitle: string;
   itemType: 'full_comic' | 'chapter' | 'episode' | 'subscription';
+  subscriptionPlan?: '1_month' | '6_months';
   amountInr: number;
   onPaymentSuccess: (purchase: Purchase) => void;
 }
@@ -40,10 +41,11 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   episodeId,
   itemTitle,
   itemType,
+  subscriptionPlan,
   amountInr,
   onPaymentSuccess,
 }) => {
-  const { user } = useAuth();
+  const { user, updateUser, refreshUser } = useAuth();
   const [selectedMethod, setSelectedMethod] = useState<'upi' | 'card' | 'netbanking' | 'wallet'>('upi');
   const [upiId, setUpiId] = useState('balaji@okhdfcbank');
   const [upiApp, setUpiApp] = useState('Google Pay');
@@ -73,9 +75,11 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           chapterId,
           episodeId,
           type: itemType,
+          subscriptionPlan,
           amountInr,
           userId: user?.id || 'usr_guest',
           userEmail: user?.email || 'customer@aathirai.com',
+          userPhone: user?.phone,
         }),
       });
 
@@ -93,7 +97,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
       else if (selectedMethod === 'netbanking') methodDesc = `Net Banking - ${bank}`;
       else methodDesc = `Digital Wallet - ${wallet}`;
 
-      // 2. Server-side payment verification
+      // 2. Server-side payment verification & Gmail linkage
       const verifyRes = await fetch('/api/payments/razorpay/verify-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -103,11 +107,13 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           razorpaySignature: 'sig_' + Math.random().toString(36).substring(2, 12),
           userId: user?.id || 'usr_guest',
           userEmail: user?.email || 'customer@aathirai.com',
+          userPhone: user?.phone,
           comicId,
           comicTitle,
           chapterId,
           episodeId,
           type: itemType,
+          subscriptionPlan,
           amountInr,
           paymentMethod: methodDesc,
         }),
@@ -117,6 +123,10 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
       setIsProcessing(false);
 
       if (verifyRes.ok && verifyData.purchase) {
+        if (verifyData.user) {
+          updateUser(verifyData.user);
+        }
+        await refreshUser();
         setReceipt(verifyData.purchase);
         onPaymentSuccess(verifyData.purchase);
       } else {

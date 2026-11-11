@@ -97,6 +97,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [allComments, setAllComments] = useState<any[]>([]);
   const [allRatings, setAllRatings] = useState<any[]>([]);
+  const [readerAccounts, setReaderAccounts] = useState<any[]>([]);
 
   // Direct Comic & Episode Publishing state
   const [publishMode, setPublishMode] = useState<'add_episode' | 'new_series'>('add_episode');
@@ -202,6 +203,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       safeFetch('/api/admin/ratings', (d) => setAllRatings(Array.isArray(d) ? d : (d.ratings || []))),
       safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(Array.isArray(d) ? d : (d.comics || []))),
       safeFetch('/api/admin/delete-requests', (d) => setDeleteRequests(Array.isArray(d) ? d : (d.deleteRequests || []))),
+      safeFetch('/api/admin/readers', (d) => setReaderAccounts(Array.isArray(d) ? d : (d.readers || []))),
     ]);
   };
 
@@ -1397,6 +1399,97 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                     </div>
                   ))}
+              </div>
+            )}
+          </div>
+
+          {/* Tracked Reader Accounts (Gmail & Mobile Number + ₹49 / ₹249 Premium Status) */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 mb-1">
+                  <Users className="w-3 h-3" />
+                  <span>Reader Account Tracking ({readerAccounts.length} Accounts)</span>
+                </div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                  Tracked Reader Accounts (Gmail, Mobile Number &amp; Premium Paywall Status)
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Tracks every reader&apos;s connected Gmail, Mobile Number, last login, and active 1-Month (₹49) or 6-Months (₹249) Premium subscription.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchAdminData}
+                className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer self-start"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Refresh Readers</span>
+              </button>
+            </div>
+
+            {readerAccounts.length === 0 ? (
+              <div className="p-6 text-center rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-500">
+                No tracked reader accounts yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+                      <th className="py-2.5 px-3">Customer Name</th>
+                      <th className="py-2.5 px-3">Age</th>
+                      <th className="py-2.5 px-3">Gmail Address</th>
+                      <th className="py-2.5 px-3">Mobile Number</th>
+                      <th className="py-2.5 px-3">Paid Detail of Premium</th>
+                      <th className="py-2.5 px-3">Total Spend</th>
+                      <th className="py-2.5 px-3">Last Login / Created</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                    {readerAccounts.map((r: any) => (
+                      <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                        <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">
+                          {r.name}
+                        </td>
+                        <td className="py-3 px-3 font-mono font-bold text-sky-600 dark:text-sky-400">
+                          {r.age ? `${r.age} yrs` : '24 yrs'}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-rose-600 dark:text-rose-400">
+                          {r.email}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-700 dark:text-slate-300">
+                          {r.phone || 'Not linked'}
+                        </td>
+                        <td className="py-3 px-3">
+                          {r.subscription?.hasActiveSubscription ? (
+                            <div className="space-y-0.5">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>
+                                  {r.subscription.plan === '6_months' ? '6 Months Paid (₹249)' : '1 Month Paid (₹49)'}
+                                </span>
+                              </span>
+                              <div className="text-[10px] font-mono text-slate-400">
+                                {r.subscription.paymentMethod || 'UPI'} · {r.subscription.receiptNumber || 'Verified'}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-500">
+                              Free / Unpaid (₹0)
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                          ₹{r.totalSpentInr || 0}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
+                          {r.lastLoginAt ? new Date(r.lastLoginAt).toLocaleString() : r.createdAt}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

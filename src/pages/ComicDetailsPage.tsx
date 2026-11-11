@@ -1,20 +1,20 @@
-import React, { useState } from 'react';
-import { Comic, Chapter, Episode } from '../types/comic';
+import React, { useState, useEffect } from 'react';
+import { Comic } from '../types/comic';
 import { useAuth } from '../context/AuthContext';
 import {
   ChevronLeft,
   Star,
-  BookOpen,
-  Calendar,
   Lock,
+  Unlock,
   Play,
   IndianRupee,
-  Share2,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Sparkles,
-  ShieldCheck
+  ShieldCheck,
+  Mail,
+  RefreshCw
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 
@@ -31,24 +31,63 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
   onOpenEpisode,
   openAuthModal,
 }) => {
-  const { user } = useAuth();
+  const { user, hasActivePremium, refreshUser } = useAuth();
   const [expandedChapters, setExpandedChapters] = useState<Record<string, boolean>>({
     [comic.chapters[0]?.id || '']: true,
   });
 
+  // Real-Time Gmail Paywall Verification State (checked every time comic is accessed)
+  const [gmailAccessVerified, setGmailAccessVerified] = useState<boolean>(false);
+  const [verifyingGmail, setVerifyingGmail] = useState<boolean>(false);
+  const [verifiedPlan, setVerifiedPlan] = useState<string | null>(null);
+  const [verifiedExpiresAt, setVerifiedExpiresAt] = useState<string | null>(null);
+
   const [checkoutItem, setCheckoutItem] = useState<{
     open: boolean;
-    type: 'full_comic' | 'chapter' | 'episode';
+    type: 'full_comic' | 'chapter' | 'episode' | 'subscription';
+    subscriptionPlan?: '1_month' | '6_months';
     chapterId?: string;
     episodeId?: string;
     title: string;
     amountInr: number;
   }>({
     open: false,
-    type: 'full_comic',
+    type: 'subscription',
+    subscriptionPlan: '1_month',
     title: '',
-    amountInr: 99,
+    amountInr: 49,
   });
+
+  const verifyReaderGmailPaywall = async () => {
+    if (!user) {
+      setGmailAccessVerified(false);
+      return;
+    }
+    setVerifyingGmail(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('comicId', comic.id);
+      if (user.id) params.set('userId', user.id);
+      if (user.email) params.set('email', user.email);
+      if (user.phone) params.set('phone', user.phone);
+
+      const res = await fetch(`/api/payments/verify-access?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setGmailAccessVerified(Boolean(data.unlocked));
+        setVerifiedPlan(data.plan || null);
+        setVerifiedExpiresAt(data.expiresAt || null);
+      }
+    } catch (e) {
+      console.error('Error verifying Gmail paywall access:', e);
+    } finally {
+      setVerifyingGmail(false);
+    }
+  };
+
+  useEffect(() => {
+    verifyReaderGmailPaywall();
+  }, [comic.id, user?.id, user?.email, hasActivePremium]);
 
   const toggleChapter = (chapterId: string) => {
     setExpandedChapters((prev) => ({
@@ -59,6 +98,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
 
   const totalEpisodes = comic.chapters.reduce((sum, ch) => sum + ch.episodes.length, 0);
   const firstEpisode = comic.chapters[0]?.episodes[0];
+  const isUnlockedForReader = comic.accessType === 'free' || gmailAccessVerified || hasActivePremium;
 
   return (
     <div className="space-y-10 pb-24">
@@ -70,6 +110,81 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
         <ChevronLeft className="w-4 h-4" />
         <span>Back to Comics Catalog</span>
       </button>
+
+      {/* REAL-TIME GMAIL PAYWALL VERIFICATION BANNER */}
+      {comic.accessType === 'premium' && (
+        <div
+          className={`p-4 sm:p-5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+            isUnlockedForReader
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-slate-900 dark:text-white'
+              : 'bg-amber-500/10 border-amber-500/30 text-slate-900 dark:text-white'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                isUnlockedForReader ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-slate-950'
+              }`}
+            >
+              {isUnlockedForReader ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+            </div>
+            <div className="space-y-1 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-extrabold text-sm">
+                  {isUnlockedForReader
+                    ? '✓ Gmail Paywall Verification Passed — All Episodes Unlocked'
+                    : 'Paywalled Comic — Gmail Subscription Verification Required'}
+                </span>
+                {user && (
+                  <span className="px-2 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 font-mono text-[11px] flex items-center gap-1">
+                    <Mail className="w-3 h-3 text-rose-500" />
+                    <span>{user.email}</span>
+                  </span>
+                )}
+              </div>
+              <p className="text-slate-600 dark:text-slate-300">
+                {isUnlockedForReader ? (
+                  <>
+                    Verified active{' '}
+                    <strong>{verifiedPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'}</strong> pass on your
+                    Gmail{verifiedExpiresAt ? ` (valid until ${new Date(verifiedExpiresAt).toLocaleDateString()})` : ''}.
+                  </>
+                ) : user ? (
+                  <>
+                    We verified your Gmail (<strong>{user.email}</strong>) and found no active subscription. Choose{' '}
+                    <strong>1 Month (₹49)</strong> or <strong>6 Months (₹249)</strong> to unlock all paywalled episodes.
+                  </>
+                ) : (
+                  <>
+                    Please log in with your <strong>Gmail or Mobile Number</strong> so we can verify your payment status
+                    every time you read.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+
+          {user ? (
+            <button
+              type="button"
+              onClick={verifyReaderGmailPaywall}
+              disabled={verifyingGmail}
+              className="py-2 px-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold flex items-center gap-1.5 shrink-0 hover:border-rose-500 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${verifyingGmail ? 'animate-spin text-rose-500' : ''}`} />
+              <span>{verifyingGmail ? 'Checking Gmail...' : 'Re-Verify Gmail'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={openAuthModal}
+              className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shrink-0 cursor-pointer"
+            >
+              Login with Gmail / Mobile
+            </button>
+          )}
+        </div>
+      )}
 
       {/* COMIC DETAILS HERO SPLIT */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-8 p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl">
@@ -85,7 +200,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
             />
             {comic.accessType === 'premium' ? (
               <div className="absolute top-3 right-3 px-2.5 py-1 rounded-lg text-xs font-black bg-amber-500 text-slate-950 shadow-md">
-                ₹{comic.fullPriceInr || 99} FULL
+                {isUnlockedForReader ? '✓ GMAIL UNLOCKED' : '1M ₹49 / 6M ₹249'}
               </div>
             ) : (
               <div className="absolute top-3 right-3 px-2.5 py-1 rounded-lg text-xs font-black bg-emerald-600 text-white shadow-md">
@@ -142,41 +257,64 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
           </div>
 
           {/* Primary Action Buttons */}
-          <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-4">
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-3">
             {firstEpisode && (
               <button
                 onClick={() => onOpenEpisode(firstEpisode.id)}
-                className="py-3 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
+                className="py-3 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-white" />
-                <span>Read Episode 1 Free</span>
+                <span>{isUnlockedForReader ? 'Read Now (Unlocked)' : 'Read Episode 1 Free'}</span>
               </button>
             )}
 
-            {comic.accessType === 'premium' && (
-              <button
-                onClick={() => {
-                  if (!user) {
-                    openAuthModal();
-                    return;
-                  }
-                  setCheckoutItem({
-                    open: true,
-                    type: 'full_comic',
-                    title: `Complete Comic Access (${comic.title})`,
-                    amountInr: comic.fullPriceInr || 99,
-                  });
-                }}
-                className="py-3 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
-              >
-                <IndianRupee className="w-4 h-4" />
-                <span>Buy Complete Series (₹{comic.fullPriceInr || 99})</span>
-              </button>
+            {comic.accessType === 'premium' && !isUnlockedForReader && (
+              <>
+                <button
+                  onClick={() => {
+                    if (!user) {
+                      openAuthModal();
+                      return;
+                    }
+                    setCheckoutItem({
+                      open: true,
+                      type: 'subscription',
+                      subscriptionPlan: '1_month',
+                      title: '1 Month Reader Premium Pass (₹49)',
+                      amountInr: 49,
+                    });
+                  }}
+                  className="py-3 px-5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer border border-slate-700"
+                >
+                  <Sparkles className="w-4 h-4 text-rose-500" />
+                  <span>1 Month Pass (₹49)</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (!user) {
+                      openAuthModal();
+                      return;
+                    }
+                    setCheckoutItem({
+                      open: true,
+                      type: 'subscription',
+                      subscriptionPlan: '6_months',
+                      title: '6 Months Reader Premium Pass (₹249)',
+                      amountInr: 249,
+                    });
+                  }}
+                  className="py-3 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer"
+                >
+                  <IndianRupee className="w-4 h-4" />
+                  <span>6 Months Pass (₹249)</span>
+                </button>
+              </>
             )}
 
             <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5 ml-auto">
               <ShieldCheck className="w-4 h-4 text-emerald-500" />
-              <span>Razorpay Verified · {totalEpisodes} Episodes</span>
+              <span>Gmail Paywall Verified · {totalEpisodes} Episodes</span>
             </div>
           </div>
         </div>
@@ -220,10 +358,17 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                           Chapter {chapter.chapterNumber}: {chapter.title}
                         </h3>
                         {chapter.isPremium ? (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
-                            <Lock className="w-2.5 h-2.5" />
-                            <span>Chapter Paywalled (₹{chapter.priceInr || 30})</span>
-                          </span>
+                          isUnlockedForReader ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-1">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              <span>Gmail Verified · Unlocked</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
+                              <Lock className="w-2.5 h-2.5" />
+                              <span>Paywalled (Unlock with ₹49 / 1M or ₹249 / 6M)</span>
+                            </span>
+                          )
                         ) : (
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
                             Free Chapter
@@ -274,10 +419,17 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                                 Ep {episode.episodeNumber}: {episode.title}
                               </h4>
                               {episode.isPremium ? (
-                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-0.5 shrink-0">
-                                  <Lock className="w-2.5 h-2.5" />
-                                  <span>₹{episode.priceInr || 10}</span>
-                                </span>
+                                isUnlockedForReader ? (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-0.5 shrink-0">
+                                    <CheckCircle2 className="w-2.5 h-2.5" />
+                                    <span>UNLOCKED</span>
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-0.5 shrink-0">
+                                    <Lock className="w-2.5 h-2.5" />
+                                    <span>PREMIUM</span>
+                                  </span>
+                                )
                               ) : (
                                 <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                                   FREE
@@ -319,15 +471,17 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
         <RazorpayCheckoutModal
           isOpen={checkoutItem.open}
           onClose={() => setCheckoutItem({ ...checkoutItem, open: false })}
-          comicId={comic.id}
-          comicTitle={comic.title}
+          comicId={checkoutItem.type === 'subscription' ? 'premium_pass' : comic.id}
+          comicTitle={checkoutItem.type === 'subscription' ? 'Aathirai_Comic All-Access Subscription' : comic.title}
           chapterId={checkoutItem.chapterId}
           episodeId={checkoutItem.episodeId}
           itemTitle={checkoutItem.title}
           itemType={checkoutItem.type}
+          subscriptionPlan={checkoutItem.subscriptionPlan}
           amountInr={checkoutItem.amountInr}
-          onPaymentSuccess={() => {
-            // refreshed access
+          onPaymentSuccess={async () => {
+            await refreshUser();
+            await verifyReaderGmailPaywall();
           }}
         />
       )}

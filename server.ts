@@ -131,99 +131,457 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------
-  // REGULAR AUTHENTICATION ROUTES
+  // HELPER: REAL-TIME GMAIL & PREMIUM SUBSCRIPTION VERIFICATION
+  // -------------------------------------------------------------
+  const getReaderSubscriptionStatus = (snapshot: any, params: { userId?: string; email?: string; phone?: string }) => {
+    const cleanEmail = params.email?.trim().toLowerCase() || '';
+    const cleanDigits = params.phone?.replace(/\D/g, '') || '';
+
+    const matchedUser = snapshot.users.find((u: User) => {
+      if (params.userId && u.id === params.userId) return true;
+      if (cleanEmail && u.email?.toLowerCase() === cleanEmail) return true;
+      if (cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10))) return true;
+      return false;
+    });
+
+    const targetEmail = cleanEmail || matchedUser?.email?.toLowerCase() || '';
+    const targetUserId = params.userId || matchedUser?.id || '';
+    const targetPhoneDigits = cleanDigits || (matchedUser?.phone ? matchedUser.phone.replace(/\D/g, '') : '');
+
+    const now = Date.now();
+    let hasActiveSubscription = false;
+    let activePlan: '1_month' | '6_months' | null = null;
+    let startedAt: string | undefined = undefined;
+    let expiresAt: string | undefined = undefined;
+    let activeReceipt: string | undefined = undefined;
+    let amountPaidInr = 0;
+    let paymentMethod: string | undefined = undefined;
+    let transactionId: string | undefined = undefined;
+
+    // 1. Check User record if subscription is stored directly and not expired
+    if (matchedUser?.premiumPlan && matchedUser?.premiumExpiresAt) {
+      const expTime = new Date(matchedUser.premiumExpiresAt).getTime();
+      if (expTime > now) {
+        hasActiveSubscription = true;
+        activePlan = matchedUser.premiumPlan;
+        startedAt = matchedUser.premiumStartedAt;
+        expiresAt = matchedUser.premiumExpiresAt;
+        amountPaidInr = matchedUser.premiumPaymentDetail?.amountPaidInr || (activePlan === '6_months' ? 249 : 49);
+        paymentMethod = matchedUser.premiumPaymentDetail?.paymentMethod || 'UPI / Razorpay';
+        transactionId = matchedUser.premiumPaymentDetail?.transactionId;
+        activeReceipt = matchedUser.premiumPaymentDetail?.receiptNumber;
+      }
+    }
+
+    // 2. Verify against all successful subscription purchases linked to reader's Gmail / UserId / Phone
+    const subPurchases = snapshot.purchases.filter((p: Purchase) => {
+      if (p.status !== 'success' || p.type !== 'subscription') return false;
+      const matchEmail = targetEmail && p.userEmail?.toLowerCase() === targetEmail;
+      const matchId = targetUserId && p.userId === targetUserId;
+      const matchPhone = targetPhoneDigits.length >= 10 && p.userPhone && p.userPhone.replace(/\D/g, '').endsWith(targetPhoneDigits.slice(-10));
+      return matchEmail || matchId || matchPhone;
+    });
+
+    for (const sub of subPurchases) {
+      const createdTime = new Date(sub.createdAt).getTime();
+      const plan: '1_month' | '6_months' =
+        sub.subscriptionPlan || (Number(sub.amountInr) >= 249 ? '6_months' : '1_month');
+      const durationMs = plan === '6_months' ? 180 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+      const computedExpires = sub.expiresAt ? new Date(sub.expiresAt).getTime() : createdTime + durationMs;
+
+      if (computedExpires > now) {
+        hasActiveSubscription = true;
+        activePlan = plan;
+        startedAt = sub.createdAt;
+        expiresAt = new Date(computedExpires).toISOString();
+        activeReceipt = sub.receiptNumber;
+        amountPaidInr = Number(sub.amountInr) || (plan === '6_months' ? 249 : 49);
+        paymentMethod = sub.paymentMethod || 'UPI / Razorpay';
+        transactionId = sub.razorpayPaymentId;
+        break;
+      }
+    }
+
+    const premiumPaymentDetail = {
+      plan: (activePlan || 'free') as '1_month' | '6_months' | 'free',
+      amountPaidInr: hasActiveSubscription ? amountPaidInr : 0,
+      paymentMethod: hasActiveSubscription ? (paymentMethod || 'UPI / Razorpay') : undefined,
+      transactionId: hasActiveSubscription ? transactionId : undefined,
+      receiptNumber: hasActiveSubscription ? activeReceipt : undefined,
+      paidAt: hasActiveSubscription ? startedAt : undefined,
+      expiresAt: hasActiveSubscription ? expiresAt : undefined,
+      status: (hasActiveSubscription ? 'paid' : 'unpaid') as 'paid' | 'unpaid',
+    };
+
+    return {
+      hasActiveSubscription,
+      activePlan,
+      startedAt,
+      expiresAt,
+      activeReceipt,
+      amountPaidInr: premiumPaymentDetail.amountPaidInr,
+      paymentMethod: premiumPaymentDetail.paymentMethod,
+      transactionId: premiumPaymentDetail.transactionId,
+      premiumPaymentDetail,
+      verifiedGmail: matchedUser?.email || cleanEmail || null,
+      verifiedPhone: matchedUser?.phone || params.phone || null,
+      age: matchedUser?.age,
+      matchedUser,
+    };
+  };
+
+  // Helper to record customer paid detail of premium onto User & Purchases
+  const applyPaidPremiumDetailToUser = (
+    d: any,
+    user: User,
+    paidPlan?: '1_month' | '6_months' | 'free' | null,
+    paymentMethod?: string,
+    transactionId?: string
+  ) => {
+    if (!paidPlan || paidPlan === 'free') {
+      if (paidPlan === 'free' && !user.premiumPlan) {
+        user.premiumPaymentDetail = {
+          plan: 'free',
+          amountPaidInr: 0,
+          status: 'unpaid',
+        };
+      }
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const amountInr = paidPlan === '6_months' ? 249 : 49;
+    const durationMs = paidPlan === '6_months' ? 180 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    const expiresIso = new Date(Date.now() + durationMs).toISOString();
+    const txId = transactionId?.trim() || `pay_${Date.now().toString().slice(-8)}`;
+    const receiptNum = `INV-AATHIRAI-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const method = paymentMethod?.trim() || 'UPI (Google Pay / PhonePe)';
+
+    user.premiumPlan = paidPlan;
+    user.premiumStartedAt = nowIso;
+    user.premiumExpiresAt = expiresIso;
+    user.premiumPaymentDetail = {
+      plan: paidPlan,
+      amountPaidInr: amountInr,
+      paymentMethod: method,
+      transactionId: txId,
+      receiptNumber: receiptNum,
+      paidAt: nowIso,
+      expiresAt: expiresIso,
+      status: 'paid',
+    };
+
+    // Record corresponding purchase in d.purchases if not already present for this transactionId
+    const alreadyExists = d.purchases.some(
+      (p: Purchase) => p.razorpayPaymentId === txId && p.userEmail?.toLowerCase() === user.email.toLowerCase()
+    );
+    if (!alreadyExists) {
+      const taxAmount = Number((amountInr * 0.18).toFixed(2));
+      const baseRevenue = amountInr - taxAmount;
+      const authorEarningsInr = Number((baseRevenue * 0.7).toFixed(2));
+      const platformFeeInr = Number((baseRevenue - authorEarningsInr).toFixed(2));
+
+      d.purchases.unshift({
+        id: 'pur_' + Date.now(),
+        userId: user.id,
+        userEmail: user.email.toLowerCase(),
+        userPhone: user.phone,
+        userAge: user.age,
+        comicId: 'premium_pass',
+        comicTitle: paidPlan === '6_months' ? '6 Months Reader Premium Pass (₹249)' : '1 Month Reader Premium Pass (₹49)',
+        type: 'subscription',
+        subscriptionPlan: paidPlan,
+        expiresAt: expiresIso,
+        amountInr,
+        currency: 'INR',
+        paymentMethod: method,
+        razorpayOrderId: 'order_' + Date.now(),
+        razorpayPaymentId: txId,
+        status: 'success',
+        createdAt: nowIso,
+        receiptNumber: receiptNum,
+        taxAmount,
+        authorEarningsInr,
+        platformFeeInr,
+      });
+    }
+  };
+
+  // -------------------------------------------------------------
+  // REGULAR & READER AUTHENTICATION ROUTES (GMAIL, AGE & PAID PREMIUM DETAIL)
   // -------------------------------------------------------------
 
   app.post('/api/auth/register', (req, res) => {
-    const { name, email, role = 'reader', bio } = req.body;
-    if (!email || !name) {
-      return res.status(400).json({ error: 'Name and email are required' });
-    }
-
-    const snapshot = db.getSnapshot();
-    const existing = snapshot.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (existing) {
-      return res.status(400).json({ error: 'An account with this email already exists' });
-    }
-
-    const newUser: User = {
-      id: 'usr_' + Date.now(),
+    const {
       name,
-      email: email.toLowerCase(),
-      role: 'reader', // default to reader; authors must go through approval flow
-      isVerified: false,
-      avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name)}`,
-      bio: bio || '',
-      createdAt: new Date().toISOString(),
-    };
+      email,
+      phone,
+      age,
+      paidPlan,
+      paymentMethod,
+      transactionId,
+      bio,
+    } = req.body;
+    const cleanEmail = email?.trim().toLowerCase() || '';
+    const cleanPhone = phone?.trim() || '';
+    const cleanDigits = cleanPhone.replace(/\D/g, '');
+    const parsedAge = age !== undefined && age !== '' ? Number(age) : undefined;
 
-    // Generate 6-digit OTP
+    if (!name || (!cleanEmail && cleanDigits.length < 10)) {
+      return res.status(400).json({ error: 'Full Name and a valid Gmail address (or 10-digit Mobile Number) are required.' });
+    }
+
+    const finalEmail = cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`;
+    const nowIso = new Date().toISOString();
+
+    let registeredUser: User | null = null;
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpKey = finalEmail.toLowerCase();
 
     db.mutate(d => {
-      d.users.push(newUser);
-      d.otps[newUser.email] = otp;
+      const existing = d.users.find((u: User) =>
+        (cleanEmail && u.email.toLowerCase() === cleanEmail) ||
+        (cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10)))
+      );
+
+      if (existing) {
+        // Update existing user record with age, Gmail, phone, and paid premium detail if re-registering/updating
+        if (name?.trim()) existing.name = name.trim();
+        if (cleanEmail) existing.email = cleanEmail;
+        if (cleanPhone) existing.phone = cleanPhone;
+        if (parsedAge && !isNaN(parsedAge)) existing.age = parsedAge;
+        existing.lastLoginAt = nowIso;
+        applyPaidPremiumDetailToUser(d, existing, paidPlan, paymentMethod, transactionId);
+        registeredUser = existing;
+      } else {
+        const newUser: User = {
+          id: 'usr_' + Date.now(),
+          name: name.trim(),
+          email: finalEmail,
+          age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
+          phone: cleanPhone || undefined,
+          role: 'reader',
+          isVerified: false,
+          avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name.trim())}`,
+          bio: bio || 'Reader on Aathirai_Comic Network.',
+          createdAt: nowIso,
+          lastLoginAt: nowIso,
+          premiumPlan: null,
+        };
+        applyPaidPremiumDetailToUser(d, newUser, paidPlan, paymentMethod, transactionId);
+        d.users.push(newUser);
+        registeredUser = newUser;
+      }
+
+      d.otps[otpKey] = otp;
+      if (cleanDigits.length >= 10) {
+        d.otps[cleanDigits.slice(-10)] = otp;
+      }
     });
 
-    db.logActivity('USER_REGISTERED', newUser.email, newUser.role, `Registered account as ${newUser.name}. Verification OTP generated.`, 'user', newUser.id);
+    if (!registeredUser) {
+      return res.status(500).json({ error: 'Could not register reader account.' });
+    }
+
+    db.logActivity(
+      'READER_REGISTERED',
+      (registeredUser as User).email,
+      (registeredUser as User).role,
+      `Customer registered: ${(registeredUser as User).name} | Age: ${(registeredUser as User).age || 'N/A'} | Gmail: ${(registeredUser as User).email} | Paid Plan: ${paidPlan || 'free'}.`,
+      'user',
+      (registeredUser as User).id
+    );
 
     return res.json({
       success: true,
-      user: newUser,
-      message: `Verification code sent to ${newUser.email}.`,
-      mockOtp: otp, // Provided for effortless sandbox demonstration
+      user: registeredUser,
+      message: `Account recorded for ${finalEmail} (Age: ${parsedAge || 'N/A'}). Verification code sent.`,
+      mockOtp: otp,
     });
   });
 
   app.post('/api/auth/verify-otp', (req, res) => {
-    const { email, otp } = req.body;
+    const { email, phone, otp, age, paidPlan, paymentMethod, transactionId } = req.body;
+    const cleanEmail = email?.trim().toLowerCase() || '';
+    const cleanDigits = (phone || email || '').replace(/\D/g, '');
     const snapshot = db.getSnapshot();
-    const storedOtp = snapshot.otps[email?.toLowerCase()];
+    const storedOtp = snapshot.otps[cleanEmail] || (cleanDigits.length >= 10 ? snapshot.otps[cleanDigits.slice(-10)] : undefined);
 
-    if (otp !== '123456' && storedOtp && storedOtp !== otp) {
+    if (otp !== '123456' && storedOtp && storedOtp !== otp?.trim()) {
       return res.status(400).json({ error: 'Invalid verification OTP. Please try again.' });
     }
 
     let updatedUser: User | null = null;
     db.mutate(d => {
-      const u = d.users.find(user => user.email.toLowerCase() === email?.toLowerCase());
+      const u = d.users.find(user =>
+        (cleanEmail && user.email.toLowerCase() === cleanEmail) ||
+        (cleanDigits.length >= 10 && user.phone && user.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10)))
+      );
       if (u) {
         u.isVerified = true;
+        u.lastLoginAt = new Date().toISOString();
+        if (age !== undefined && age !== '' && !isNaN(Number(age))) {
+          u.age = Number(age);
+        }
+        if (paidPlan) {
+          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId);
+        }
         updatedUser = u;
       }
-      delete d.otps[email?.toLowerCase()];
+      if (cleanEmail) delete d.otps[cleanEmail];
+      if (cleanDigits.length >= 10) delete d.otps[cleanDigits.slice(-10)];
     });
 
     if (!updatedUser) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'Reader account not found.' });
     }
 
-    db.logActivity('EMAIL_VERIFIED', email, (updatedUser as User).role, 'Email verified successfully.', 'user', (updatedUser as User).id);
+    const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+      userId: (updatedUser as User).id,
+      email: (updatedUser as User).email,
+      phone: (updatedUser as User).phone,
+    });
 
-    return res.json({ success: true, user: updatedUser, message: 'Email verified successfully!' });
+    const userWithPremium: User = {
+      ...(updatedUser as User),
+      premiumPlan: subStatus.activePlan,
+      premiumStartedAt: subStatus.startedAt,
+      premiumExpiresAt: subStatus.expiresAt,
+      premiumPaymentDetail: subStatus.premiumPaymentDetail,
+    };
+
+    db.logActivity(
+      'READER_VERIFIED',
+      userWithPremium.email,
+      userWithPremium.role,
+      `Reader verified account (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'} | Paid Plan: ${userWithPremium.premiumPlan || 'free'}).`,
+      'user',
+      userWithPremium.id
+    );
+
+    return res.json({ success: true, user: userWithPremium, subscription: subStatus, message: 'Reader account verified successfully!' });
   });
 
   app.post('/api/auth/login', (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+    const { email, credential, phone, name, age, paidPlan, paymentMethod, transactionId } = req.body;
+    const rawIdentifier = (credential || email || phone || '').trim();
+    if (!rawIdentifier) {
+      return res.status(400).json({ error: 'Please enter your Gmail address or Mobile Number to sign in.' });
     }
-    const snapshot = db.getSnapshot();
-    const user = snapshot.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+
+    const isEmail = rawIdentifier.includes('@');
+    const cleanEmail = isEmail ? rawIdentifier.toLowerCase() : (email?.includes('@') ? email.trim().toLowerCase() : '');
+    const cleanDigits = rawIdentifier.replace(/\D/g, '');
+    const cleanPhone = !isEmail && cleanDigits.length >= 10 ? rawIdentifier : (phone?.trim() || '');
+    const parsedAge = age !== undefined && age !== '' && !isNaN(Number(age)) ? Number(age) : undefined;
+
+    let user: User | undefined;
+
+    db.mutate(d => {
+      user = d.users.find(u => {
+        if (cleanEmail && u.email.toLowerCase() === cleanEmail) return true;
+        if (cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10))) return true;
+        return false;
+      });
+
+      if (user) {
+        user.lastLoginAt = new Date().toISOString();
+        if (name?.trim()) user.name = name.trim();
+        if (cleanPhone && !user.phone) user.phone = cleanPhone;
+        if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
+        if (parsedAge !== undefined) user.age = parsedAge;
+        if (paidPlan && paidPlan !== 'free') {
+          applyPaidPremiumDetailToUser(d, user, paidPlan, paymentMethod, transactionId);
+        }
+      } else {
+        const derivedName = name?.trim() || (cleanEmail ? cleanEmail.split('@')[0].replace(/[._]/g, ' ') : `Reader ${cleanDigits.slice(-4)}`);
+        const newReader: User = {
+          id: 'usr_' + Date.now(),
+          name: derivedName.charAt(0).toUpperCase() + derivedName.slice(1),
+          email: cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`,
+          age: parsedAge,
+          phone: cleanPhone || (cleanDigits.length >= 10 ? `+91 ${cleanDigits.slice(-10)}` : undefined),
+          role: 'reader',
+          isVerified: true,
+          avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(derivedName)}`,
+          bio: 'Verified Reader on Aathirai_Comic.',
+          createdAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+          premiumPlan: null,
+        };
+        applyPaidPremiumDetailToUser(d, newReader, paidPlan, paymentMethod, transactionId);
+        d.users.push(newReader);
+        user = newReader;
+      }
+    });
+
     if (!user) {
-      return res.status(404).json({ error: 'Account not found. Please register or check your email.' });
+      return res.status(404).json({ error: 'Account not found. Please register with your Gmail, Age, and Mobile Number.' });
     }
 
-    db.logActivity('USER_LOGIN', user.email, user.role, 'User signed in.', 'user', user.id);
+    const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+      userId: user.id,
+      email: user.email,
+      phone: user.phone,
+    });
 
-    return res.json({ success: true, user });
+    const enrichedUser: User = {
+      ...user,
+      premiumPlan: subStatus.activePlan,
+      premiumStartedAt: subStatus.startedAt,
+      premiumExpiresAt: subStatus.expiresAt,
+      premiumPaymentDetail: subStatus.premiumPaymentDetail,
+    };
+
+    db.logActivity(
+      'READER_LOGIN',
+      enrichedUser.email,
+      enrichedUser.role,
+      `Customer logged in | Gmail: ${enrichedUser.email} | Age: ${enrichedUser.age || 'N/A'} | Mobile: ${enrichedUser.phone || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr})` : 'Free'}`,
+      'user',
+      enrichedUser.id
+    );
+
+    return res.json({ success: true, user: enrichedUser, subscription: subStatus });
+  });
+
+  app.get('/api/auth/reader-status', (req, res) => {
+    const { userId, email, phone } = req.query;
+    const snapshot = db.getSnapshot();
+    const subStatus = getReaderSubscriptionStatus(snapshot, {
+      userId: userId ? String(userId) : undefined,
+      email: email ? String(email) : undefined,
+      phone: phone ? String(phone) : undefined,
+    });
+
+    const cleanEmail = (email ? String(email) : subStatus.verifiedGmail || '').trim().toLowerCase();
+    const purchases = snapshot.purchases.filter(
+      p =>
+        (userId && p.userId === userId) ||
+        (cleanEmail && p.userEmail?.toLowerCase() === cleanEmail)
+    );
+
+    return res.json({
+      success: true,
+      subscription: subStatus,
+      purchases,
+      user: subStatus.matchedUser
+        ? {
+            ...subStatus.matchedUser,
+            premiumPlan: subStatus.activePlan,
+            premiumStartedAt: subStatus.startedAt,
+            premiumExpiresAt: subStatus.expiresAt,
+            premiumPaymentDetail: subStatus.premiumPaymentDetail,
+          }
+        : null,
+    });
   });
 
   app.post('/api/auth/forgot-password', (req, res) => {
     const { email } = req.body;
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     db.mutate(d => {
-      d.otps[email.toLowerCase()] = otp;
+      d.otps[(email || '').toLowerCase()] = otp;
     });
     return res.json({ success: true, message: `Password reset OTP sent to ${email}`, mockOtp: otp });
   });
@@ -242,19 +600,39 @@ async function startServer() {
   });
 
   app.post('/api/auth/update-profile', (req, res) => {
-    const { userId, name, bio, avatar } = req.body;
+    const { userId, name, email, phone, age, paidPlan, paymentMethod, transactionId, bio, avatar } = req.body;
     let updated: User | null = null;
     db.mutate(d => {
-      const u = d.users.find(x => x.id === userId);
+      const u = d.users.find(x => x.id === userId || (email && x.email.toLowerCase() === String(email).toLowerCase()));
       if (u) {
-        if (name) u.name = name;
+        if (name) u.name = name.trim();
+        if (email && email.includes('@')) u.email = email.trim().toLowerCase();
+        if (phone !== undefined) u.phone = phone.trim();
+        if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
         if (bio !== undefined) u.bio = bio;
         if (avatar) u.avatar = avatar;
+        if (paidPlan) {
+          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId);
+        }
         updated = u;
       }
     });
     if (!updated) return res.status(404).json({ error: 'User not found' });
-    return res.json({ success: true, user: updated });
+    const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+      userId: (updated as User).id,
+      email: (updated as User).email,
+      phone: (updated as User).phone,
+    });
+    return res.json({
+      success: true,
+      user: {
+        ...(updated as User),
+        premiumPlan: subStatus.activePlan,
+        premiumStartedAt: subStatus.startedAt,
+        premiumExpiresAt: subStatus.expiresAt,
+        premiumPaymentDetail: subStatus.premiumPaymentDetail,
+      },
+    });
   });
 
   // -------------------------------------------------------------
@@ -1389,7 +1767,7 @@ async function startServer() {
   // -------------------------------------------------------------
 
   app.get('/api/episodes/:id', (req, res) => {
-    const { userId } = req.query;
+    const { userId, email, phone } = req.query;
     const snapshot = db.getSnapshot();
     let foundEpisode: any = null;
     let foundComic: any = null;
@@ -1416,19 +1794,43 @@ async function startServer() {
       if (c) c.totalViews += 1;
     });
 
-    // Check user purchase status if premium
-    let hasAccess = !foundEpisode.isPremium;
-    if (!hasAccess && userId) {
-      const user = snapshot.users.find(u => u.id === userId);
+    const isPaywalled = Boolean(
+      foundEpisode.isPremium ||
+      foundChapter.isPremium ||
+      foundComic.accessType === 'premium'
+    );
+
+    // Real-time verification every time customer opens episode: check Gmail subscription (1 Month ₹49 or 6 Months ₹249) or item purchase
+    const subStatus = getReaderSubscriptionStatus(snapshot, {
+      userId: userId ? String(userId) : undefined,
+      email: email ? String(email) : undefined,
+      phone: phone ? String(phone) : undefined,
+    });
+
+    let hasAccess = !isPaywalled;
+    let accessReason = isPaywalled ? 'paywall_locked' : 'free_episode';
+
+    if (!hasAccess && (userId || email || phone)) {
+      const user = subStatus.matchedUser;
+      const targetEmail = (email ? String(email) : user?.email || '').trim().toLowerCase();
+
       if (user && (user.role === 'admin' || user.id === foundComic.authorId)) {
         hasAccess = true;
+        accessReason = 'author_or_admin';
+      } else if (subStatus.hasActiveSubscription) {
+        hasAccess = true;
+        accessReason = `gmail_premium_${subStatus.activePlan}`;
       } else {
-        const purchase = snapshot.purchases.find(p =>
-          p.userId === userId &&
+        const itemPurchase = snapshot.purchases.find(p =>
           p.status === 'success' &&
-          (p.comicId === foundComic.id && (p.type === 'full_comic' || p.episodeId === foundEpisode.id || p.chapterId === foundChapter.id))
+          ((userId && p.userId === userId) || (targetEmail && p.userEmail?.toLowerCase() === targetEmail)) &&
+          p.comicId === foundComic.id &&
+          (p.type === 'full_comic' || p.episodeId === foundEpisode.id || p.chapterId === foundChapter.id)
         );
-        if (purchase) hasAccess = true;
+        if (itemPurchase) {
+          hasAccess = true;
+          accessReason = 'gmail_item_purchased';
+        }
       }
     }
 
@@ -1454,9 +1856,53 @@ async function startServer() {
         chapterNumber: foundChapter.chapterNumber,
       },
       hasAccess,
+      isPaywalled,
+      accessReason,
+      verification: {
+        verifiedAt: new Date().toISOString(),
+        verifiedGmail: subStatus.verifiedGmail,
+        verifiedPhone: subStatus.verifiedPhone,
+        hasActiveSubscription: subStatus.hasActiveSubscription,
+        activePlan: subStatus.activePlan,
+        expiresAt: subStatus.expiresAt,
+        activeReceipt: subStatus.activeReceipt,
+      },
       userVote: userVote ? userVote.type : null,
       userRating: userRating ? userRating.stars : null,
       comments,
+    });
+  });
+
+  // Real-time endpoint to verify reader Gmail payment status for any comic/chapter/episode
+  app.get('/api/payments/verify-access', (req, res) => {
+    const { userId, email, phone, comicId, chapterId, episodeId } = req.query;
+    const snapshot = db.getSnapshot();
+    const subStatus = getReaderSubscriptionStatus(snapshot, {
+      userId: userId ? String(userId) : undefined,
+      email: email ? String(email) : undefined,
+      phone: phone ? String(phone) : undefined,
+    });
+
+    const targetEmail = (email ? String(email) : subStatus.verifiedGmail || '').trim().toLowerCase();
+    const itemPurchase = comicId
+      ? snapshot.purchases.find(p =>
+          p.status === 'success' &&
+          ((userId && p.userId === userId) || (targetEmail && p.userEmail?.toLowerCase() === targetEmail)) &&
+          p.comicId === comicId &&
+          (p.type === 'full_comic' || (chapterId && p.chapterId === chapterId) || (episodeId && p.episodeId === episodeId))
+        )
+      : null;
+
+    return res.json({
+      verified: true,
+      verifiedAt: new Date().toISOString(),
+      hasAccess: Boolean(subStatus.hasActiveSubscription || itemPurchase),
+      hasActiveSubscription: subStatus.hasActiveSubscription,
+      activePlan: subStatus.activePlan,
+      expiresAt: subStatus.expiresAt,
+      activeReceipt: subStatus.activeReceipt || itemPurchase?.receiptNumber,
+      verifiedGmail: subStatus.verifiedGmail,
+      verifiedPhone: subStatus.verifiedPhone,
     });
   });
 
@@ -1746,17 +2192,18 @@ async function startServer() {
       razorpaySignature,
       userId,
       userEmail,
+      userPhone,
       comicId,
       comicTitle,
       chapterId,
       episodeId,
       type = 'episode',
+      subscriptionPlan,
       amountInr,
       paymentMethod = 'UPI / Card',
     } = req.body;
 
     // Server-side verification: in real production with live keys, verify HMAC SHA256
-    // Here we support both simulated and official HMAC verification
     const text = razorpayOrderId + '|' + razorpayPaymentId;
     const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(text).digest('hex');
 
@@ -1770,50 +2217,112 @@ async function startServer() {
     const platformFeeInr = Number((baseRevenue - authorEarningsInr).toFixed(2));
 
     const receiptNumber = `INV-AATHIRAI-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const nowIso = new Date().toISOString();
+
+    let resolvedPlan: '1_month' | '6_months' | undefined = undefined;
+    let computedExpiresAt: string | undefined = undefined;
+
+    if (type === 'subscription') {
+      resolvedPlan = subscriptionPlan || (amountNum >= 249 ? '6_months' : '1_month');
+      const durationMs = resolvedPlan === '6_months' ? 180 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+      computedExpiresAt = new Date(Date.now() + durationMs).toISOString();
+    }
+
+    const cleanEmail = (userEmail || 'customer@aathirai.com').trim().toLowerCase();
 
     const newPurchase: Purchase = {
       id: 'pur_' + Date.now(),
       userId: userId || 'usr_guest',
-      userEmail: userEmail || 'customer@aathirai.com',
+      userEmail: cleanEmail,
+      userPhone: userPhone || undefined,
       comicId,
-      comicTitle: comicTitle || 'Aathirai Premium Comic',
+      comicTitle: comicTitle || (resolvedPlan === '6_months' ? 'Aathirai 6-Month Premium Pass' : resolvedPlan === '1_month' ? 'Aathirai 1-Month Premium Pass' : 'Aathirai Premium Comic'),
       chapterId: chapterId || undefined,
       episodeId: episodeId || undefined,
       type,
+      subscriptionPlan: resolvedPlan,
+      expiresAt: computedExpiresAt,
       amountInr: amountNum,
       currency: 'INR',
       paymentMethod: paymentMethod || 'UPI - Instant Pay',
       razorpayOrderId: razorpayOrderId || 'order_DEMO_' + Date.now(),
       razorpayPaymentId: razorpayPaymentId || 'pay_DEMO_' + Date.now(),
       status: 'success',
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
       receiptNumber,
       taxAmount,
       authorEarningsInr,
       platformFeeInr,
     };
 
+    let updatedReader: User | null = null;
+
     db.mutate(d => {
       d.purchases.unshift(newPurchase);
+
+      // Link payment & subscription directly to Reader's Gmail / Mobile account for instant verification
+      const u = d.users.find(user =>
+        (userId && user.id === userId) ||
+        (cleanEmail && user.email.toLowerCase() === cleanEmail)
+      );
+      if (u) {
+        if (userPhone && !u.phone) u.phone = userPhone;
+        if (type === 'subscription' && resolvedPlan && computedExpiresAt) {
+          u.premiumPlan = resolvedPlan;
+          u.premiumStartedAt = nowIso;
+          u.premiumExpiresAt = computedExpiresAt;
+          u.premiumPaymentDetail = {
+            plan: resolvedPlan,
+            amountPaidInr: amountNum,
+            paymentMethod: newPurchase.paymentMethod,
+            transactionId: newPurchase.razorpayPaymentId,
+            receiptNumber,
+            paidAt: nowIso,
+            expiresAt: computedExpiresAt,
+            status: 'paid',
+          };
+        }
+        updatedReader = u;
+      }
     });
 
-    db.logActivity('PAYMENT_CAPTURED', userEmail || 'Customer', 'reader', `Payment of ₹${amountNum} captured for ${comicTitle}. Receipt ${receiptNumber}`, 'purchase', newPurchase.id);
+    db.logActivity(
+      'PAYMENT_CAPTURED',
+      cleanEmail,
+      'reader',
+      `Payment of ₹${amountNum} captured for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Gmail: ${cleanEmail}. Receipt ${receiptNumber}`,
+      'purchase',
+      newPurchase.id
+    );
 
     return res.json({
       success: true,
       purchase: newPurchase,
-      message: 'Payment verified successfully! Access granted to premium comic episode.',
+      user: updatedReader,
+      message: resolvedPlan
+        ? `Gmail (${cleanEmail}) verified! ${resolvedPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'} Premium Pass activated.`
+        : 'Payment verified successfully! Access granted to premium comic episode.',
     });
   });
 
   // Customer Purchases
   app.get('/api/payments/my-purchases', (req, res) => {
-    const { userId, email } = req.query;
+    const { userId, email, phone } = req.query;
     const snapshot = db.getSnapshot();
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanDigits = phone ? String(phone).replace(/\D/g, '') : '';
+
     const purchases = snapshot.purchases.filter(p =>
-      (userId && p.userId === userId) || (email && p.userEmail.toLowerCase() === String(email).toLowerCase())
+      (userId && p.userId === userId) ||
+      (cleanEmail && p.userEmail.toLowerCase() === cleanEmail) ||
+      (cleanDigits.length >= 10 && p.userPhone && p.userPhone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10)))
     );
-    return res.json({ purchases });
+    const subStatus = getReaderSubscriptionStatus(snapshot, {
+      userId: userId ? String(userId) : undefined,
+      email: cleanEmail || undefined,
+      phone: phone ? String(phone) : undefined,
+    });
+    return res.json({ purchases, subscription: subStatus });
   });
 
   // Razorpay Webhook Endpoint
@@ -1827,6 +2336,43 @@ async function startServer() {
   // -------------------------------------------------------------
   // ADMINISTRATOR DASHBOARD ROUTES
   // -------------------------------------------------------------
+
+  app.get('/api/admin/readers', (req, res) => {
+    const snapshot = db.getSnapshot();
+    const readers = snapshot.users.map(u => {
+      const subStatus = getReaderSubscriptionStatus(snapshot, {
+        userId: u.id,
+        email: u.email,
+        phone: u.phone,
+      });
+      const userPurchases = snapshot.purchases.filter(
+        p => p.status === 'success' && (p.userId === u.id || p.userEmail?.toLowerCase() === u.email?.toLowerCase())
+      );
+      const totalSpentInr = userPurchases.reduce((sum, p) => sum + p.amountInr, 0);
+      return {
+        ...u,
+        age: u.age,
+        premiumPlan: subStatus.activePlan,
+        premiumStartedAt: subStatus.startedAt,
+        premiumExpiresAt: subStatus.expiresAt,
+        premiumPaymentDetail: subStatus.premiumPaymentDetail,
+        hasActiveSubscription: subStatus.hasActiveSubscription,
+        activeReceipt: subStatus.activeReceipt,
+        subscription: {
+          hasActiveSubscription: subStatus.hasActiveSubscription,
+          plan: subStatus.activePlan,
+          amountPaidInr: subStatus.amountPaidInr,
+          paymentMethod: subStatus.paymentMethod,
+          transactionId: subStatus.transactionId,
+          receiptNumber: subStatus.activeReceipt,
+          expiresAt: subStatus.expiresAt,
+        },
+        purchasesCount: userPurchases.length,
+        totalSpentInr: Number(totalSpentInr.toFixed(2)),
+      };
+    });
+    return res.json({ readers });
+  });
 
   app.get('/api/admin/stats', (req, res) => {
     const snapshot = db.getSnapshot();

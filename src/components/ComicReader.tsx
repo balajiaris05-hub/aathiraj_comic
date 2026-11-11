@@ -38,12 +38,23 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   onSelectEpisode,
   openAuthModal,
 }) => {
-  const { user, role } = useAuth();
+  const { user, role, refreshUser } = useAuth();
   const [data, setData] = useState<{
     episode: Episode;
     comic: { id: string; title: string; authorName: string; accessType: string; coverImage: string };
     chapter: { id: string; title: string; chapterNumber: number };
     hasAccess: boolean;
+    isPaywalled?: boolean;
+    accessReason?: string;
+    verification?: {
+      verifiedAt: string;
+      verifiedGmail: string | null;
+      verifiedPhone: string | null;
+      hasActiveSubscription: boolean;
+      activePlan: '1_month' | '6_months' | null;
+      expiresAt?: string;
+      activeReceipt?: string;
+    };
     userVote: 'like' | 'dislike' | null;
     userRating: number | null;
     comments: Comment[];
@@ -72,16 +83,28 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   const [replyParentId, setReplyParentId] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
 
-  // Payment checkout modal state
-  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  // Payment checkout modal state (1 Month ₹49 or 6 Months ₹249)
+  const [checkoutPlan, setCheckoutPlan] = useState<{
+    open: boolean;
+    planKey: '1_month' | '6_months';
+    title: string;
+    amountInr: number;
+  }>({
+    open: false,
+    planKey: '1_month',
+    title: '1 Month Premium Pass (30 Days)',
+    amountInr: 49,
+  });
 
   const readerContainerRef = useRef<HTMLDivElement>(null);
 
-  // Fetch episode data
+  // Fetch episode data & verify Gmail payment status every time
   const fetchEpisode = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/episodes/${episodeId}?userId=${user?.id || ''}`);
+      const res = await fetch(
+        `/api/episodes/${episodeId}?userId=${encodeURIComponent(user?.id || '')}&email=${encodeURIComponent(user?.email || '')}&phone=${encodeURIComponent(user?.phone || '')}`
+      );
       const json = await res.json();
       if (res.ok) {
         setData(json);
@@ -103,7 +126,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
   useEffect(() => {
     fetchEpisode();
-  }, [episodeId, user?.id]);
+  }, [episodeId, user?.id, user?.email, user?.premiumPlan]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -408,44 +431,118 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         
         {/* PREMIUM LOCK OVERLAY (If user does not have access) */}
         {!hasAccess ? (
-          <div className="w-full max-w-lg mx-auto my-auto p-8 text-center space-y-6 bg-slate-900/90 border border-slate-800 rounded-3xl shadow-2xl backdrop-blur-md mt-16 mb-16">
-            <div className="w-16 h-16 rounded-full bg-amber-500/10 text-amber-500 mx-auto flex items-center justify-center">
+          <div className="w-full max-w-xl mx-auto my-auto p-8 text-center space-y-6 bg-slate-900/95 border border-slate-800 rounded-3xl shadow-2xl backdrop-blur-md mt-12 mb-12">
+            <div className="w-16 h-16 rounded-full bg-amber-500/10 text-amber-500 mx-auto flex items-center justify-center border border-amber-500/20">
               <Lock className="w-8 h-8" />
             </div>
 
             <div>
               <span className="text-xs uppercase font-extrabold tracking-wider text-amber-500">
-                Premium Episode
+                Paywalled Comic · Gmail Payment Verification Required
               </span>
               <h3 className="text-xl font-bold text-white mt-1">
-                {comic.title} · Ep {episode.episodeNumber}
+                {comic.title} · Ep {episode.episodeNumber}: {episode.title}
               </h3>
               <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                This episode is part of the author's premium publication. Unlock it instantly with Indian UPI, cards, or net banking via Razorpay.
+                Every time you open a paywalled comic, we verify if your connected Gmail account has an active <strong className="text-amber-400">1 Month (₹49)</strong> or <strong className="text-amber-400">6 Months (₹249)</strong> Premium Pass.
               </p>
             </div>
 
-            {/* Pricing Options */}
-            <div className="space-y-3">
-              <button
-                onClick={() => setCheckoutOpen(true)}
-                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-sm shadow-xl flex items-center justify-center gap-2 transition-transform hover:scale-[1.02]"
-              >
-                <span>Unlock Episode {episode.episodeNumber} for ₹{episode.priceInr || 10}</span>
-                <IndianRupee className="w-4 h-4" />
-              </button>
-
-              <p className="text-[11px] text-slate-400">
-                70% of revenue goes directly to the creator {comic.authorName}.
-              </p>
+            {/* Real-time Gmail Verification Status Box */}
+            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs flex flex-col sm:flex-row items-center justify-between gap-2">
+              <div className="text-left">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                  Gmail Verification Check
+                </span>
+                <span className="font-mono font-bold text-rose-400">
+                  {user ? `${user.email}${user.phone ? ` (${user.phone})` : ''}` : 'Not Signed In'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-bold">
+                  No Active Premium Found
+                </span>
+                <button
+                  type="button"
+                  onClick={fetchEpisode}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer"
+                >
+                  Re-Verify
+                </button>
+              </div>
             </div>
+
+            {/* Pricing Options: ONLY 1 Month (₹49) & 6 Months (₹249) */}
+            {!user ? (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    openAuthModal();
+                  }}
+                  className="w-full py-3.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-sm shadow-xl cursor-pointer"
+                >
+                  Login / Register with Gmail or Mobile to Unlock
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+                <div className="p-4 rounded-2xl bg-slate-950 border border-rose-500/40 space-y-3 flex flex-col justify-between">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-rose-400 block">1 Month Premium</span>
+                    <div className="text-2xl font-black text-white font-mono mt-0.5">₹49 <span className="text-xs font-normal text-slate-400">/ 30 days</span></div>
+                    <p className="text-[11px] text-slate-400 mt-1">Unlocks all paywalled comics for 1 month on {user.email}.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCheckoutPlan({
+                        open: true,
+                        planKey: '1_month',
+                        title: '1 Month Premium Pass (30 Days)',
+                        amountInr: 49,
+                      })
+                    }
+                    className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center"
+                  >
+                    Pay ₹49 (1 Month)
+                  </button>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-gradient-to-b from-amber-500/15 to-slate-950 border-2 border-amber-500/60 space-y-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-bold text-amber-400">6 Months Premium</span>
+                      <span className="text-[9px] font-bold bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded">Best Value</span>
+                    </div>
+                    <div className="text-2xl font-black text-white font-mono mt-0.5">₹249 <span className="text-xs font-normal text-slate-300">/ 180 days</span></div>
+                    <p className="text-[11px] text-slate-300 mt-1">Unlocks all paywalled comics for 6 months on {user.email}.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCheckoutPlan({
+                        open: true,
+                        planKey: '6_months',
+                        title: '6 Months Premium Pass (180 Days)',
+                        amountInr: 249,
+                      })
+                    }
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center"
+                  >
+                    Pay ₹249 (6 Months)
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="pt-4 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-center gap-4">
-              <span>UPI Payments</span>
+              <span>Gmail Linked</span>
               <span>·</span>
-              <span>RuPay / Visa</span>
+              <span>UPI / RuPay / Cards</span>
               <span>·</span>
-              <span>Instant Read</span>
+              <span>Verified Every Load</span>
             </div>
           </div>
         ) : (
@@ -456,6 +553,18 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               maxWidth: fitMode === 'width' ? `${Math.min(zoomLevel * 8, 1200)}px` : `${Math.min(zoomLevel * 6, 800)}px`,
             }}
           >
+            {data.isPaywalled && data.verification?.verifiedGmail && (
+              <div className="w-full mb-4 px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold flex items-center justify-between">
+                <span>
+                  ✓ Gmail Payment Verified ({data.verification.verifiedGmail}) · {data.verification.activePlan === '6_months' ? '6 Months Pass (₹249)' : '1 Month Pass (₹49)'} Unlocked
+                </span>
+                {data.verification.expiresAt && (
+                  <span className="text-[11px] font-mono text-emerald-300">
+                    Valid till {new Date(data.verification.expiresAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+            )}
             {readingMode === 'vertical' ? (
               /* VERTICAL WEBTOON MODE */
               <div className="w-full space-y-4">
@@ -765,19 +874,21 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       </div>
 
       {/* RAZORPAY CHECKOUT MODAL IF PURCHASE CLICKED */}
-      {checkoutOpen && (
+      {checkoutPlan.open && (
         <RazorpayCheckoutModal
-          isOpen={checkoutOpen}
-          onClose={() => setCheckoutOpen(false)}
-          comicId={comic.id}
-          comicTitle={comic.title}
+          isOpen={checkoutPlan.open}
+          onClose={() => setCheckoutPlan({ ...checkoutPlan, open: false })}
+          comicId="global_subscription"
+          comicTitle={`Aathirai ${checkoutPlan.planKey === '6_months' ? '6 Months' : '1 Month'} Premium Pass`}
           chapterId={chapter.id}
           episodeId={episode.id}
-          itemTitle={`Episode ${episode.episodeNumber}: ${episode.title}`}
-          itemType="episode"
-          amountInr={episode.priceInr || 10}
-          onPaymentSuccess={() => {
-            fetchEpisode();
+          itemTitle={checkoutPlan.title}
+          itemType="subscription"
+          subscriptionPlan={checkoutPlan.planKey}
+          amountInr={checkoutPlan.amountInr}
+          onPaymentSuccess={async () => {
+            await refreshUser();
+            await fetchEpisode();
           }}
         />
       )}
