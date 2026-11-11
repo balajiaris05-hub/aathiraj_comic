@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Shield } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Navbar } from './components/Navbar';
@@ -28,10 +29,10 @@ function MainAppContent() {
   const [comics, setComics] = useState<Comic[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Fetch comics catalog
+  // Fetch comics catalog (include pending & delete_requested so Author & Admin dashboards stay synced)
   const fetchComics = async () => {
     try {
-      const res = await fetch('/api/comics');
+      const res = await fetch('/api/comics?includePending=true');
       const data = await res.json();
       if (data.comics) {
         setComics(data.comics);
@@ -52,6 +53,10 @@ function MainAppContent() {
     fetchComics();
   }, []);
 
+  const publicComics = comics.filter(
+    (c) => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested'
+  );
+
   const handleTabChange = (tab: string) => {
     setSelectedComic(null);
     setCurrentTab(tab);
@@ -67,18 +72,22 @@ function MainAppContent() {
     setActiveReaderEpisodeId(episodeId);
   };
 
+  const isAdminView = currentTab === 'admin_dashboard' || currentTab === 'admin_dashboard_delete_requests';
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
       
-      {/* Top Navbar */}
-      <Navbar
-        currentTab={selectedComic ? 'books' : currentTab}
-        setCurrentTab={handleTabChange}
-        openAuthModal={() => setAuthModalOpen(true)}
-      />
+      {/* Top Navbar - Hidden when viewing dedicated separate Admin Console */}
+      {!isAdminView && (
+        <Navbar
+          currentTab={selectedComic ? 'books' : currentTab}
+          setCurrentTab={handleTabChange}
+          openAuthModal={() => setAuthModalOpen(true)}
+        />
+      )}
 
       {/* Main Content Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-8">
+      <main className={`flex-1 w-full mx-auto px-4 sm:px-6 lg:px-8 ${isAdminView ? 'pt-4 max-w-7xl' : 'pt-8 max-w-7xl'}`}>
         {selectedComic ? (
           <ComicDetailsPage
             comic={selectedComic}
@@ -90,7 +99,7 @@ function MainAppContent() {
           <>
             {currentTab === 'home' && (
               <HomePage
-                comics={comics}
+                comics={publicComics}
                 onSelectComic={handleSelectComic}
                 onOpenEpisode={handleOpenEpisode}
                 setCurrentTab={handleTabChange}
@@ -99,14 +108,14 @@ function MainAppContent() {
 
             {currentTab === 'books' && (
               <BooksPage
-                comics={comics}
+                comics={publicComics}
                 onSelectComic={handleSelectComic}
               />
             )}
 
             {currentTab === 'authors' && (
               <AuthorsPage
-                comics={comics}
+                comics={publicComics}
                 onSelectComic={handleSelectComic}
                 setCurrentTab={handleTabChange}
               />
@@ -184,8 +193,8 @@ function MainAppContent() {
         onClose={() => setAuthModalOpen(false)}
       />
 
-      {/* Footer */}
-      <Footer setCurrentTab={handleTabChange} />
+      {/* Footer - Hidden when viewing dedicated separate Admin Console */}
+      {!isAdminView && <Footer setCurrentTab={handleTabChange} />}
     </div>
   );
 }

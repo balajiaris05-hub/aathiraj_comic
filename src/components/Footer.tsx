@@ -1,4 +1,5 @@
 import React from 'react';
+import { useAuth } from '../context/AuthContext';
 import { BookOpen, ShieldCheck, Heart, Sparkles, CheckCircle2 } from 'lucide-react';
 
 interface FooterProps {
@@ -6,6 +7,7 @@ interface FooterProps {
 }
 
 export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
+  const { role } = useAuth();
   return (
     <footer className="bg-slate-900 dark:bg-slate-950 border-t border-slate-800 text-slate-400 text-xs py-12 transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -86,15 +88,6 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
                   Customer Purchase History &amp; Invoices
                 </button>
               </li>
-              <li className="pt-2 border-t border-slate-800">
-                <button
-                  onClick={() => setCurrentTab('admin_dashboard')}
-                  className="hover:text-amber-400 text-amber-500 font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Admin Portal (2FA Protected)</span>
-                </button>
-              </li>
             </ul>
           </div>
 
@@ -123,6 +116,13 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
           </div>
           <div className="flex items-center gap-4">
             <span className="text-slate-400">Built with respect for Indian comic heritage and global manga art</span>
+            <button
+              onClick={() => setCurrentTab('admin_dashboard')}
+              className="text-slate-600 hover:text-amber-400/90 dark:text-slate-700 dark:hover:text-amber-400/90 font-mono text-[11px] transition-colors cursor-pointer select-none"
+              title="admin.com secure console access"
+            >
+              admin.com
+            </button>
           </div>
         </div>
       </div>

@@ -1007,6 +1007,36 @@
   },
   "activityLogs": [
     {
+      "id": "log_1794365141691",
+      "timestamp": "2026-11-11T02:45:41.691Z",
+      "action": "COMIC_DELETE_REQUESTED",
+      "actorEmail": "Rajesh Varma",
+      "actorRole": "author",
+      "details": "Submitted episode deletion request for comic: \"Battle of Talikota\"",
+      "targetType": "comic",
+      "targetId": "comic_1794272179041"
+    },
+    {
+      "id": "log_1794365141657",
+      "timestamp": "2026-11-11T02:45:41.657Z",
+      "action": "COMIC_DELETE_REQUESTED",
+      "actorEmail": "Rajesh Varma",
+      "actorRole": "author",
+      "details": "Submitted episode deletion request for comic: \"Battle of Talikota\"",
+      "targetType": "comic",
+      "targetId": "comic_1794272179041"
+    },
+    {
+      "id": "log_1794365141621",
+      "timestamp": "2026-11-11T02:45:41.621Z",
+      "action": "COMIC_DELETE_REQUESTED",
+      "actorEmail": "Rajesh Varma",
+      "actorRole": "author",
+      "details": "Submitted episode deletion request for comic: \"Virasen: Dawn of the Blade\"",
+      "targetType": "comic",
+      "targetId": "comic_virasen"
+    },
+    {
       "id": "log_1794331017562",
       "timestamp": "2026-11-10T17:16:57.562Z",
       "action": "EPISODE_PUBLISHED",
@@ -1165,6 +1195,98 @@
       "details": "Updated chapter episodes and page ordering for Virasen.",
       "targetType": "comic",
       "targetId": "comic_virasen"
+    }
+  ],
+  "deleteRequests": [
+    {
+      "id": "del_req_1794365141685_rk8o",
+      "comicId": "comic_1794272179041",
+      "comicTitle": "Battle of Talikota",
+      "comicCover": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+      "chapterId": "chap_1794272179041",
+      "chapterTitle": "Chapter 1: The Beginning",
+      "episodeId": "ep_1794329372568",
+      "episodeTitle": "Episode 3: Strike of the Sentinel",
+      "targetType": "episode",
+      "authorId": "usr_author",
+      "authorName": "Rajesh Varma",
+      "reason": "Author requested Admin deletion for Episode 2 (Strike of the Sentinel).",
+      "status": "pending",
+      "requestedAt": "2026-11-11T02:45:41.685Z"
+    },
+    {
+      "id": "del_req_1794365141651_epjn",
+      "comicId": "comic_1794272179041",
+      "comicTitle": "Battle of Talikota",
+      "comicCover": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+      "chapterId": "chap_1794272179041",
+      "chapterTitle": "Chapter 1: The Beginning",
+      "episodeId": "ep_1794272179041",
+      "episodeTitle": "Episode 1: Premiere Issue",
+      "targetType": "episode",
+      "authorId": "usr_author",
+      "authorName": "Rajesh Varma",
+      "reason": "Author requested Admin deletion for Episode 1: Premiere Issue.",
+      "status": "pending",
+      "requestedAt": "2026-11-11T02:45:41.651Z"
+    },
+    {
+      "id": "del_req_1794365141615_htcl",
+      "comicId": "comic_virasen",
+      "comicTitle": "Virasen: Dawn of the Blade",
+      "comicCover": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+      "chapterId": "chap_v1",
+      "chapterTitle": "The Celestial Awakening",
+      "episodeId": "ep_v1_2",
+      "episodeTitle": "The Saptarshi Blade Unsealed",
+      "targetType": "episode",
+      "authorId": "usr_rajesh",
+      "authorName": "Rajesh Varma",
+      "reason": "Author requested Admin deletion for Episode 2 (The Saptarshi Blade Unsealed).",
+      "status": "pending",
+      "requestedAt": "2026-11-11T02:45:41.615Z"
+    },
+    {
+      "id": "del_req_seed_series",
+      "comicId": "comic_1794271496067",
+      "comicTitle": "Tanjore Chronicles Test",
+      "comicCover": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+      "targetType": "series",
+      "authorId": "usr_author",
+      "authorName": "Rajesh Singh",
+      "reason": "Author retiring older comic series to re-launch refreshed reboot.",
+      "status": "pending",
+      "requestedAt": "2026-11-10T22:08:43.932Z"
+    },
+    {
+      "id": "del_req_seed_chap",
+      "comicId": "comic_1794271496067",
+      "comicTitle": "Tanjore Chronicles Test",
+      "comicCover": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+      "chapterId": "chap_1794271496068",
+      "chapterTitle": "Chapter 1: The Beginning",
+      "targetType": "chapter",
+      "authorId": "usr_author",
+      "authorName": "Rajesh Singh",
+      "reason": "Author requesting removal of deprecated Chapter draft for content overhaul.",
+      "status": "pending",
+      "requestedAt": "2026-11-11T00:08:43.933Z"
+    },
+    {
+      "id": "del_req_seed_ep",
+      "comicId": "comic_virasen",
+      "comicTitle": "Virasen: Dawn of the Blade",
+      "comicCover": "/src/assets/images/comic_cover_blade_1794269871791.jpg",
+      "chapterId": "chap_v1",
+      "chapterTitle": "The Celestial Awakening",
+      "episodeId": "ep_v1_1",
+      "episodeTitle": "Ashen Skies of Aryavarta",
+      "targetType": "episode",
+      "authorId": "usr_rajesh",
+      "authorName": "Rajesh Singh",
+      "reason": "Duplicate episode draft uploaded by mistake, requesting admin removal.",
+      "status": "pending",
+      "requestedAt": "2026-11-11T01:08:43.933Z"
     }
   ]
 }

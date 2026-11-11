@@ -23,7 +23,7 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
   setCurrentTab,
   openAuthModal,
 }) => {
-  const { user, role, switchDemoRole } = useAuth();
+  const { user, role } = useAuth();
   const [authorName, setAuthorName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [bio, setBio] = useState('');
@@ -163,20 +163,6 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
                   <span className="text-slate-500">Sample Length:</span>
                   <span className="font-medium text-slate-900 dark:text-white">{existingApp.samplePagesCount} pages</span>
                 </div>
-              </div>
-
-              {/* Convenience shortcut to test administrator approval */}
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
-                <p className="text-[11px] text-slate-400 mb-2">Want to test the Admin review perspective right now?</p>
-                <button
-                  onClick={() => {
-                    switchDemoRole('admin');
-                    setCurrentTab('admin_dashboard');
-                  }}
-                  className="px-4 py-2 text-xs font-bold rounded-lg bg-amber-600 hover:bg-amber-500 text-white transition-colors"
-                >
-                  Switch to Admin Panel to Review &amp; Approve
-                </button>
               </div>
             </div>
           )}

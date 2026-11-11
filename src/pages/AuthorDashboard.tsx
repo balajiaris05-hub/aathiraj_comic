@@ -130,6 +130,58 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [modalSelectedEpisodeId, setModalSelectedEpisodeId] = useState<string>('');
   const [isDeletingItem, setIsDeletingItem] = useState(false);
 
+  // Author In-App Deletion Request Modal State
+  interface AuthorDeleteRequestTarget {
+    type: 'series' | 'chapter' | 'episode';
+    comicId: string;
+    comicTitle: string;
+    chapterId?: string;
+    chapterTitle?: string;
+    episodeId?: string;
+    episodeTitle?: string;
+  }
+  const [authorDeleteRequestTarget, setAuthorDeleteRequestTarget] = useState<AuthorDeleteRequestTarget | null>(null);
+  const [deleteRequestReason, setDeleteRequestReason] = useState('');
+  const [isSubmittingDeleteRequest, setIsSubmittingDeleteRequest] = useState(false);
+  const [authorDeleteRequests, setAuthorDeleteRequests] = useState<any[]>([]);
+
+  const fetchAuthorDeleteRequests = async () => {
+    try {
+      const res = await fetch('/api/admin/delete-requests');
+      if (res.ok) {
+        const data = await res.json();
+        setAuthorDeleteRequests(data.deleteRequests || []);
+      }
+    } catch (e) {
+      console.error('Error fetching delete requests:', e);
+    }
+  };
+
+  useEffect(() => {
+    fetchAuthorDeleteRequests();
+  }, [comics]);
+
+  const isSeriesPendingDelete = (comicId: string, moderationStatus?: string) => {
+    if (moderationStatus === 'delete_requested') return true;
+    return authorDeleteRequests.some(
+      (r) => r.status === 'pending' && r.comicId === comicId && r.targetType === 'series'
+    );
+  };
+
+  const isChapterPendingDelete = (comicId: string, chapId: string, moderationStatus?: string) => {
+    if (isSeriesPendingDelete(comicId, moderationStatus)) return true;
+    return authorDeleteRequests.some(
+      (r) => r.status === 'pending' && r.comicId === comicId && r.targetType === 'chapter' && r.chapterId === chapId
+    );
+  };
+
+  const isEpisodePendingDelete = (comicId: string, chapId: string, epId: string, moderationStatus?: string) => {
+    if (isChapterPendingDelete(comicId, chapId, moderationStatus)) return true;
+    return authorDeleteRequests.some(
+      (r) => r.status === 'pending' && r.comicId === comicId && r.targetType === 'episode' && r.episodeId === epId
+    );
+  };
+
   // Attached Comic File State (Author)
   const [attachedComicFile, setAttachedComicFile] = useState<{
     name: string;
@@ -258,108 +310,123 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     }
   };
 
-  // Handle Direct Author Comic Series Deletion
+  // Only Admin can delete uploaded comics — route any series deletion to Admin Request
   const handleDirectDeleteComicSeries = async () => {
     if (!selectedComic) return;
-    if (!confirm(`⚠️ CRITICAL WARNING: Are you sure you want to permanently delete "${selectedComic.title}" along with ALL its chapters and episodes? This cannot be undone.`)) return;
+    await handleOpenDeleteRequestModal('series', selectedComic.id, selectedComic.title);
+  };
 
-    setIsDeletingItem(true);
+  // Open Author Content Deletion Request In-App Modal AND immediately register request in Admin Portal queue
+  const handleOpenDeleteRequestModal = async (
+    type: 'series' | 'chapter' | 'episode',
+    comicId: string,
+    comicTitle: string,
+    chapterId?: string,
+    chapterTitle?: string,
+    episodeId?: string,
+    episodeTitle?: string
+  ) => {
+    setAuthorDeleteRequestTarget({
+      type,
+      comicId,
+      comicTitle,
+      chapterId,
+      chapterTitle,
+      episodeId,
+      episodeTitle,
+    });
+    setDeleteRequestReason('');
+
+    // Immediately register the pending deletion request in the backend so it appears in Admin Delete Requests right away
     try {
-      const res = await fetch(`/api/comics/${selectedComic.id}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
-        method: 'DELETE',
+      const res = await fetch('/api/author/comics/request-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comicId,
+          chapterId,
+          episodeId,
+          targetType: type,
+          reason: `Author requested ${type} removal (Awaiting Admin approval)`,
+          authorId: user?.id || 'usr_rajesh',
+          authorName: user?.name || 'Rajesh Singh',
+        }),
       });
-      const data = await res.json();
-      setIsDeletingItem(false);
       if (res.ok) {
-        setIsDeleteModalOpen(false);
+        const data = await res.json();
+        await fetchAuthorDeleteRequests();
         onRefreshComics();
-        setSubmissionFeedback(`Comic series "${selectedComic.title}" was permanently deleted.`);
-        setSelectedComic(null);
-        setTimeout(() => setSubmissionFeedback(null), 5000);
-      } else {
-        alert(data.error || 'Failed to delete comic series.');
+        if (data.comic) setSelectedComic(data.comic);
       }
-    } catch (err) {
-      setIsDeletingItem(false);
-      console.error(err);
-      alert('Network error while deleting comic series.');
+    } catch (e) {
+      console.error('Error registering initial delete request:', e);
     }
   };
 
-  // Handle Author Content Deletion Request to Admin Portal (Series, Chapter, or Episode)
+  // Submit / Update Author Deletion Request Reason to Admin Portal
+  const handleConfirmSubmitDeleteRequest = async () => {
+    if (!authorDeleteRequestTarget) return;
+    setIsSubmittingDeleteRequest(true);
+    const target = authorDeleteRequestTarget;
+
+    try {
+      const res = await fetch('/api/author/comics/request-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comicId: target.comicId,
+          chapterId: target.chapterId,
+          episodeId: target.episodeId,
+          targetType: target.type,
+          reason: deleteRequestReason.trim() || `Author requested ${target.type} removal (Awaiting Admin approval)`,
+          authorId: user?.id || 'usr_rajesh',
+          authorName: user?.name || 'Rajesh Singh',
+        }),
+      });
+      const data = await res.json();
+      setIsSubmittingDeleteRequest(false);
+      if (res.ok) {
+        setAuthorDeleteRequestTarget(null);
+        setIsDeleteModalOpen(false);
+        await fetchAuthorDeleteRequests();
+        onRefreshComics();
+        if (data.comic) setSelectedComic(data.comic);
+        setSubmissionFeedback(`✓ ${target.type.toUpperCase()} deletion request for "${target.episodeTitle || target.chapterTitle || target.comicTitle}" is now in the Admin Portal -> Delete Requests panel awaiting Administrator deletion!`);
+        setTimeout(() => setSubmissionFeedback(null), 8000);
+      } else {
+        setSubmissionFeedback(data.error || 'Failed to submit deletion request.');
+      }
+    } catch (err) {
+      setIsSubmittingDeleteRequest(false);
+      console.error(err);
+    }
+  };
+
+  // Legacy wrappers forwarding directly to modal & immediate registration
   const handleSubmitDeleteRequestToAdmin = async (targetType: 'series' | 'chapter' | 'episode') => {
     if (!selectedComic) return;
-    const note = prompt(`Enter an optional note or reason for the administrator regarding your ${targetType} deletion request:`);
-    if (note === null) return; // cancelled
-
-    try {
-      const res = await fetch('/api/author/comics/request-delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          comicId: selectedComic.id,
-          chapterId: targetType !== 'series' ? modalSelectedChapterId : undefined,
-          episodeId: targetType === 'episode' ? modalSelectedEpisodeId : undefined,
-          targetType,
-          reason: note,
-          authorId: user?.id,
-          authorName: user?.name,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setIsDeleteModalOpen(false);
-        onRefreshComics();
-        if (data.comic) setSelectedComic(data.comic);
-        setSubmissionFeedback(`✓ ${targetType.toUpperCase()} deletion request for "${selectedComic.title}" sent to Admin Portal! Admin will review your request in the Delete Requests tab.`);
-        setTimeout(() => setSubmissionFeedback(null), 8000);
-      } else {
-        alert(data.error || 'Failed to submit deletion request.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Network error while requesting deletion.');
-    }
+    const activeChap = selectedComic.chapters.find(c => c.id === modalSelectedChapterId) || selectedComic.chapters[0];
+    const activeEp = activeChap?.episodes.find(e => e.id === modalSelectedEpisodeId);
+    await handleOpenDeleteRequestModal(
+      targetType,
+      selectedComic.id,
+      selectedComic.title,
+      targetType !== 'series' ? activeChap?.id : undefined,
+      targetType !== 'series' ? activeChap?.title : undefined,
+      targetType === 'episode' ? activeEp?.id : undefined,
+      targetType === 'episode' ? activeEp?.title : undefined
+    );
   };
 
-  // Handle Author Comic Deletion Request to Admin
   const handleRequestComicDeletion = async () => {
-    await handleSubmitDeleteRequestToAdmin('series');
+    if (!selectedComic) return;
+    await handleOpenDeleteRequestModal('series', selectedComic.id, selectedComic.title);
   };
 
-  // Directly send an Episode Deletion Request to Admin
   const handleSendEpisodeDeleteRequest = async (ep: Episode, chapId: string) => {
     if (!selectedComic) return;
-    const note = prompt(`Enter optional reason/note for Admin regarding deleting Episode "${ep.title}":`);
-    if (note === null) return; // user clicked cancel
-
-    try {
-      const res = await fetch('/api/author/comics/request-delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          comicId: selectedComic.id,
-          chapterId: chapId,
-          episodeId: ep.id,
-          targetType: 'episode',
-          reason: note,
-          authorId: user?.id,
-          authorName: user?.name,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        onRefreshComics();
-        if (data.comic) setSelectedComic(data.comic);
-        setSubmissionFeedback(`✓ Episode deletion request for "${ep.title}" sent to Admin Portal! Admin will review your request in the Delete Requests tab.`);
-        setTimeout(() => setSubmissionFeedback(null), 8000);
-      } else {
-        alert(data.error || 'Failed to submit episode deletion request.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Network error while requesting episode deletion.');
-    }
+    const ch = selectedComic.chapters.find(c => c.id === chapId);
+    await handleOpenDeleteRequestModal('episode', selectedComic.id, selectedComic.title, chapId, ch?.title, ep.id, ep.title);
   };
 
   // Handle multiple file attachments for author comic creation & cover selection
@@ -613,38 +680,11 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     }
   };
 
-  // Handle Chapter Deletion
+  // Handle Chapter Deletion (Routes to Admin Delete Request since only Admin can delete uploaded comics/chapters)
   const handleDeleteChapter = async (chapId: string) => {
     if (!selectedComic) return;
-    if (!confirm('⚠️ WARNING: Are you sure you want to delete this chapter and all its episodes? This action is permanent and cannot be undone.')) return;
-
-    // Optimistic local update
-    setSelectedComic(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        chapters: prev.chapters.filter(ch => ch.id !== chapId),
-      };
-    });
-
-    try {
-      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
-        method: 'DELETE',
-      });
-      const data = await res.json();
-      if (res.ok) {
-        onRefreshComics();
-        setSubmissionFeedback('Chapter deleted successfully.');
-        setTimeout(() => setSubmissionFeedback(null), 5000);
-      } else {
-        alert(data.error || 'Failed to delete chapter.');
-        onRefreshComics();
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Network error while deleting chapter.');
-      onRefreshComics();
-    }
+    const ch = selectedComic.chapters.find(c => c.id === chapId);
+    await handleOpenDeleteRequestModal('chapter', selectedComic.id, selectedComic.title, chapId, ch?.title);
   };
 
   // Start Editing Episode
@@ -1010,24 +1050,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                     type="button"
                     disabled={!modalSelectedChapterId}
                     onClick={() => handleSubmitDeleteRequestToAdmin('chapter')}
-                    className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
                   >
                     <Clock className="w-3.5 h-3.5" />
-                    <span>Send Delete Request to Admin</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!modalSelectedChapterId}
-                    onClick={async () => {
-                      if (!modalSelectedChapterId) return;
-                      await handleDeleteChapter(modalSelectedChapterId);
-                      setIsDeleteModalOpen(false);
-                    }}
-                    className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Delete Chapter Directly</span>
+                    <span>Send Chapter Delete Request to Admin</span>
                   </button>
                 </div>
               </div>
@@ -1037,34 +1063,21 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
             {deleteMode === 'series' && (
               <div className="space-y-4">
                 <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Choose how you wish to delete <strong className="text-slate-900 dark:text-white">"{selectedComic.title}"</strong>:
+                  Only the Platform Administrator can permanently delete an uploaded comic series. Submit a deletion request for <strong className="text-slate-900 dark:text-white">"{selectedComic.title}"</strong> below:
                 </p>
 
                 <div className="space-y-3">
-                  <button
-                    type="button"
-                    disabled={isDeletingItem}
-                    onClick={handleDirectDeleteComicSeries}
-                    className="w-full p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center justify-between shadow-md transition-all cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Trash2 className="w-4 h-4" />
-                      <span>Delete Comic Series Manually Now</span>
-                    </div>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-
                   <button
                     type="button"
                     onClick={async () => {
                       setIsDeleteModalOpen(false);
                       await handleRequestComicDeletion();
                     }}
-                    className="w-full p-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center justify-between border border-slate-300 dark:border-slate-700 transition-all cursor-pointer"
+                    className="w-full p-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center justify-between shadow-md transition-all cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
-                      <Clock className="w-4 h-4 text-amber-500" />
-                      <span>Send Deletion Request to Admin</span>
+                      <Clock className="w-4 h-4" />
+                      <span>Send Series Deletion Request to Admin</span>
                     </div>
                     <ArrowRight className="w-4 h-4" />
                   </button>
@@ -1082,6 +1095,101 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               </div>
             )}
 
+          </div>
+        </div>
+      )}
+
+      {/* IN-APP MODAL: AUTHOR CONTENT DELETION REQUEST TO ADMIN */}
+      {authorDeleteRequestTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-md p-6 rounded-3xl bg-white dark:bg-slate-900 border border-amber-500/40 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center justify-center">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 dark:text-white text-base font-heading">
+                    Request Deletion from Admin
+                  </h3>
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">
+                    Target: {authorDeleteRequestTarget.type}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthorDeleteRequestTarget(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Target Item Details */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 space-y-1 text-xs">
+              <span className="text-slate-400 font-semibold block text-[10px] uppercase tracking-wider">Item To Remove:</span>
+              <p className="font-extrabold text-slate-900 dark:text-white text-sm">
+                {authorDeleteRequestTarget.episodeTitle || authorDeleteRequestTarget.chapterTitle || authorDeleteRequestTarget.comicTitle}
+              </p>
+              {authorDeleteRequestTarget.type === 'episode' && authorDeleteRequestTarget.chapterTitle && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Chapter: <span className="font-medium text-slate-700 dark:text-slate-300">{authorDeleteRequestTarget.chapterTitle}</span>
+                </p>
+              )}
+              {authorDeleteRequestTarget.type !== 'series' && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Series: <span className="font-medium text-slate-700 dark:text-slate-300">{authorDeleteRequestTarget.comicTitle}</span>
+                </p>
+              )}
+            </div>
+
+            {/* Reason input */}
+            <div className="space-y-1.5 text-xs">
+              <label className="block font-bold text-slate-700 dark:text-slate-300">
+                Reason / Note for Administrator (Optional)
+              </label>
+              <textarea
+                rows={3}
+                value={deleteRequestReason}
+                onChange={(e) => setDeleteRequestReason(e.target.value)}
+                placeholder="Explain why you wish to remove this content (e.g., re-uploading revised edition, content retired, duplicate entry)..."
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>Your request will be submitted to the Admin Portal's Delete Requests queue for review and permanent deletion.</span>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setAuthorDeleteRequestTarget(null)}
+                className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingDeleteRequest}
+                onClick={handleConfirmSubmitDeleteRequest}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isSubmittingDeleteRequest ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-slate-950/30 border-t-slate-950 rounded-full animate-spin" />
+                    <span>Submitting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Send Request to Admin</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1219,7 +1327,12 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       <h4 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
                         {c.title}
                       </h4>
-                      {c.moderationStatus === 'pending' ? (
+                      {isSeriesPendingDelete(c.id, c.moderationStatus) ? (
+                        <span className="text-[9px] font-bold text-rose-500 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                          <Clock className="w-2.5 h-2.5" />
+                          <span>Waiting Admin Delete</span>
+                        </span>
+                      ) : c.moderationStatus === 'pending' ? (
                         <span className="text-[9px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
                           Pending Approval
                         </span>
@@ -1258,21 +1371,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                 
                 {/* Submission Toast / Feedback */}
                 {submissionFeedback && (
-                  <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm animate-fade-in">
-                    <div className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 shrink-0" />
-                      <span>{submissionFeedback}</span>
-                    </div>
-                    {submissionFeedback.includes('deletion request') && (
-                      <button
-                        type="button"
-                        onClick={() => setCurrentTab('admin_dashboard_delete_requests')}
-                        className="py-1.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] shadow-sm transition-all cursor-pointer shrink-0 flex items-center gap-1.5"
-                      >
-                        <Clock className="w-3.5 h-3.5" />
-                        <span>View Delete Request in Admin Portal →</span>
-                      </button>
-                    )}
+                  <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2 shadow-sm animate-fade-in">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{submissionFeedback}</span>
                   </div>
                 )}
 
@@ -1282,15 +1383,15 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       <h3 className="font-extrabold text-base text-slate-900 dark:text-white font-heading">
                         {selectedComic.title}
                       </h3>
-                      {selectedComic.moderationStatus === 'pending' ? (
+                      {isSeriesPendingDelete(selectedComic.id, selectedComic.moderationStatus) ? (
+                        <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center gap-1">
+                          <Clock className="w-3 h-3 animate-pulse" />
+                          <span>Waiting for Admin Delete</span>
+                        </span>
+                      ) : selectedComic.moderationStatus === 'pending' ? (
                         <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           <span>Pending Admin Approval</span>
-                        </span>
-                      ) : selectedComic.moderationStatus === 'delete_requested' ? (
-                        <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center gap-1">
-                          <Trash2 className="w-3 h-3" />
-                          <span>Delete Request Pending Admin Review</span>
                         </span>
                       ) : selectedComic.moderationStatus === 'approved' ? (
                         <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-1">
@@ -1331,10 +1432,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       type="button"
                       onClick={() => setIsDeleteModalOpen(true)}
                       className="py-2 px-3.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center gap-1.5 transition-all cursor-pointer border border-rose-500/30"
-                      title="Manually delete chapters, episodes, or full comic series"
+                      title="Request Admin to delete chapter, episode, or full comic series"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      <span>Delete Chapter, Episode or Series</span>
+                      <span>Request Delete (Series / Chapter / Episode)</span>
                     </button>
                   </div>
                 </div>
@@ -1348,12 +1449,27 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                   </div>
                 )}
 
-                {selectedComic.moderationStatus === 'delete_requested' && (
-                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-600 dark:text-rose-400 flex items-start gap-2">
-                    <Trash2 className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>Deletion Request Submitted:</strong> Your request to completely delete this comic series, chapters, and episodes has been sent to the administrator. The admin will review and process your deletion request.
-                    </span>
+                {authorDeleteRequests.some(r => r.status === 'pending' && r.comicId === selectedComic.id) && (
+                  <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-600 dark:text-rose-400 flex items-start gap-2.5">
+                    <Clock className="w-4 h-4 shrink-0 mt-0.5 animate-pulse" />
+                    <div className="space-y-1">
+                      <p>
+                        <strong>Waiting for Admin Delete Approval:</strong> Only the Platform Administrator can permanently delete uploaded comics, chapters, or episodes. Your request is active in the <strong>Admin Portal → 🗑️ Delete Requests</strong> panel:
+                      </p>
+                      <ul className="list-disc list-inside text-[11px] font-semibold">
+                        {authorDeleteRequests
+                          .filter(r => r.status === 'pending' && r.comicId === selectedComic.id)
+                          .map(r => (
+                            <li key={r.id}>
+                              {r.targetType === 'series'
+                                ? `Full Series: "${r.comicTitle}"`
+                                : r.targetType === 'chapter'
+                                ? `Chapter: "${r.chapterTitle || 'Selected Chapter'}"`
+                                : `Episode: "${r.episodeTitle || 'Selected Episode'}" (${r.chapterTitle || 'Chapter'})`}
+                            </li>
+                          ))}
+                      </ul>
+                    </div>
                   </div>
                 )}
 
@@ -1779,11 +1895,25 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleDeleteChapter(ch.id)}
-                                className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
-                                title="Delete Chapter"
+                                onClick={() => handleOpenDeleteRequestModal('chapter', selectedComic.id, selectedComic.title, ch.id, ch.title)}
+                                className={`py-1 px-2 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer border ${
+                                  isChapterPendingDelete(selectedComic.id, ch.id, selectedComic.moderationStatus)
+                                    ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40'
+                                    : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                                }`}
+                                title="Request Admin to Delete Chapter"
                               >
-                                <Trash2 className="w-3 h-3" />
+                                {isChapterPendingDelete(selectedComic.id, ch.id, selectedComic.moderationStatus) ? (
+                                  <>
+                                    <Clock className="w-3 h-3 animate-pulse" />
+                                    <span>Waiting for Admin Delete</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Trash2 className="w-3 h-3" />
+                                    <span>Request Admin Delete</span>
+                                  </>
+                                )}
                               </button>
                             </>
                           )}
@@ -1844,11 +1974,28 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => handleSendEpisodeDeleteRequest(ep, ch.id)}
-                                  className="py-1 px-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer border border-amber-500/30"
-                                  title="Send Episode Deletion Request to Admin"
+                                  className={`py-1 px-2.5 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer border ${
+                                    isEpisodePendingDelete(selectedComic.id, ch.id, ep.id, selectedComic.moderationStatus)
+                                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40'
+                                      : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                                  }`}
+                                  title={
+                                    isEpisodePendingDelete(selectedComic.id, ch.id, ep.id, selectedComic.moderationStatus)
+                                      ? 'Waiting for Admin to delete this episode in Admin Portal -> Delete Requests'
+                                      : 'Send Episode Deletion Request to Admin'
+                                  }
                                 >
-                                  <Clock className="w-3 h-3" />
-                                  <span>Request Admin Delete</span>
+                                  {isEpisodePendingDelete(selectedComic.id, ch.id, ep.id, selectedComic.moderationStatus) ? (
+                                    <>
+                                      <Clock className="w-3 h-3 animate-pulse" />
+                                      <span>Waiting for Admin Delete</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Trash2 className="w-3 h-3" />
+                                      <span>Request Admin Delete</span>
+                                    </>
+                                  )}
                                 </button>
                               </div>
                             </div>

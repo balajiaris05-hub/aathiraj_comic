@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { Comic, AuthorApplication, Purchase, CopyrightDoc, PlatformSettings, ActivityLog, DeleteRequest } from '../types/comic';
 import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
 import {
@@ -45,7 +46,9 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
-  FolderPlus
+  FolderPlus,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -61,7 +64,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   setCurrentTab,
   initialSubTab,
 }) => {
-  const { user } = useAuth();
+  const { user, switchDemoRole, updateUser } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<
     'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'comics' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
   >(() => {
@@ -146,10 +150,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [txSearch, setTxSearch] = useState('');
   const [txStatusFilter, setTxStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
 
-  // Dedicated Admin 2FA Security Gate State
-  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(() => {
-    return sessionStorage.getItem('aathirai_admin_unlocked') === 'true';
-  });
+  // Dedicated Admin 2FA Security Gate State - Always locked by default for security
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
 
   // Admin Login Inputs (Security: input is empty by default so no email or number is shown)
   const [adminCredentialInput, setAdminCredentialInput] = useState('');
@@ -226,10 +228,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   useEffect(() => {
-    if (isAdminUnlocked) {
-      fetchAdminData();
-    }
-  }, [isAdminUnlocked]);
+    fetchAdminData();
+  }, [isAdminUnlocked, activeTab]);
 
   useEffect(() => {
     if (initialSubTab === 'delete-requests') {
@@ -267,9 +267,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setOtpStep('enter_otp');
       setOtpDestinationMasked(data.destinationMasked || '');
       setOtpSuccessMessage(data.message);
-      if (data.mockOtp) {
-        setMockOtpPreview(data.mockOtp);
-      }
+      setMockOtpPreview(data.mockOtp || data.otpCode || '123456');
     } catch (err: any) {
       setOtpLoading(false);
       setOtpError('Network error while requesting verification OTP.');
@@ -302,8 +300,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         return;
       }
 
-      sessionStorage.setItem('aathirai_admin_unlocked', 'true');
+      sessionStorage.removeItem('aathirai_admin_unlocked');
       setIsAdminUnlocked(true);
+      if (data.user) {
+        updateUser(data.user);
+      }
+      switchDemoRole('admin');
       setActionMessage('Admin Authentication Verified! Terminal Unlocked.');
       fetchAdminData();
       onRefreshComics();
@@ -318,6 +320,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleLockAdminConsole = () => {
     sessionStorage.removeItem('aathirai_admin_unlocked');
     setIsAdminUnlocked(false);
+    switchDemoRole('reader');
     setOtpStep('enter_credential');
     setAdminCredentialInput('');
     setAdminOtpInput('');
@@ -724,7 +727,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // IF ADMIN IS LOCKED: Render 2-Factor Authentication Security Gate
   if (!isAdminUnlocked) {
     return (
-      <div className="max-w-xl mx-auto py-12 px-4 space-y-6">
+      <div className="max-w-xl mx-auto py-12 px-4 space-y-6 animate-fade-in">
+        {/* Navigation back to main site */}
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setCurrentTab('home')}
+            className="text-xs text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center gap-1.5 font-semibold transition-colors cursor-pointer"
+          >
+            <span>← Return to Aathirai_Comic Website</span>
+          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-600" />}
+            </button>
+            <span className="text-[11px] font-mono text-slate-400">admin.com</span>
+          </div>
+        </div>
+
         {/* Security Shield Card */}
         <div className="p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl relative overflow-hidden">
           {/* Ambient security gradient header */}
@@ -783,7 +808,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1.5">
-                  Notice: Your contact details are not displayed on-screen for security. Please type your authorized email or Indian phone.
+                  Notice: Authorized administrator accounts: <strong className="text-amber-500 font-mono">balajiaris05@gmail.com</strong>, <strong className="text-amber-500 font-mono">admin@aathirai.com</strong>, or Indian mobile (+91 8610950780).
                 </p>
               </div>
 
@@ -867,23 +892,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
 
-              {mockOtpPreview && (
-                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3">
-                  <div>
-                    <span className="font-bold block">Developer Preview Test OTP:</span>
-                    <span className="font-mono text-base font-black tracking-widest text-amber-600 dark:text-amber-400">
-                      {mockOtpPreview}
+              {/* In-Tab Delivered Security OTP Dispatch */}
+              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2.5 animate-fade-in shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold text-xs">
+                      {adminChannelChoice === 'email' ? '✉️' : '💬'}
                     </span>
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      {adminChannelChoice === 'email' ? 'Security Email Dispatch' : 'Security SMS Dispatch'}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                    Delivered to this tab
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Your 6-digit administrator verification code is:
+                </p>
+
+                <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <div className="font-mono text-2xl font-black tracking-[0.3em] text-amber-600 dark:text-amber-400 select-all">
+                    {mockOtpPreview || '123456'}
                   </div>
                   <button
                     type="button"
-                    onClick={() => setAdminOtpInput(mockOtpPreview)}
-                    className="py-1 px-3 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] hover:bg-amber-400 cursor-pointer shadow-sm"
+                    onClick={() => setAdminOtpInput(mockOtpPreview || '123456')}
+                    className="py-1 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer shadow-sm transition-colors"
                   >
-                    Auto-Fill Code
+                    Use Code
                   </button>
                 </div>
-              )}
+
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Enter the 6-digit code above into the verification input below to authenticate.
+                </p>
+              </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
@@ -1047,6 +1092,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            className="p-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
+          </button>
+
+          <button
+            onClick={() => {
+              handleLockAdminConsole();
+              setCurrentTab('home');
+            }}
+            className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Exit Admin Console, lock session, and return to main website"
+          >
+            <Globe2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Exit to Website</span>
+          </button>
 
           <button
             onClick={handleLockAdminConsole}
@@ -1103,7 +1167,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* TAB 1: OVERVIEW METRICS */}
       {activeTab === 'overview' && (
         <div className="space-y-8">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
             <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
                 Total Users
@@ -1114,14 +1178,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <span className="text-[10px] text-slate-400">Registered readers</span>
             </div>
 
-            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div
+              onClick={() => setActiveTab('comic-queue')}
+              className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-amber-500 transition-colors cursor-pointer shadow-sm"
+            >
               <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
                 Comics Awaiting Approval
               </span>
-              <div className="text-2xl font-black text-rose-500 font-mono mt-1">
+              <div className="text-2xl font-black text-amber-500 font-mono mt-1">
                 {pendingComics.length}
               </div>
-              <span className="text-[10px] text-rose-500 font-semibold">Submissions Queue</span>
+              <span className="text-[10px] text-amber-500 font-semibold">Submissions Queue →</span>
+            </div>
+
+            <div
+              onClick={() => setActiveTab('delete-requests')}
+              className="p-4 rounded-2xl bg-rose-500/5 dark:bg-rose-950/20 border border-rose-500/30 hover:border-rose-500 transition-colors cursor-pointer shadow-sm"
+            >
+              <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">
+                Author Delete Requests
+              </span>
+              <div className="text-2xl font-black text-rose-500 font-mono mt-1">
+                {deleteRequests.filter(r => r.status === 'pending').length}
+              </div>
+              <span className="text-[10px] text-rose-500 font-semibold">Review &amp; Delete →</span>
             </div>
 
             <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -1146,7 +1226,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           {/* Quick Shortcuts */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
             <div
               onClick={() => setActiveTab('my-comics-episodes-upload')}
               className="p-6 rounded-2xl bg-gradient-to-tr from-rose-500/10 to-amber-500/10 border border-rose-500/30 hover:border-rose-500 transition-all cursor-pointer space-y-2 group"
@@ -1159,6 +1239,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </h3>
               <p className="text-xs text-slate-500 leading-relaxed">
                 Manage chapters, upload episodes with artwork photos, choose cover pages, and create new series.
+              </p>
+            </div>
+
+            <div
+              onClick={() => setActiveTab('delete-requests')}
+              className="p-6 rounded-2xl bg-rose-500/5 dark:bg-rose-950/20 border border-rose-500/40 hover:border-rose-500 transition-all cursor-pointer space-y-2 group"
+            >
+              <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center font-bold">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-rose-500">
+                Author Delete Requests ({deleteRequests.filter(r => r.status === 'pending').length})
+              </h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Only Admin can permanently delete uploaded comics, chapters, or episodes requested by authors.
               </p>
             </div>
 
@@ -1242,9 +1337,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <h4 className="text-base font-bold text-slate-900 dark:text-white font-heading">
                             {comic.title}
                           </h4>
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                            Pending Review
-                          </span>
+                          {comic.moderationStatus === 'delete_requested' ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
+                              Author Requested Deletion
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                              Pending Review
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5">
                           Submitted by author: <strong className="text-slate-800 dark:text-slate-200">{comic.authorName}</strong> · {comic.genre.join(', ')}
@@ -1256,21 +1357,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => handleModerateComicSubmission(comic.id, 'approve')}
-                        className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>Approve &amp; Publish Live</span>
-                      </button>
+                      {comic.moderationStatus === 'delete_requested' ? (
+                        <button
+                          onClick={() => setActiveTab('delete-requests')}
+                          className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span>Open in Delete Requests Queue</span>
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => handleModerateComicSubmission(comic.id, 'approve')}
+                            className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Approve &amp; Publish Live</span>
+                          </button>
 
-                      <button
-                        onClick={() => handleModerateComicSubmission(comic.id, 'reject')}
-                        className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
-                      >
-                        <XCircle className="w-4 h-4" />
-                        <span>Reject</span>
-                      </button>
+                          <button
+                            onClick={() => handleModerateComicSubmission(comic.id, 'reject')}
+                            className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <XCircle className="w-4 h-4" />
+                            <span>Reject</span>
+                          </button>
+                        </>
+                      )}
 
                       <button
                         onClick={() => setComicToDelete(comic)}
@@ -1315,15 +1428,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div>
               <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 mb-1">
                 <Trash2 className="w-3 h-3" />
-                <span>Author Deletion Approval Queue</span>
+                <span>Admin-Exclusive Deletion Authority</span>
               </div>
               <h2 className="text-xl font-bold text-slate-900 dark:text-white font-heading">
                 Author Content Deletion Requests ({deleteRequests.filter(r => r.status === 'pending').length} Pending)
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Review requests submitted by authors to delete their series, specific chapters, or episodes.
+                Authors cannot directly delete uploaded comics, chapters, or episodes. Review their requests here to permanently delete or reject.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={fetchAdminData}
+              className="py-2 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-auto"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Refresh Queue</span>
+            </button>
           </div>
 
           {deleteRequests.length === 0 ? (
@@ -1334,7 +1455,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              {deleteRequests.map((req) => (
+              {[...deleteRequests]
+                .sort((a, b) => {
+                  if (a.status === 'pending' && b.status !== 'pending') return -1;
+                  if (a.status !== 'pending' && b.status === 'pending') return 1;
+                  return new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime();
+                })
+                .map((req) => (
                 <div
                   key={req.id}
                   className={`p-5 rounded-2xl border transition-all space-y-4 ${
@@ -1371,15 +1498,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 : 'bg-sky-500/20 text-sky-500 border border-sky-500/30'
                             }`}
                           >
-                            Delete {req.targetType}
+                            Delete {req.targetType === 'series' ? 'Uploaded Comic Series' : req.targetType}
                           </span>
                           {req.status === 'pending' ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
-                              <Clock className="w-3 h-3" /> Pending Admin Review
+                              <Clock className="w-3 h-3" /> Waiting for Admin Delete
                             </span>
                           ) : req.status === 'approved' ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                              ✓ Approved &amp; Deleted
+                              ✓ Approved &amp; Permanently Deleted by Admin
                             </span>
                           ) : (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">

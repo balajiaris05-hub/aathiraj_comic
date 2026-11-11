@@ -26,7 +26,8 @@ import {
   X,
   Sparkles,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  AlertTriangle
 } from 'lucide-react';
 
 interface AdminPublishingStudioProps {
@@ -121,6 +122,21 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
   const [modalSelectedChapterId, setModalSelectedChapterId] = useState<string>('');
   const [modalSelectedEpisodeId, setModalSelectedEpisodeId] = useState<string>('');
   const [isDeletingItem, setIsDeletingItem] = useState(false);
+
+  // Warning Confirmation Popup Modal State
+  interface DeleteWarningTarget {
+    type: 'episode' | 'chapter' | 'series';
+    comicId: string;
+    comicTitle: string;
+    chapterId?: string;
+    chapterTitle?: string;
+    episodeId?: string;
+    episodeTitle?: string;
+    pageCount?: number;
+    episodesCount?: number;
+  }
+  const [deleteWarningTarget, setDeleteWarningTarget] = useState<DeleteWarningTarget | null>(null);
+  const [isDeletingWarningItem, setIsDeletingWarningItem] = useState(false);
 
   // Feedback State
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
@@ -387,23 +403,112 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
     }
   };
 
-  // Delete Chapter
-  const handleDeleteChapter = async (chapId: string) => {
+  // Warning Trigger Handlers
+  const triggerDeleteChapterWarning = (chapId: string) => {
     if (!selectedComic) return;
-    if (!confirm('⚠️ Are you sure you want to delete this chapter and all its episodes permanently?')) return;
+    const ch = selectedComic.chapters.find(c => c.id === chapId);
+    setDeleteWarningTarget({
+      type: 'chapter',
+      comicId: selectedComic.id,
+      comicTitle: selectedComic.title,
+      chapterId: chapId,
+      chapterTitle: ch ? `Chapter ${ch.chapterNumber}: ${ch.title}` : 'Selected Chapter',
+      episodesCount: ch?.episodes?.length || 0,
+    });
+  };
+
+  const triggerDeleteEpisodeWarning = (chapId: string, epId: string) => {
+    if (!selectedComic) return;
+    const ch = selectedComic.chapters.find(c => c.id === chapId);
+    const ep = ch?.episodes.find(e => e.id === epId);
+    setDeleteWarningTarget({
+      type: 'episode',
+      comicId: selectedComic.id,
+      comicTitle: selectedComic.title,
+      chapterId: chapId,
+      chapterTitle: ch ? `Chapter ${ch.chapterNumber}: ${ch.title}` : 'Selected Chapter',
+      episodeId: epId,
+      episodeTitle: ep ? `Episode ${ep.episodeNumber}: ${ep.title}` : 'Selected Episode',
+      pageCount: ep?.pages?.length || 0,
+    });
+  };
+
+  const triggerDeleteSeriesWarning = () => {
+    if (!selectedComic) return;
+    const totalEps = selectedComic.chapters.reduce((acc, c) => acc + (c.episodes?.length || 0), 0);
+    setDeleteWarningTarget({
+      type: 'series',
+      comicId: selectedComic.id,
+      comicTitle: selectedComic.title,
+      episodesCount: totalEps,
+    });
+  };
+
+  // Unified Deletion Execution Handler (Triggered after user confirms in Warning Popup)
+  const handleExecuteConfirmedDelete = async () => {
+    if (!deleteWarningTarget) return;
+    setIsDeletingWarningItem(true);
+    const target = deleteWarningTarget;
 
     try {
-      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        onRefreshComics();
-        if (fetchAdminData) fetchAdminData();
-        showToast('Chapter deleted.');
+      if (target.type === 'episode' && target.chapterId && target.episodeId) {
+        const res = await fetch(
+          `/api/comics/${target.comicId}/chapters/${target.chapterId}/episodes/${target.episodeId}?authorId=${user?.id || 'usr_admin'}&authorName=${encodeURIComponent(user?.name || 'Administrator')}`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) {
+          setIsDeleteModalOpen(false);
+          onRefreshComics();
+          if (fetchAdminData) fetchAdminData();
+          showToast(`Deleted ${target.episodeTitle || 'episode'} successfully.`);
+          setDeleteWarningTarget(null);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          showToast(errData.error || 'Failed to delete episode');
+        }
+      } else if (target.type === 'chapter' && target.chapterId) {
+        const res = await fetch(
+          `/api/comics/${target.comicId}/chapters/${target.chapterId}?authorId=${user?.id || 'usr_admin'}&authorName=${encodeURIComponent(user?.name || 'Administrator')}`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) {
+          setIsDeleteModalOpen(false);
+          onRefreshComics();
+          if (fetchAdminData) fetchAdminData();
+          showToast(`Deleted ${target.chapterTitle || 'chapter'} successfully.`);
+          setDeleteWarningTarget(null);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          showToast(errData.error || 'Failed to delete chapter');
+        }
+      } else if (target.type === 'series') {
+        const res = await fetch(
+          `/api/comics/${target.comicId}?authorId=${user?.id || 'usr_admin'}&authorName=${encodeURIComponent(user?.name || 'Administrator')}`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) {
+          setIsDeleteModalOpen(false);
+          onRefreshComics();
+          if (fetchAdminData) fetchAdminData();
+          setSelectedComic(null);
+          showToast(`Comic series "${target.comicTitle}" was permanently deleted.`);
+          setDeleteWarningTarget(null);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          showToast(errData.error || 'Failed to delete comic series');
+        }
       }
     } catch (err) {
-      console.error(err);
+      console.error('Delete execution error:', err);
+      showToast('An error occurred during deletion.');
+    } finally {
+      setIsDeletingWarningItem(false);
     }
+  };
+
+  // Delete Chapter (Triggers custom warning popup)
+  const handleDeleteChapter = async (chapId: string) => {
+    triggerDeleteChapterWarning(chapId);
   };
 
   // Edit Comic Initiation
@@ -486,8 +591,8 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
           synopsis: editEpisodeSynopsis.trim(),
           isPremium: editEpisodeIsPremium,
           priceInr: editEpisodeIsPremium ? editEpisodePrice : 0,
-          authorId: user?.id,
-          authorName: user?.name,
+          authorId: user?.id || 'usr_admin',
+          authorName: user?.name || 'Administrator',
         }),
       });
 
@@ -504,47 +609,14 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
     }
   };
 
-  // Delete Episode
+  // Delete Episode (Triggers custom warning popup)
   const handleDeleteEpisode = async (chapId: string, epId: string) => {
-    if (!selectedComic) return;
-    if (!confirm('⚠️ Are you sure you want to permanently delete this episode?')) return;
-
-    try {
-      const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}/episodes/${epId}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        onRefreshComics();
-        if (fetchAdminData) fetchAdminData();
-        showToast('Episode deleted successfully.');
-      }
-    } catch (err) {
-      console.error(err);
-    }
+    triggerDeleteEpisodeWarning(chapId, epId);
   };
 
-  // Delete Entire Comic Series directly (Admin has master privileges)
+  // Delete Entire Comic Series directly (Triggers custom warning popup)
   const handleDirectDeleteComicSeries = async () => {
-    if (!selectedComic) return;
-    if (!confirm(`⚠️ CRITICAL: Permanently delete "${selectedComic.title}" and ALL its chapters/episodes?`)) return;
-
-    setIsDeletingItem(true);
-    try {
-      const res = await fetch(`/api/comics/${selectedComic.id}`, {
-        method: 'DELETE',
-      });
-      setIsDeletingItem(false);
-      if (res.ok) {
-        setIsDeleteModalOpen(false);
-        onRefreshComics();
-        if (fetchAdminData) fetchAdminData();
-        setSelectedComic(null);
-        showToast(`Comic series was permanently deleted.`);
-      }
-    } catch (err) {
-      setIsDeletingItem(false);
-      console.error(err);
-    }
+    triggerDeleteSeriesWarning();
   };
 
   // Open Live Reader Preview
@@ -714,6 +786,143 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
         </div>
       )}
 
+      {/* MODAL 1.5: EDIT EPISODE DETAILS */}
+      {editingEpisode && selectedComic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-lg p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Edit3 className="w-5 h-5 text-rose-500" />
+                <h3 className="font-extrabold text-slate-900 dark:text-white text-base font-heading">
+                  Edit Episode {editingEpisode.episodeNumber}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingEpisode(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEpisodeEdit} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Episode Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editEpisodeTitle}
+                  onChange={(e) => setEditEpisodeTitle(e.target.value)}
+                  placeholder="e.g. Episode 1: The New Horizon"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Episode Synopsis / Description
+                </label>
+                <textarea
+                  rows={3}
+                  value={editEpisodeSynopsis}
+                  onChange={(e) => setEditEpisodeSynopsis(e.target.value)}
+                  placeholder="Optional brief description of what happens in this episode..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    Access Model
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditEpisodeIsPremium(false)}
+                      className={`flex-1 py-2 px-3 rounded-xl font-bold border transition-all cursor-pointer ${
+                        !editEpisodeIsPremium
+                          ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                          : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      Free
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditEpisodeIsPremium(true)}
+                      className={`flex-1 py-2 px-3 rounded-xl font-bold border transition-all cursor-pointer ${
+                        editEpisodeIsPremium
+                          ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
+                          : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      Premium
+                    </button>
+                  </div>
+                </div>
+
+                {editEpisodeIsPremium && (
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Episode Unlock Price (₹ INR)
+                    </label>
+                    <div className="relative">
+                      <IndianRupee className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        required
+                        value={editEpisodePrice}
+                        onChange={(e) => setEditEpisodePrice(Number(e.target.value))}
+                        className="w-full pl-8 pr-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Episode summary info */}
+              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 flex items-center justify-between text-[11px]">
+                <span>Attached Pages: <strong className="text-slate-900 dark:text-white">{editingEpisode.pages?.length || 0} pages</strong></span>
+                <span>Parent Comic: <strong className="text-slate-900 dark:text-white">{selectedComic.title}</strong></span>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingEpisode(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdatingEpisode}
+                  className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isUpdatingEpisode ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Save Episode</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* MODAL 2: DELETE CONTENT MANAGER */}
       {isDeleteModalOpen && selectedComic && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
@@ -828,9 +1037,8 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                   <button
                     type="button"
                     disabled={!modalSelectedChapterId || !modalSelectedEpisodeId}
-                    onClick={async () => {
-                      await handleDeleteEpisode(modalSelectedChapterId, modalSelectedEpisodeId);
-                      setIsDeleteModalOpen(false);
+                    onClick={() => {
+                      triggerDeleteEpisodeWarning(modalSelectedChapterId, modalSelectedEpisodeId);
                     }}
                     className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50"
                   >
@@ -874,9 +1082,8 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                   <button
                     type="button"
                     disabled={!modalSelectedChapterId}
-                    onClick={async () => {
-                      await handleDeleteChapter(modalSelectedChapterId);
-                      setIsDeleteModalOpen(false);
+                    onClick={() => {
+                      triggerDeleteChapterWarning(modalSelectedChapterId);
                     }}
                     className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50"
                   >
@@ -895,17 +1102,144 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                 <button
                   type="button"
                   disabled={isDeletingItem}
-                  onClick={handleDirectDeleteComicSeries}
+                  onClick={triggerDeleteSeriesWarning}
                   className="w-full p-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold flex items-center justify-between shadow-md cursor-pointer"
                 >
                   <div className="flex items-center gap-2">
                     <Trash2 className="w-4 h-4" />
-                    <span>Confirm Delete Entire Comic Series</span>
+                    <span>Delete Entire Comic Series</span>
                   </div>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2.5: WARNING CONFIRMATION POPUP MODAL */}
+      {deleteWarningTarget && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border-2 border-rose-500/70 shadow-2xl overflow-hidden animate-scale-in">
+            {/* Warning Header */}
+            <div className="bg-rose-500/10 dark:bg-rose-500/20 px-6 py-5 border-b border-rose-500/30 flex items-start gap-3">
+              <div className="p-2.5 rounded-2xl bg-rose-500 text-white shrink-0 shadow-lg shadow-rose-500/30">
+                <AlertTriangle className="w-6 h-6 animate-pulse" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-black text-rose-600 dark:text-rose-400 font-heading">
+                  Confirm Permanent Deletion
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 font-medium">
+                  {deleteWarningTarget.type === 'series'
+                    ? 'Permanently delete this entire comic series?'
+                    : deleteWarningTarget.type === 'chapter'
+                    ? 'Permanently delete this chapter and all its episodes?'
+                    : 'Permanently delete this episode?'}
+                </p>
+              </div>
+            </div>
+
+            {/* Target Details */}
+            <div className="p-6 space-y-4">
+              <div className="p-4 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 space-y-2">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  <span>Target Item:</span>
+                  <span className="uppercase tracking-wider font-extrabold text-rose-500 text-[10px] bg-rose-500/10 dark:bg-rose-500/20 px-2.5 py-0.5 rounded-full border border-rose-500/30">
+                    {deleteWarningTarget.type}
+                  </span>
+                </div>
+
+                <div className="text-sm font-extrabold text-slate-900 dark:text-white">
+                  {deleteWarningTarget.type === 'episode' && (
+                    <>
+                      <p className="text-slate-900 dark:text-white text-base font-black">
+                        {deleteWarningTarget.episodeTitle}
+                      </p>
+                      <p className="text-xs font-normal text-slate-500 dark:text-slate-400 mt-1">
+                        From: <span className="font-semibold text-slate-700 dark:text-slate-300">{deleteWarningTarget.chapterTitle}</span>
+                      </p>
+                      <p className="text-xs font-normal text-slate-500 dark:text-slate-400">
+                        Comic: <span className="font-semibold text-slate-700 dark:text-slate-300">{deleteWarningTarget.comicTitle}</span>
+                      </p>
+                      {deleteWarningTarget.pageCount !== undefined && (
+                        <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-1.5">
+                          <span>📸</span>
+                          <span>{deleteWarningTarget.pageCount} page(s) attached</span>
+                        </p>
+                      )}
+                    </>
+                  )}
+
+                  {deleteWarningTarget.type === 'chapter' && (
+                    <>
+                      <p className="text-slate-900 dark:text-white text-base font-black">
+                        {deleteWarningTarget.chapterTitle}
+                      </p>
+                      <p className="text-xs font-normal text-slate-500 dark:text-slate-400 mt-1">
+                        Series: <span className="font-semibold text-slate-700 dark:text-slate-300">{deleteWarningTarget.comicTitle}</span>
+                      </p>
+                      {deleteWarningTarget.episodesCount !== undefined && (
+                        <p className="text-[11px] font-mono text-amber-500 dark:text-amber-400 mt-1.5">
+                          ⚠️ Contains {deleteWarningTarget.episodesCount} episode(s) which will also be erased
+                        </p>
+                      )}
+                    </>
+                  )}
+
+                  {deleteWarningTarget.type === 'series' && (
+                    <>
+                      <p className="text-slate-900 dark:text-white text-base font-black">
+                        {deleteWarningTarget.comicTitle}
+                      </p>
+                      {deleteWarningTarget.episodesCount !== undefined && (
+                        <p className="text-[11px] font-mono text-rose-500 dark:text-rose-400 mt-1.5">
+                          ⚠️ Contains {deleteWarningTarget.episodesCount} total episode(s) and all chapters
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Warning Notice */}
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5">
+                <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-700 dark:text-amber-300 leading-relaxed font-medium">
+                  <strong>Warning:</strong> This action cannot be undone. All pages, database records, and bookmarks associated with this item will be removed permanently.
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={isDeletingWarningItem}
+                  onClick={() => setDeleteWarningTarget(null)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingWarningItem}
+                  onClick={handleExecuteConfirmedDelete}
+                  className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white text-xs font-black flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isDeletingWarningItem ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Yes, Permanently Delete</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1170,7 +1504,18 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setIsDeleteModalOpen(true)}
+                      onClick={() => {
+                        if (selectedComic && selectedComic.chapters.length > 0) {
+                          const firstChap = selectedComic.chapters[0];
+                          setModalSelectedChapterId(firstChap.id);
+                          if (firstChap.episodes.length > 0) {
+                            setModalSelectedEpisodeId(firstChap.episodes[0].id);
+                          } else {
+                            setModalSelectedEpisodeId('');
+                          }
+                        }
+                        setIsDeleteModalOpen(true);
+                      }}
                       className="py-2 px-3 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center gap-1.5 transition-all cursor-pointer border border-rose-500/30"
                       title="Delete chapter, episode, or full series"
                     >

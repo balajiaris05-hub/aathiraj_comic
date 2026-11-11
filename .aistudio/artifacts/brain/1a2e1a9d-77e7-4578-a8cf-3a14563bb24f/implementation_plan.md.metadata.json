@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to bring the Author Publishing Studio's 'My Comics & Chapters', 'Upload Episode', and 'Upload New Comic' functionality into the Admin Dashboard as a unified 'My Comic & Episode / Upload New Comic' tab placed directly next to Overview Metrics.",
-  "updatedAt":  "2026-11-11T00:39:54.355343503Z",
+  "summary":  "Implementation plan to fix the Edit Episode button in Admin Publishing Studio and make Author Deletion Requests (series, chapter, episode) completely functional and visible in the Admin Portal.",
+  "updatedAt":  "2026-11-11T02:02:13.835105652Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

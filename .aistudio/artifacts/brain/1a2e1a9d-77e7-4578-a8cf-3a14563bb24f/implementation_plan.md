@@ -1,102 +1,78 @@
-# Implement "My Comic & Episode / Upload New Comic" Studio in Admin Portal
+# Implementation Plan: Fix Edit Episode Button & Author Deletion Requests Queue
 
-Port the complete comic series management, chapter & episode breakdown, multi-photo page attachments, cover page selector, and new comic creation studio from the Author Publishing Studio into a dedicated tab in the Platform Administration Console.
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The new tab **"My Comic & Episode / Upload New Comic"** will be positioned directly adjacent to **Overview Metrics** in the Admin console navigation. It brings the full, battle-tested publishing suite from the Author Studio to administrators with full direct publishing privileges (bypassing approval queues).
-
-- **Tab Position & Name**: Positioned directly next to Overview Metrics with label: `My Comic & Episode / Upload New Comic`.
-- **Integrated Dual Sub-Modes**:
-  1. **My Comics & Episodes**: Full series list, chapter hierarchy, inline chapter/episode editing, direct multi-photo episode page uploader, cover page picker, and interactive live reader preview modal.
-  2. **Upload New Comic**: Full new comic series creator with metadata, genre selection, pricing controls, multi-photo manuscript upload, and cover page selection from attached artwork.
-- **Direct Admin Publishing**: When admin creates a comic or publishes an episode through this studio, it is immediately marked as approved and live for readers.
+Fix the non-working **Edit Episode** button in the Admin Publishing Studio and resolve the issue where **Author Deletion Requests** (series, chapter, and episode) fail to submit or display in the Admin Portal's Delete Requests tab.
 
 ---
 
-## 1. Overview & Core Concept
+## 1. Problem Diagnosis & Root Causes
 
-- **What It Does**: Enables administrators to directly manage all comic series, chapters, and episodes, attach multiple page photos, choose custom episode covers from uploaded artwork, preview episodes in vertical or page-by-page reader mode, and publish new comic titles directly from the Admin console.
-- **Target Audience**: Platform administrators managing editorial releases and original platform publications.
+1. **Edit Episode Button Ineffective (CSS Selector 1)**:
+   - In `src/components/AdminPublishingStudio.tsx`, clicking the Edit Episode button (`button:nth-of-type(1)` with `<Edit3>`) invokes `handleStartEditEpisode(ep, ch.id)`.
+   - While state values (`editingEpisode`, `editEpisodeTitle`, `editEpisodeSynopsis`, `editEpisodeIsPremium`, `editEpisodePrice`) are set, **no modal or UI is rendered for `editingEpisode` in the JSX**. As a result, clicking the button produces no visual feedback or editable interface.
 
----
-
-## 2. User Experience & Visual Design
-
-### Tab Placement & Controls
-- **Sub-Navigation**: Added right next to "Overview Metrics":
-  ```
-  [Overview Metrics] [My Comic & Episode / Upload New Comic] [Comic Approvals Queue] ...
-  ```
-- **Studio Sub-Switcher**: Toggle within the tab to seamlessly switch between:
-  - 📚 **My Comics & Episodes Breakdown**
-  - ✨ **Upload New Comic Series**
-
-### Key User Flows in "My Comics & Episodes"
-1. **Series Sidebar**: Browse all platform comics with cover art, status badge, chapter count, view counts, and rating metrics. Click any comic to activate it.
-2. **Series Control Bar**: View selected comic title, status, and attached manuscript info. Actions:
-   - ✏️ **Edit Comic Details**: Modal to update title, premise, genre tags, and pricing.
-   - 🗑️ **Delete Manager**: Modal to delete an episode, a chapter, or the whole series.
-3. **Chapter & Episode Hierarchy**:
-   - Quick "Add Chapter" form.
-   - Per-chapter listing with episode count and inline title editing.
-   - Inline episode editing (title, synopsis, premium toggle, price).
-4. **Episode & Page Upload Section**:
-   - Target Chapter dropdown.
-   - Episode Title & Synopsis inputs.
-   - Premium episode toggle and INR pricing.
-   - Multi-photo upload dropzone supporting 50+ comic artwork photos.
-   - **Interactive Cover Page Picker**: Select any uploaded page to serve as the episode thumbnail.
-   - Page re-ordering (Move Earlier / Move Later) and per-page deletion.
-   - **Live Reader Preview Modal**: Preview before publishing with vertical webtoon scroll or page-by-page flip mode, zoom levels, and thumbnail navigation drawer.
-   - **Publish Directly Button**: Instantly publishes the episode live to readers.
-
-### Key User Flows in "Upload New Comic"
-1. Input Series Title, Description, and Genre tags.
-2. Select Access Type (100% Free vs Premium with full price & per-episode pricing).
-3. Attach multiple high-resolution comic pages via dropzone.
-4. Select the cover page directly from uploaded images.
-5. Create comic: Instantly saved and live on the website catalog.
+2. **Author Deletion Requests Not Reaching Admin (CSS Selector 2)**:
+   - In `src/pages/AuthorDashboard.tsx`, functions `handleSubmitDeleteRequestToAdmin` and `handleSendEpisodeDeleteRequest` rely on `window.prompt(...)` to capture the deletion reason.
+   - In browser iframe sandboxes, `window.prompt` is blocked or returns `null`, aborting `if (note === null) return;` before calling `POST /api/author/comics/request-delete`.
+   - In addition, there was no dedicated UI modal for authors to confirm and type deletion request reasons for chapters and series.
+   - In `server.ts`, the `deleteRequests` collection starts empty with no initial seed requests, meaning the Admin Portal had no sample requests to review.
 
 ---
 
-## 3. Technical Architecture & Implementation Steps
+## 2. Proposed Changes
 
-```
-┌────────────────────────────────────────────────────────┐
-│                   Admin Dashboard                      │
-│        (src/pages/AdminDashboard.tsx)                  │
-└──────────────────────────┬─────────────────────────────┘
-                           │
-    ┌──────────────────────┴──────────────────────┐
-    ▼                                             ▼
-[Tab Navigation]                          [Active Studio View]
- - Overview Metrics                         ├─ Mode 1: Comics & Episodes
- - My Comic & Episode / Upload New Comic ───┤   • Comic Sidebar List
- - Comic Approvals Queue                    │   • Chapter/Episode Hierarchy
- - Delete Requests                          │   • Episode Multi-Page Upload
- - Paywall & Catalog                        │   • Cover Selection Grid
-                                            │   • Live Reader Preview Modal
-                                            └─ Mode 2: Upload New Comic
-                                                • Series Form & Metadata
-                                                • Page Attachment Dropzone
-                                                • Cover Page Picker
-                                                • Direct Publish Action
-```
+### Component 1: `src/components/AdminPublishingStudio.tsx`
+- **Render Dedicated Edit Episode Modal**:
+  - Implement a popup modal when `editingEpisode !== null`.
+  - Fields included:
+    - **Episode Title** (text input with auto-focus).
+    - **Episode Synopsis** (textarea).
+    - **Access Model**: Toggle between **Free** and **Premium**.
+    - **Episode Price (₹ INR)**: Visible and editable when marked Premium.
+    - Attached pages count preview & cover thumbnail.
+    - **Buttons**: "Cancel" (`setEditingEpisode(null)`) and "Save Changes" (`handleSaveEpisodeEdit`).
+  - Wire to `handleSaveEpisodeEdit` which sends `PUT /api/comics/:comicId/chapters/:chapId/episodes/:epId`, triggers `onRefreshComics()`, `fetchAdminData()`, and displays a toast confirmation.
 
-### Execution Steps
-1. **State Integration in `AdminDashboard.tsx`**:
-   - Add tab ID `'my-comics-episodes-upload'` to `activeTab` union.
-   - Port all needed state hooks from `AuthorDashboard.tsx` (selected comic, episode attached pages, cover page selection, editing modals, live preview modal state).
-2. **Handlers & Endpoints**:
-   - Use `/api/comics` for series creation and updates.
-   - Use `/api/comics/:id/chapters` for chapter additions and edits.
-   - Use `/api/comics/:comicId/chapters/:chapId/episodes` for multi-page episode publishing.
-   - Connect live refresh (`onRefreshComics()` & `fetchAdminData()`).
-3. **Template & UI Layout**:
-   - Place the tab button immediately after "Overview Metrics".
-   - Render the complete Author Studio layout with dual mode toggle.
-   - Include both supporting modals: Edit Comic Modal and Live Reader Preview Modal.
-4. **Build & Lint Verification**:
-   - Execute `compile_applet` and `lint_applet` together to verify zero syntax and type errors.
+### Component 2: `src/pages/AuthorDashboard.tsx`
+- **Replace Blocked `prompt()` with In-App Deletion Request Modal**:
+  - Introduce an interactive modal state `authorDeleteRequestTarget: { type: 'series' | 'chapter' | 'episode'; comicId: string; comicTitle: string; chapterId?: string; chapterTitle?: string; episodeId?: string; episodeTitle?: string } | null`.
+  - Add an input for optional author notes/reasons directly in the modal.
+  - Add "Send Request to Admin" button next to chapters in the chapter header so authors can request chapter deletion without relying on prompt.
+  - Successfully submitting sends `POST /api/author/comics/request-delete`, updates comic status to `delete_requested`, updates author feedback banner, and triggers `onRefreshComics()`.
+
+### Backend: `server.ts`
+- **Seed Initial Pending Author Deletion Requests**:
+  - Seed initial pending requests for series, chapter, and episode in `server.ts` so the Admin Portal's Delete Requests tab (`button:nth-of-type(4)`) immediately displays actionable items.
+  - Ensure `GET /api/admin/delete-requests` correctly synchronizes any comics with `moderationStatus === 'delete_requested'`.
+  - Ensure `POST /api/admin/delete-requests/:id/action` correctly handles `approve` (executes deletion) and `reject` with logging.
+
+### Component 3: `src/pages/AdminDashboard.tsx`
+- **Refine Delete Requests Tab (CSS Selector 2)**:
+  - Ensure the tab badge correctly reflects pending delete requests.
+  - Provide clear action cards with comic covers, target type chips (Series, Chapter, Episode), author info, submission time, reason, and one-click "Approve & Execute Deletion" and "Reject Request" actions.
+  - Immediately refresh admin metrics and catalogue on approval/rejection.
+
+---
+
+## 3. Verification Plan
+
+1. **Edit Episode Modal**:
+   - Go to Admin Publishing Studio (`My Comic & Episode / Upload New Comic`).
+   - Select any comic and expand a chapter.
+   - Click the pencil icon (`Edit Episode`) on an episode.
+   - Verify the Edit Episode modal appears with title, synopsis, and price fields.
+   - Edit the title, toggle to Free/Premium, click Save, and verify the episode updates in the UI and server.
+
+2. **Author Deletion Request Flow**:
+   - As an author in Author Dashboard, select a comic, chapter, or episode and click "Request Admin Delete".
+   - Verify the in-app modal opens without browser `prompt()` blocking.
+   - Submit the deletion request with a note.
+   - Verify the submission feedback banner appears.
+
+3. **Admin Delete Requests Tab**:
+   - Switch to Admin Dashboard and click the **🗑️ Delete Requests** tab (`button:nth-of-type(4)`).
+   - Verify all pending requests (series, chapter, episode) are displayed with full details.
+   - Click "Approve & Execute Deletion" on an item and verify it is permanently deleted from the database and removed from the queue.
+   - Click "Reject Request" and verify the item status updates to rejected.
+
+4. **Applet Compilation & Linting**:
+   - Run `compile_applet` and `lint_applet` to verify clean build with zero TypeScript or ESLint errors.

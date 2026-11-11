@@ -109,13 +109,15 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
                     <span>Author (Rajesh)</span>
                     <PenTool className="w-3 h-3 text-emerald-500" />
                   </button>
-                  <button
-                    onClick={() => { switchDemoRole('admin'); setRoleDropdownOpen(false); }}
-                    className={`w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between ${role === 'admin' ? 'text-rose-600 font-bold' : 'text-slate-700 dark:text-slate-300'}`}
-                  >
-                    <span>Administrator</span>
-                    <Shield className="w-3 h-3 text-amber-500" />
-                  </button>
+                  {role === 'admin' && (
+                    <button
+                      onClick={() => { switchDemoRole('admin'); setRoleDropdownOpen(false); }}
+                      className={`w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between ${role === 'admin' ? 'text-rose-600 font-bold' : 'text-slate-700 dark:text-slate-300'}`}
+                    >
+                      <span>Administrator</span>
+                      <Shield className="w-3 h-3 text-amber-500" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -172,22 +174,6 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
               </button>
             )}
 
-            {role === 'admin' && (
-              <button
-                onClick={() => setCurrentTab('admin_dashboard')}
-                className={`flex items-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-semibold transition-colors ${
-                  currentTab === 'admin_dashboard'
-                    ? 'bg-amber-600 text-white'
-                    : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800 hover:bg-amber-100'
-                }`}
-                title="Restricted Admin Portal (2FA Verification)"
-              >
-                <Shield className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Admin Portal</span>
-                <span className="text-[10px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono font-bold">2FA</span>
-              </button>
-            )}
-
             {/* Theme Toggle Button */}
             <button
               onClick={toggleTheme}
@@ -233,14 +219,6 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
               className="w-full text-left py-2 px-3 rounded-md text-sm font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 flex items-center gap-2"
             >
               <PenTool className="w-4 h-4" /> Author Studio
-            </button>
-          )}
-          {role === 'admin' && (
-            <button
-              onClick={() => { setCurrentTab('admin_dashboard'); setMobileMenuOpen(false); }}
-              className="w-full text-left py-2 px-3 rounded-md text-sm font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 flex items-center gap-2"
-            >
-              <Shield className="w-4 h-4" /> Admin Dashboard
             </button>
           )}
         </div>
