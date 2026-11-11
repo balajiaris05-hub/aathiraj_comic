@@ -1807,6 +1807,63 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                   </form>
                 </div>
 
+                {/* Author Submitted Delete Requests Status Banner */}
+                {authorDeleteRequests.filter(r => r.comicId === selectedComic.id || r.status === 'pending').length > 0 && (
+                  <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/30 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-amber-500" />
+                        <span className="text-xs font-extrabold text-slate-900 dark:text-white uppercase tracking-wider">
+                          Submitted Delete Requests Sent to Admin ({authorDeleteRequests.filter(r => r.status === 'pending').length} Waiting for Admin)
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                        Synced with Admin Portal
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {authorDeleteRequests
+                        .filter(r => r.comicId === selectedComic.id || r.status === 'pending')
+                        .map((req) => (
+                          <div
+                            key={req.id}
+                            className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-500/15 text-rose-500 border border-rose-500/30">
+                                {req.targetType}
+                              </span>
+                              <span className="font-bold text-slate-900 dark:text-white">
+                                {req.comicTitle}
+                              </span>
+                              {req.chapterTitle && (
+                                <span className="text-slate-500">· {req.chapterTitle}</span>
+                              )}
+                              {req.episodeTitle && (
+                                <span className="text-rose-500 font-semibold">· {req.episodeTitle}</span>
+                              )}
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                req.status === 'pending'
+                                  ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30'
+                                  : req.status === 'approved'
+                                  ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
+                                  : 'bg-rose-500/15 text-rose-500 border border-rose-500/30'
+                              }`}
+                            >
+                              {req.status === 'pending'
+                                ? '⏳ Waiting for Admin Delete'
+                                : req.status === 'approved'
+                                ? '✓ Deleted by Admin'
+                                : '✕ Rejected by Admin'}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Existing Chapters & Episodes List with Direct Upload Buttons & Edit Controls */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">

@@ -179,12 +179,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Fetch all admin data (including pending comics and delete requests)
   const fetchAdminData = async () => {
     // Helper to safely fetch and set data
-    const safeFetch = async (url: string, setter: (data: any) => void, key?: string) => {
+    const safeFetch = async (url: string, setter: (data: any) => void) => {
       try {
         const res = await fetch(url);
         if (res.ok) {
           const d = await res.json();
-          setter(key ? d[key] : d);
+          setter(d);
         }
       } catch (e) {
         console.error(`Error fetching ${url}:`, e);
@@ -193,15 +193,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
     await Promise.all([
       safeFetch('/api/admin/stats', setStats),
-      safeFetch('/api/admin/authors', (d) => setApplications(d.applications || []), 'applications'),
-      safeFetch('/api/admin/transactions', (d) => setTransactions(d.transactions || []), 'transactions'),
-      safeFetch('/api/admin/copyright', (d) => setCopyrightDocs(d.copyrightDocs || []), 'copyrightDocs'),
-      safeFetch('/api/admin/settings', (d) => setSettings(d.settings), 'settings'),
-      safeFetch('/api/admin/logs', (d) => setActivityLogs(d.logs || []), 'logs'),
-      safeFetch('/api/admin/comments', (d) => setAllComments(d.comments || []), 'comments'),
-      safeFetch('/api/admin/ratings', (d) => setAllRatings(d.ratings || []), 'ratings'),
-      safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(d.comics || []), 'comics'),
-      safeFetch('/api/admin/delete-requests', (d) => setDeleteRequests(d.deleteRequests || []), 'deleteRequests'),
+      safeFetch('/api/admin/authors', (d) => setApplications(Array.isArray(d) ? d : (d.applications || []))),
+      safeFetch('/api/admin/transactions', (d) => setTransactions(Array.isArray(d) ? d : (d.transactions || []))),
+      safeFetch('/api/admin/copyright', (d) => setCopyrightDocs(Array.isArray(d) ? d : (d.copyrightDocs || []))),
+      safeFetch('/api/admin/settings', (d) => setSettings(d.settings || d)),
+      safeFetch('/api/admin/logs', (d) => setActivityLogs(Array.isArray(d) ? d : (d.logs || []))),
+      safeFetch('/api/admin/comments', (d) => setAllComments(Array.isArray(d) ? d : (d.comments || []))),
+      safeFetch('/api/admin/ratings', (d) => setAllRatings(Array.isArray(d) ? d : (d.ratings || []))),
+      safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(Array.isArray(d) ? d : (d.comics || []))),
+      safeFetch('/api/admin/delete-requests', (d) => setDeleteRequests(Array.isArray(d) ? d : (d.deleteRequests || []))),
     ]);
   };
 
@@ -1286,6 +1286,119 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 Put any comic, chapter, or episode behind paywalls (or toggle back to 100% Free) at any time.
               </p>
             </div>
+          </div>
+
+          {/* Live Author Delete Requests Feed on Overview Screen */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-rose-500/30 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 mb-1">
+                  <Trash2 className="w-3 h-3" />
+                  <span>Author Delete Requests Queue ({deleteRequests.filter(r => r.status === 'pending').length} Pending)</span>
+                </div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                  Pending Author Deletion Requests (Admin Approval Required)
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Authors cannot delete uploaded comics, chapters, or episodes directly. Approve below to permanently remove from the platform.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={fetchAdminData}
+                  className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Refresh</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('delete-requests')}
+                  className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Open Full Delete Queue ({deleteRequests.filter(r => r.status === 'pending').length})
+                </button>
+              </div>
+            </div>
+
+            {deleteRequests.filter(r => r.status === 'pending').length === 0 ? (
+              <div className="p-6 text-center rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <p className="text-xs text-slate-500 font-semibold">No pending author deletion requests right now.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {deleteRequests
+                  .filter(r => r.status === 'pending')
+                  .map((req) => (
+                    <div
+                      key={req.id}
+                      className="p-4 rounded-xl bg-rose-50/30 dark:bg-rose-950/15 border border-rose-500/30 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        {req.comicCover ? (
+                          <img
+                            src={req.comicCover}
+                            alt={req.comicTitle}
+                            className="w-12 h-16 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-800"
+                          />
+                        ) : (
+                          <div className="w-12 h-16 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-rose-500 shrink-0">
+                            <Trash2 className="w-5 h-5" />
+                          </div>
+                        )}
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-extrabold text-sm text-slate-900 dark:text-white font-heading">
+                              {req.comicTitle}
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-500/20 text-rose-500 border border-rose-500/30">
+                              Delete {req.targetType === 'series' ? 'Uploaded Comic Series' : req.targetType}
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> Requested by {req.authorName}
+                            </span>
+                          </div>
+                          {req.targetType === 'chapter' && req.chapterTitle && (
+                            <div className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                              Target Chapter: {req.chapterTitle}
+                            </div>
+                          )}
+                          {req.targetType === 'episode' && req.episodeTitle && (
+                            <div className="text-xs font-semibold text-sky-600 dark:text-sky-400">
+                              Target Episode: {req.chapterTitle ? `${req.chapterTitle} > ` : ''}{req.episodeTitle}
+                            </div>
+                          )}
+                          {req.reason && (
+                            <p className="text-xs text-slate-600 dark:text-slate-300 italic">
+                              &ldquo;{req.reason}&rdquo;
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleModerateDeleteRequest(req.id, 'approve')}
+                          className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md transition-colors cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Approve &amp; Delete</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleModerateDeleteRequest(req.id, 'reject')}
+                          className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold text-xs transition-colors cursor-pointer flex items-center gap-1"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>Reject</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
           </div>
         </div>
       )}
