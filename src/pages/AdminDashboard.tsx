@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Comic, AuthorApplication, Purchase, CopyrightDoc, PlatformSettings, ActivityLog, DeleteRequest } from '../types/comic';
 import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
+import { firebaseConfig, syncAllPlatformDataToFirestore } from '../firebase';
 import {
   Shield,
   Users,
@@ -1409,23 +1410,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div>
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 mb-1">
                   <Users className="w-3 h-3" />
-                  <span>Reader Account Tracking ({readerAccounts.length} Accounts)</span>
+                  <span>Reader Account Tracking ({readerAccounts.length} Accounts) · Firebase Project: {firebaseConfig.projectId}</span>
                 </div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
-                  Tracked Reader Accounts (Gmail, Mobile Number &amp; Premium Paywall Status)
+                  Tracked Reader Accounts (Gmail, Mobile, UPI ID &amp; Premium Paywall Status)
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Tracks every reader&apos;s connected Gmail, Mobile Number, last login, and active 1-Month (₹49) or 6-Months (₹249) Premium subscription.
+                  Tracks every reader&apos;s connected Gmail, Mobile Number, UPI ID, and active 1-Month (₹49) or 6-Months (₹249) Premium subscription.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={fetchAdminData}
-                className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer self-start"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Refresh Readers</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap self-start">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await syncAllPlatformDataToFirestore({
+                        readers: readerAccounts,
+                        comics: allComicsWithPending.length > 0 ? allComicsWithPending : comics,
+                      });
+                      fetchAdminData();
+                    } catch (e) {
+                      console.error('Firestore sync error:', e);
+                    }
+                  }}
+                  className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Store All in Firebase Firestore ({firebaseConfig.projectId})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={fetchAdminData}
+                  className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Refresh Readers</span>
+                </button>
+              </div>
             </div>
 
             {readerAccounts.length === 0 ? (
@@ -1440,17 +1461,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <th className="py-2.5 px-3">Customer Name</th>
                       <th className="py-2.5 px-3">Age</th>
                       <th className="py-2.5 px-3">Gmail Address</th>
-                      <th className="py-2.5 px-3">Mobile Number</th>
+                      <th className="py-2.5 px-3">Mobile &amp; UPI ID</th>
                       <th className="py-2.5 px-3">Paid Detail of Premium</th>
                       <th className="py-2.5 px-3">Total Spend</th>
-                      <th className="py-2.5 px-3">Last Login / Created</th>
+                      <th className="py-2.5 px-3">Database Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
                     {readerAccounts.map((r: any) => (
                       <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                         <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">
-                          {r.name}
+                          <div>{r.name}</div>
+                          <div className="text-[10px] font-mono text-slate-400 font-normal">
+                            {r.lastLoginAt ? new Date(r.lastLoginAt).toLocaleDateString() : r.createdAt}
+                          </div>
                         </td>
                         <td className="py-3 px-3 font-mono font-bold text-sky-600 dark:text-sky-400">
                           {r.age ? `${r.age} yrs` : '24 yrs'}
@@ -1459,7 +1483,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {r.email}
                         </td>
                         <td className="py-3 px-3 font-mono text-slate-700 dark:text-slate-300">
-                          {r.phone || 'Not linked'}
+                          <div>{r.phone || 'Not linked'}</div>
+                          <div className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                            UPI: {r.upiId || r.subscription?.upiId || 'Not set'}
+                          </div>
                         </td>
                         <td className="py-3 px-3">
                           {r.subscription?.hasActiveSubscription ? (
@@ -1483,8 +1510,65 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <td className="py-3 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
                           ₹{r.totalSpentInr || 0}
                         </td>
-                        <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
-                          {r.lastLoginAt ? new Date(r.lastLoginAt).toLocaleString() : r.createdAt}
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await fetch(`/api/admin/readers/${r.id}`, {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ paidPlan: '1_month', paymentMethod: 'Admin DB Grant (UPI)' }),
+                                });
+                                fetchAdminData();
+                              }}
+                              className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                              title="Grant 1 Month Premium (₹49) in Database"
+                            >
+                              1M ₹49
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await fetch(`/api/admin/readers/${r.id}`, {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ paidPlan: '6_months', paymentMethod: 'Admin DB Grant (UPI)' }),
+                                });
+                                fetchAdminData();
+                              }}
+                              className="px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold cursor-pointer"
+                              title="Grant 6 Months Premium (₹249) in Database"
+                            >
+                              6M ₹249
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await fetch(`/api/admin/readers/${r.id}`, {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ paidPlan: 'free' }),
+                                });
+                                fetchAdminData();
+                              }}
+                              className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-semibold cursor-pointer"
+                              title="Reset to Free Account in Database"
+                            >
+                              Free
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await fetch(`/api/admin/readers/${r.id}`, { method: 'DELETE' });
+                                fetchAdminData();
+                              }}
+                              className="p-1 rounded text-rose-500 hover:bg-rose-500/10 cursor-pointer"
+                              title="Delete Reader Account from Database"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -2299,6 +2383,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold mb-1 text-slate-600 dark:text-slate-400">
+                Merchant Receiving UPI ID (Customer Payments Sent Here)
+              </label>
+              <input
+                type="text"
+                placeholder="balajiaris05@okaxis"
+                value={settings.merchantUpiId || 'balajiaris05@okaxis'}
+                onChange={(e) => setSettings({ ...settings, merchantUpiId: e.target.value })}
+                className="w-full px-3 py-2 text-xs font-mono font-bold rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1 text-slate-600 dark:text-slate-400">
+                Merchant Display Name on UPI Apps
+              </label>
+              <input
+                type="text"
+                placeholder="Aathirai_Comic Official"
+                value={settings.merchantUpiName || 'Aathirai_Comic Official'}
+                onChange={(e) => setSettings({ ...settings, merchantUpiName: e.target.value })}
+                className="w-full px-3 py-2 text-xs rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold mb-1 text-slate-600 dark:text-slate-400">
                 Author Revenue Share (%)
               </label>
               <input
@@ -2313,7 +2423,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             <div>
               <label className="block text-xs font-semibold mb-1 text-slate-600 dark:text-slate-400">
-                Monthly Premium Membership Price (₹ INR)
+                1 Month Premium Price (₹ INR)
               </label>
               <input
                 type="number"

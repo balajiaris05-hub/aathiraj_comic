@@ -3,6 +3,7 @@ export type UserRole = 'reader' | 'author' | 'admin';
 export interface PremiumPaymentDetail {
   plan: '1_month' | '6_months' | 'free';
   amountPaidInr: number;
+  upiId?: string;
   paymentMethod?: string;
   transactionId?: string;
   receiptNumber?: string;
@@ -16,6 +17,7 @@ export interface User {
   name: string;
   email: string;
   age?: number;
+  upiId?: string;
   role: UserRole;
   isVerified: boolean;
   avatar: string;
@@ -152,6 +154,7 @@ export interface Purchase {
   userEmail: string;
   userPhone?: string;
   userAge?: number;
+  userUpiId?: string;
   comicId: string;
   comicTitle: string;
   chapterId?: string;
@@ -187,11 +190,14 @@ export interface CopyrightDoc {
 export interface PlatformSettings {
   siteName: string;
   tagline: string;
+  merchantUpiId?: string;
+  merchantUpiName?: string;
   authorRevenueSharePercent: number;
   episodeDefaultPrice: number;
   chapterDefaultPrice: number;
   fullComicDefaultPrice: number;
   monthlySubscriptionPrice: number;
+  sixMonthSubscriptionPrice?: number;
   currency: string;
   termsCustomer: string;
   termsAuthor: string;

@@ -205,6 +205,7 @@ async function startServer() {
     const premiumPaymentDetail = {
       plan: (activePlan || 'free') as '1_month' | '6_months' | 'free',
       amountPaidInr: hasActiveSubscription ? amountPaidInr : 0,
+      upiId: matchedUser?.upiId || matchedUser?.premiumPaymentDetail?.upiId,
       paymentMethod: hasActiveSubscription ? (paymentMethod || 'UPI / Razorpay') : undefined,
       transactionId: hasActiveSubscription ? transactionId : undefined,
       receiptNumber: hasActiveSubscription ? activeReceipt : undefined,
@@ -220,6 +221,7 @@ async function startServer() {
       expiresAt,
       activeReceipt,
       amountPaidInr: premiumPaymentDetail.amountPaidInr,
+      upiId: premiumPaymentDetail.upiId,
       paymentMethod: premiumPaymentDetail.paymentMethod,
       transactionId: premiumPaymentDetail.transactionId,
       premiumPaymentDetail,
@@ -236,13 +238,20 @@ async function startServer() {
     user: User,
     paidPlan?: '1_month' | '6_months' | 'free' | null,
     paymentMethod?: string,
-    transactionId?: string
+    transactionId?: string,
+    upiId?: string
   ) => {
+    if (upiId && upiId.trim()) {
+      user.upiId = upiId.trim();
+    }
     if (!paidPlan || paidPlan === 'free') {
-      if (paidPlan === 'free' && !user.premiumPlan) {
+      if (paidPlan === 'free') {
+        user.premiumPlan = null;
+        user.premiumExpiresAt = undefined;
         user.premiumPaymentDetail = {
           plan: 'free',
           amountPaidInr: 0,
+          upiId: user.upiId,
           status: 'unpaid',
         };
       }
@@ -255,7 +264,7 @@ async function startServer() {
     const expiresIso = new Date(Date.now() + durationMs).toISOString();
     const txId = transactionId?.trim() || `pay_${Date.now().toString().slice(-8)}`;
     const receiptNum = `INV-AATHIRAI-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-    const method = paymentMethod?.trim() || 'UPI (Google Pay / PhonePe)';
+    const method = paymentMethod?.trim() || (user.upiId ? `UPI (${user.upiId})` : 'UPI (Google Pay / PhonePe)');
 
     user.premiumPlan = paidPlan;
     user.premiumStartedAt = nowIso;
@@ -263,6 +272,7 @@ async function startServer() {
     user.premiumPaymentDetail = {
       plan: paidPlan,
       amountPaidInr: amountInr,
+      upiId: user.upiId,
       paymentMethod: method,
       transactionId: txId,
       receiptNumber: receiptNum,
@@ -287,6 +297,7 @@ async function startServer() {
         userEmail: user.email.toLowerCase(),
         userPhone: user.phone,
         userAge: user.age,
+        userUpiId: user.upiId,
         comicId: 'premium_pass',
         comicTitle: paidPlan === '6_months' ? '6 Months Reader Premium Pass (₹249)' : '1 Month Reader Premium Pass (₹49)',
         type: 'subscription',
@@ -308,7 +319,7 @@ async function startServer() {
   };
 
   // -------------------------------------------------------------
-  // REGULAR & READER AUTHENTICATION ROUTES (GMAIL, AGE & PAID PREMIUM DETAIL)
+  // REGULAR & READER AUTHENTICATION ROUTES (GMAIL, AGE, UPI & PAID PREMIUM DETAIL)
   // -------------------------------------------------------------
 
   app.post('/api/auth/register', (req, res) => {
@@ -317,6 +328,7 @@ async function startServer() {
       email,
       phone,
       age,
+      upiId,
       paidPlan,
       paymentMethod,
       transactionId,
@@ -345,13 +357,13 @@ async function startServer() {
       );
 
       if (existing) {
-        // Update existing user record with age, Gmail, phone, and paid premium detail if re-registering/updating
         if (name?.trim()) existing.name = name.trim();
         if (cleanEmail) existing.email = cleanEmail;
         if (cleanPhone) existing.phone = cleanPhone;
         if (parsedAge && !isNaN(parsedAge)) existing.age = parsedAge;
+        if (upiId?.trim()) existing.upiId = upiId.trim();
         existing.lastLoginAt = nowIso;
-        applyPaidPremiumDetailToUser(d, existing, paidPlan, paymentMethod, transactionId);
+        applyPaidPremiumDetailToUser(d, existing, paidPlan, paymentMethod, transactionId, upiId);
         registeredUser = existing;
       } else {
         const newUser: User = {
@@ -359,6 +371,7 @@ async function startServer() {
           name: name.trim(),
           email: finalEmail,
           age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
+          upiId: upiId?.trim() || undefined,
           phone: cleanPhone || undefined,
           role: 'reader',
           isVerified: false,
@@ -368,7 +381,7 @@ async function startServer() {
           lastLoginAt: nowIso,
           premiumPlan: null,
         };
-        applyPaidPremiumDetailToUser(d, newUser, paidPlan, paymentMethod, transactionId);
+        applyPaidPremiumDetailToUser(d, newUser, paidPlan, paymentMethod, transactionId, upiId);
         d.users.push(newUser);
         registeredUser = newUser;
       }
@@ -387,7 +400,7 @@ async function startServer() {
       'READER_REGISTERED',
       (registeredUser as User).email,
       (registeredUser as User).role,
-      `Customer registered: ${(registeredUser as User).name} | Age: ${(registeredUser as User).age || 'N/A'} | Gmail: ${(registeredUser as User).email} | Paid Plan: ${paidPlan || 'free'}.`,
+      `Customer registered: ${(registeredUser as User).name} | Age: ${(registeredUser as User).age || 'N/A'} | Gmail: ${(registeredUser as User).email} | UPI: ${(registeredUser as User).upiId || 'N/A'} | Paid Plan: ${paidPlan || 'free'}.`,
       'user',
       (registeredUser as User).id
     );
@@ -401,7 +414,7 @@ async function startServer() {
   });
 
   app.post('/api/auth/verify-otp', (req, res) => {
-    const { email, phone, otp, age, paidPlan, paymentMethod, transactionId } = req.body;
+    const { email, phone, otp, age, upiId, paidPlan, paymentMethod, transactionId } = req.body;
     const cleanEmail = email?.trim().toLowerCase() || '';
     const cleanDigits = (phone || email || '').replace(/\D/g, '');
     const snapshot = db.getSnapshot();
@@ -423,8 +436,11 @@ async function startServer() {
         if (age !== undefined && age !== '' && !isNaN(Number(age))) {
           u.age = Number(age);
         }
+        if (upiId?.trim()) {
+          u.upiId = upiId.trim();
+        }
         if (paidPlan) {
-          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId);
+          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
         }
         updatedUser = u;
       }
@@ -454,7 +470,7 @@ async function startServer() {
       'READER_VERIFIED',
       userWithPremium.email,
       userWithPremium.role,
-      `Reader verified account (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'} | Paid Plan: ${userWithPremium.premiumPlan || 'free'}).`,
+      `Reader verified account (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'} | UPI: ${userWithPremium.upiId || 'N/A'} | Paid Plan: ${userWithPremium.premiumPlan || 'free'}).`,
       'user',
       userWithPremium.id
     );
@@ -463,7 +479,7 @@ async function startServer() {
   });
 
   app.post('/api/auth/login', (req, res) => {
-    const { email, credential, phone, name, age, paidPlan, paymentMethod, transactionId } = req.body;
+    const { email, credential, phone, name, age, upiId, paidPlan, paymentMethod, transactionId } = req.body;
     const rawIdentifier = (credential || email || phone || '').trim();
     if (!rawIdentifier) {
       return res.status(400).json({ error: 'Please enter your Gmail address or Mobile Number to sign in.' });
@@ -490,8 +506,9 @@ async function startServer() {
         if (cleanPhone && !user.phone) user.phone = cleanPhone;
         if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
         if (parsedAge !== undefined) user.age = parsedAge;
+        if (upiId?.trim()) user.upiId = upiId.trim();
         if (paidPlan && paidPlan !== 'free') {
-          applyPaidPremiumDetailToUser(d, user, paidPlan, paymentMethod, transactionId);
+          applyPaidPremiumDetailToUser(d, user, paidPlan, paymentMethod, transactionId, upiId);
         }
       } else {
         const derivedName = name?.trim() || (cleanEmail ? cleanEmail.split('@')[0].replace(/[._]/g, ' ') : `Reader ${cleanDigits.slice(-4)}`);
@@ -500,6 +517,7 @@ async function startServer() {
           name: derivedName.charAt(0).toUpperCase() + derivedName.slice(1),
           email: cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`,
           age: parsedAge,
+          upiId: upiId?.trim() || undefined,
           phone: cleanPhone || (cleanDigits.length >= 10 ? `+91 ${cleanDigits.slice(-10)}` : undefined),
           role: 'reader',
           isVerified: true,
@@ -509,7 +527,7 @@ async function startServer() {
           lastLoginAt: new Date().toISOString(),
           premiumPlan: null,
         };
-        applyPaidPremiumDetailToUser(d, newReader, paidPlan, paymentMethod, transactionId);
+        applyPaidPremiumDetailToUser(d, newReader, paidPlan, paymentMethod, transactionId, upiId);
         d.users.push(newReader);
         user = newReader;
       }
@@ -537,7 +555,7 @@ async function startServer() {
       'READER_LOGIN',
       enrichedUser.email,
       enrichedUser.role,
-      `Customer logged in | Gmail: ${enrichedUser.email} | Age: ${enrichedUser.age || 'N/A'} | Mobile: ${enrichedUser.phone || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr})` : 'Free'}`,
+      `Customer logged in | Gmail: ${enrichedUser.email} | Age: ${enrichedUser.age || 'N/A'} | UPI: ${enrichedUser.upiId || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr})` : 'Free'}`,
       'user',
       enrichedUser.id
     );
@@ -600,7 +618,7 @@ async function startServer() {
   });
 
   app.post('/api/auth/update-profile', (req, res) => {
-    const { userId, name, email, phone, age, paidPlan, paymentMethod, transactionId, bio, avatar } = req.body;
+    const { userId, name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId, bio, avatar } = req.body;
     let updated: User | null = null;
     db.mutate(d => {
       const u = d.users.find(x => x.id === userId || (email && x.email.toLowerCase() === String(email).toLowerCase()));
@@ -609,10 +627,11 @@ async function startServer() {
         if (email && email.includes('@')) u.email = email.trim().toLowerCase();
         if (phone !== undefined) u.phone = phone.trim();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
+        if (upiId !== undefined) u.upiId = upiId.trim();
         if (bio !== undefined) u.bio = bio;
         if (avatar) u.avatar = avatar;
         if (paidPlan) {
-          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId);
+          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
         }
         updated = u;
       }
@@ -2148,11 +2167,14 @@ async function startServer() {
   // -------------------------------------------------------------
 
   app.get('/api/payments/config', (req, res) => {
+    const settings = db.getSnapshot().settings;
     return res.json({
       keyId: RAZORPAY_KEY_ID,
       currency: 'INR',
       symbol: '₹',
       testMode: true,
+      merchantUpiId: settings?.merchantUpiId || 'balajiaris05@okaxis',
+      merchantUpiName: settings?.merchantUpiName || 'Aathirai Comic Network',
     });
   });
 
@@ -2193,6 +2215,7 @@ async function startServer() {
       userId,
       userEmail,
       userPhone,
+      userUpiId,
       comicId,
       comicTitle,
       chapterId,
@@ -2235,6 +2258,7 @@ async function startServer() {
       userId: userId || 'usr_guest',
       userEmail: cleanEmail,
       userPhone: userPhone || undefined,
+      userUpiId: userUpiId || undefined,
       comicId,
       comicTitle: comicTitle || (resolvedPlan === '6_months' ? 'Aathirai 6-Month Premium Pass' : resolvedPlan === '1_month' ? 'Aathirai 1-Month Premium Pass' : 'Aathirai Premium Comic'),
       chapterId: chapterId || undefined,
@@ -2260,13 +2284,14 @@ async function startServer() {
     db.mutate(d => {
       d.purchases.unshift(newPurchase);
 
-      // Link payment & subscription directly to Reader's Gmail / Mobile account for instant verification
+      // Link payment & subscription directly to Reader's Gmail / Mobile / UPI account for instant verification
       const u = d.users.find(user =>
         (userId && user.id === userId) ||
         (cleanEmail && user.email.toLowerCase() === cleanEmail)
       );
       if (u) {
         if (userPhone && !u.phone) u.phone = userPhone;
+        if (userUpiId && userUpiId.trim()) u.upiId = userUpiId.trim();
         if (type === 'subscription' && resolvedPlan && computedExpiresAt) {
           u.premiumPlan = resolvedPlan;
           u.premiumStartedAt = nowIso;
@@ -2274,6 +2299,7 @@ async function startServer() {
           u.premiumPaymentDetail = {
             plan: resolvedPlan,
             amountPaidInr: amountNum,
+            upiId: u.upiId,
             paymentMethod: newPurchase.paymentMethod,
             transactionId: newPurchase.razorpayPaymentId,
             receiptNumber,
@@ -2290,7 +2316,7 @@ async function startServer() {
       'PAYMENT_CAPTURED',
       cleanEmail,
       'reader',
-      `Payment of ₹${amountNum} captured for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Gmail: ${cleanEmail}. Receipt ${receiptNumber}`,
+      `Payment of ₹${amountNum} captured for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Gmail: ${cleanEmail} | UPI: ${userUpiId || 'N/A'}. Receipt ${receiptNumber}`,
       'purchase',
       newPurchase.id
     );
@@ -2352,6 +2378,7 @@ async function startServer() {
       return {
         ...u,
         age: u.age,
+        upiId: u.upiId || subStatus.upiId,
         premiumPlan: subStatus.activePlan,
         premiumStartedAt: subStatus.startedAt,
         premiumExpiresAt: subStatus.expiresAt,
@@ -2362,6 +2389,7 @@ async function startServer() {
           hasActiveSubscription: subStatus.hasActiveSubscription,
           plan: subStatus.activePlan,
           amountPaidInr: subStatus.amountPaidInr,
+          upiId: u.upiId || subStatus.upiId,
           paymentMethod: subStatus.paymentMethod,
           transactionId: subStatus.transactionId,
           receiptNumber: subStatus.activeReceipt,
@@ -2372,6 +2400,45 @@ async function startServer() {
       };
     });
     return res.json({ readers });
+  });
+
+  // Admin Database Management: Update or Grant/Revoke Reader Account, UPI & Paid Premium
+  app.put('/api/admin/readers/:id', (req, res) => {
+    const { name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+    let updatedUser: User | null = null;
+
+    db.mutate(d => {
+      const u = d.users.find((x: User) => x.id === req.params.id);
+      if (u) {
+        if (name !== undefined && name.trim()) u.name = name.trim();
+        if (email !== undefined && email.trim()) u.email = email.trim().toLowerCase();
+        if (phone !== undefined) u.phone = phone.trim();
+        if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
+        if (upiId !== undefined) u.upiId = upiId.trim();
+        if (paidPlan !== undefined) {
+          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
+        }
+        updatedUser = u;
+      }
+    });
+
+    if (!updatedUser) return res.status(404).json({ error: 'Reader not found' });
+    db.logActivity('ADMIN_UPDATED_READER', 'admin@aathirai.com', 'admin', `Updated reader ${(updatedUser as User).email} (Plan: ${paidPlan || 'unchanged'}, UPI: ${upiId || 'N/A'})`, 'user', req.params.id);
+    return res.json({ success: true, reader: updatedUser });
+  });
+
+  app.delete('/api/admin/readers/:id', (req, res) => {
+    let removedEmail = '';
+    db.mutate(d => {
+      const idx = d.users.findIndex((x: User) => x.id === req.params.id);
+      if (idx !== -1) {
+        removedEmail = d.users[idx].email;
+        d.users.splice(idx, 1);
+      }
+    });
+    if (!removedEmail) return res.status(404).json({ error: 'Reader not found' });
+    db.logActivity('ADMIN_DELETED_READER', 'admin@aathirai.com', 'admin', `Deleted reader account ${removedEmail}`, 'user', req.params.id);
+    return res.json({ success: true, message: `Deleted reader account ${removedEmail}` });
   });
 
   app.get('/api/admin/stats', (req, res) => {

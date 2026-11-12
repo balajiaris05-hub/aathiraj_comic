@@ -3,6 +3,11 @@ import { useAuth } from '../context/AuthContext';
 import { Comic, Purchase } from '../types/comic';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import {
+  firebaseConfig,
+  signInWithGoogleAndSyncToFirestore,
+  syncReaderAccountToFirestore,
+} from '../firebase';
+import {
   User,
   Mail,
   Phone,
@@ -58,6 +63,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [regEmail, setRegEmail] = useState(user?.email || '');
   const [regAge, setRegAge] = useState(String(user?.age || 24));
   const [regPhone, setRegPhone] = useState(user?.phone || '+91 8610950780');
+  const [regUpiId, setRegUpiId] = useState(user?.upiId || 'balajiaris05@okaxis');
   const [paidPlan, setPaidPlan] = useState<'1_month' | '6_months' | 'free'>(
     user?.premiumPlan || '1_month'
   );
@@ -80,6 +86,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [editEmail, setEditEmail] = useState(user?.email || '');
   const [editAge, setEditAge] = useState(String(user?.age || 24));
   const [editPhone, setEditPhone] = useState(user?.phone || '');
+  const [editUpiId, setEditUpiId] = useState(user?.upiId || 'balajiaris05@okaxis');
   const [editPaidPlan, setEditPaidPlan] = useState<'1_month' | '6_months' | 'free'>(
     user?.premiumPlan || 'free'
   );
@@ -116,6 +123,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setEditEmail(user.email || '');
       setEditAge(String(user.age || 24));
       setEditPhone(user.phone || '');
+      setEditUpiId(user.upiId || 'balajiaris05@okaxis');
       setEditPaidPlan(user.premiumPlan || 'free');
       handleLiveVerifyGmail();
     }
@@ -156,6 +164,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     const res = await login(credential.trim(), {
       phone: regPhone.trim() || undefined,
       age: regAge ? Number(regAge) : undefined,
+      upiId: regUpiId.trim() || undefined,
       paidPlan,
       paymentMethod: paidPlan !== 'free' ? paymentMethod : undefined,
       transactionId: paidPlan !== 'free' ? (transactionId.trim() || undefined) : undefined,
@@ -163,7 +172,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthLoading(false);
     if (res.success) {
       setAuthSuccess(
-        `Customer Login & Paid Detail Recorded! Gmail: ${credential}, Age: ${regAge}, Plan: ${
+        `Customer Login & UPI Stored in Database! Gmail: ${credential}, UPI: ${regUpiId}, Age: ${regAge}, Plan: ${
           paidPlan === '6_months' ? '6 Months (₹249)' : paidPlan === '1_month' ? '1 Month (₹49)' : 'Free'
         }.`
       );
@@ -172,7 +181,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         handleLiveVerifyGmail();
       }, 900);
     } else {
-      setAuthError(res.error || 'Account not found. Please register your Gmail, Age & Paid Detail.');
+      setAuthError(res.error || 'Account not found. Please register your Gmail, Age, UPI & Paid Detail.');
     }
   };
 
@@ -197,6 +206,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           email: regEmail.trim(),
           age: Number(regAge),
           phone: regPhone.trim(),
+          upiId: regUpiId.trim() || undefined,
           paidPlan,
           paymentMethod: paidPlan !== 'free' ? paymentMethod : undefined,
           transactionId: paidPlan !== 'free' ? (transactionId.trim() || undefined) : undefined,
@@ -208,9 +218,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       if (res.ok) {
         setSandboxOtp(data.mockOtp || '123456');
         setAuthSuccess(
-          `Customer Registered! Gmail (${regEmail}), Age (${regAge}), and Paid Plan (${
+          `Customer Account Created in Database! Gmail (${regEmail}), UPI (${regUpiId}), Age (${regAge}), and Paid Plan (${
             paidPlan === '6_months' ? '6 Months ₹249' : paidPlan === '1_month' ? '1 Month ₹49' : 'Free'
-          }) recorded. Verify OTP below.`
+          }) stored. Verify OTP below.`
         );
         setAuthTab('verify-otp');
       } else {
@@ -235,6 +245,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           phone: regPhone.trim(),
           otp: otp.trim(),
           age: regAge ? Number(regAge) : undefined,
+          upiId: regUpiId.trim() || undefined,
           paidPlan,
           paymentMethod: paidPlan !== 'free' ? paymentMethod : undefined,
           transactionId: paidPlan !== 'free' ? (transactionId.trim() || undefined) : undefined,
@@ -247,6 +258,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           phone: regPhone.trim() || undefined,
           name: regName.trim() || undefined,
           age: regAge ? Number(regAge) : undefined,
+          upiId: regUpiId.trim() || undefined,
           paidPlan,
           paymentMethod: paidPlan !== 'free' ? paymentMethod : undefined,
           transactionId: paidPlan !== 'free' ? (transactionId.trim() || undefined) : undefined,
@@ -276,6 +288,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           email: editEmail.trim(),
           age: editAge ? Number(editAge) : undefined,
           phone: editPhone.trim(),
+          upiId: editUpiId.trim() || undefined,
           paidPlan: editPaidPlan,
           paymentMethod: editPaidPlan !== 'free' ? editPaymentMethod : undefined,
           transactionId: editPaidPlan !== 'free' ? (editTransactionId.trim() || undefined) : undefined,
@@ -285,9 +298,19 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       if (res.ok && data.user) {
         updateUser(data.user);
         setIsEditingProfile(false);
+        await syncReaderAccountToFirestore({
+          name: editName.trim(),
+          email: editEmail.trim(),
+          age: editAge ? Number(editAge) : 24,
+          phone: editPhone.trim(),
+          upiId: editUpiId.trim() || 'balajiaris05@okaxis',
+          paidPlan: editPaidPlan,
+          paymentMethod: editPaymentMethod,
+          transactionId: editTransactionId.trim() || undefined,
+        }).catch(() => {});
         await handleLiveVerifyGmail();
         setProfileMessage(
-          'Customer Gmail Address, Age, and Paid Detail of Premium updated and recorded in Admin Console!'
+          `Customer Gmail Address, Age, UPI ID, and Paid Detail of Premium updated and synced to Firebase (${firebaseConfig.projectId})!`
         );
         setTimeout(() => setProfileMessage(null), 5000);
       }
@@ -295,6 +318,42 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       console.error(e);
     } finally {
       setProfileSaving(false);
+    }
+  };
+
+  const handleFirebaseGoogleSignIn = async () => {
+    setAuthLoading(true);
+    setAuthError(null);
+    setAuthSuccess(null);
+    try {
+      const fbUser = await signInWithGoogleAndSyncToFirestore({
+        age: regAge ? Number(regAge) : 24,
+        phone: regPhone.trim() || '+91 8610950780',
+        upiId: regUpiId.trim() || 'balajiaris05@okaxis',
+        paidPlan,
+        paymentMethod: paidPlan !== 'free' ? paymentMethod : 'UPI (Google Pay / PhonePe)',
+        transactionId: transactionId.trim() || undefined,
+      });
+      await login(fbUser.email || 'balajiaris05@gmail.com', {
+        name: fbUser.displayName || regName.trim() || 'Reader',
+        phone: regPhone.trim() || '+91 8610950780',
+        age: regAge ? Number(regAge) : 24,
+        upiId: regUpiId.trim() || 'balajiaris05@okaxis',
+        paidPlan,
+        paymentMethod: paidPlan !== 'free' ? paymentMethod : undefined,
+        transactionId: paidPlan !== 'free' ? (transactionId.trim() || undefined) : undefined,
+      });
+      setAuthLoading(false);
+      setAuthSuccess(
+        `Synced to Firebase Firestore (${firebaseConfig.projectId})! Gmail: ${fbUser.email}, UPI: ${regUpiId}, Age: ${regAge}`
+      );
+      setTimeout(() => {
+        setViewSection('profile_dashboard');
+        handleLiveVerifyGmail();
+      }, 900);
+    } catch (err: any) {
+      setAuthLoading(false);
+      setAuthError(err.message || 'Google Sign-In failed');
     }
   };
 
@@ -445,6 +504,26 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   }`}
                 >
                   User Login (Verify &amp; Update)
+                </button>
+              </div>
+
+              <div className="mb-5 p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs">
+                  <div className="font-extrabold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                    <span>Firebase Cloud Firestore Connected: <span className="font-mono">{firebaseConfig.projectId}</span></span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
+                    Sign in with Google or submit below to store Gmail, Age, UPI ID &amp; Paid Plan in Firebase Firestore.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleFirebaseGoogleSignIn}
+                  disabled={authLoading}
+                  className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shrink-0 shadow-sm transition-colors cursor-pointer"
+                >
+                  Google Sign-In (Firebase)
                 </button>
               </div>
 
@@ -608,7 +687,20 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     </div>
 
                     {paidPlan !== 'free' && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">
+                            Customer UPI ID (Stored in DB)
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="reader@okaxis"
+                            value={regUpiId}
+                            onChange={(e) => setRegUpiId(e.target.value)}
+                            className="w-full px-3 py-2.5 text-xs font-mono rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
+                          />
+                        </div>
+
                         <div>
                           <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">
                             Customer Payment Mode
@@ -743,7 +835,20 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     </div>
 
                     {paidPlan !== 'free' && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">
+                            Customer UPI ID (Stored in DB)
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="reader@okaxis"
+                            value={regUpiId}
+                            onChange={(e) => setRegUpiId(e.target.value)}
+                            className="w-full px-3 py-2.5 text-xs font-mono rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
+                          />
+                        </div>
+
                         <div>
                           <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1">
                             Payment Mode
@@ -926,6 +1031,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           ₹{hasActivePremium ? (user.premiumPlan === '6_months' ? 249 : 49) : 0}
                         </span>
                       </div>
+                      {user.upiId && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">Stored UPI ID:</span>
+                          <span className="font-mono font-bold text-rose-600 dark:text-rose-400">
+                            {user.upiId}
+                          </span>
+                        </div>
+                      )}
                       {user.premiumPaymentDetail?.paymentMethod && (
                         <div className="flex items-center justify-between">
                           <span className="text-slate-500">Payment Mode:</span>
@@ -987,6 +1100,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         required
                         value={editEmail}
                         onChange={(e) => setEditEmail(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">Customer UPI ID</label>
+                      <input
+                        type="text"
+                        placeholder="reader@okaxis"
+                        value={editUpiId}
+                        onChange={(e) => setEditUpiId(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 font-mono"
                       />
                     </div>

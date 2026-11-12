@@ -1,0 +1,433 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator record keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "adminId": {
+          "type": "string",
+          "description": "Firebase UID of the administrator.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified administrator email address.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin record was created."
+        }
+      },
+      "required": ["adminId", "email", "createdAt"]
+    },
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public non-PII reader or author profile.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the reader or author.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "description": "Immutable role assigned on creation.",
+          "enum": ["reader", "author", "admin"],
+          "minLength": 4,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["userId", "name", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Strictly isolated PII, Gmail, Mobile, UPI ID, Age, and Paid Detail of Premium for a reader.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Customer Gmail address.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "description": "Customer mobile phone number.",
+          "minLength": 3,
+          "maxLength": 32
+        },
+        "upiId": {
+          "type": "string",
+          "description": "Customer UPI ID / VPA stored in database.",
+          "minLength": 3,
+          "maxLength": 100
+        },
+        "age": {
+          "type": "number",
+          "description": "Customer age in years (5 to 110)."
+        },
+        "premiumPlan": {
+          "type": "string",
+          "description": "Paid Premium plan tier.",
+          "enum": ["free", "1_month", "6_months"],
+          "minLength": 4,
+          "maxLength": 16
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Payment mode used (e.g., UPI, Razorpay).",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "transactionId": {
+          "type": "string",
+          "description": "UPI or payment reference ID.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "amountPaidInr": {
+          "type": "number",
+          "description": "Amount paid in INR (0, 49, or 249)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "userId",
+        "email",
+        "phone",
+        "upiId",
+        "age",
+        "premiumPlan",
+        "paymentMethod",
+        "transactionId",
+        "amountPaidInr",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ComicRecord": {
+      "title": "ComicRecord",
+      "description": "Comic series metadata stored in Firestore.",
+      "type": "object",
+      "properties": {
+        "comicId": {
+          "type": "string",
+          "description": "Unique comic identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Comic series title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "authorId": {
+          "type": "string",
+          "description": "Creator UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Creator display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "genre": {
+          "type": "string",
+          "description": "Primary comic genre.",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "accessType": {
+          "type": "string",
+          "description": "Paywall mode.",
+          "enum": ["free", "premium"],
+          "minLength": 4,
+          "maxLength": 16
+        },
+        "fullUnlockPriceInr": {
+          "type": "number",
+          "description": "Full unlock price in INR."
+        },
+        "status": {
+          "type": "string",
+          "description": "Publication status.",
+          "enum": ["pending", "published", "rejected"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "comicId",
+        "title",
+        "authorId",
+        "authorName",
+        "genre",
+        "accessType",
+        "fullUnlockPriceInr",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PurchaseRecord": {
+      "title": "PurchaseRecord",
+      "description": "Customer UPI / Razorpay payment receipt stored in Firestore.",
+      "type": "object",
+      "properties": {
+        "purchaseId": {
+          "type": "string",
+          "description": "Unique purchase ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Buyer Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicId": {
+          "type": "string",
+          "description": "Target comic ID or premium_pass.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "itemTitle": {
+          "type": "string",
+          "description": "Purchased plan or episode title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "planType": {
+          "type": "string",
+          "description": "Subscription tier or item type.",
+          "enum": ["1_month", "6_months", "episode", "chapter", "full_comic"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "amountInr": {
+          "type": "number",
+          "description": "Total amount paid in INR."
+        },
+        "upiId": {
+          "type": "string",
+          "description": "Customer paying UPI ID.",
+          "minLength": 3,
+          "maxLength": 100
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Payment channel description.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "receiptNumber": {
+          "type": "string",
+          "description": "Invoice receipt number.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "description": "Terminal payment status.",
+          "enum": ["success", "refunded"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "purchaseId",
+        "userId",
+        "comicId",
+        "itemTitle",
+        "planType",
+        "amountInr",
+        "upiId",
+        "paymentMethod",
+        "receiptNumber",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DeleteRequestRecord": {
+      "title": "DeleteRequestRecord",
+      "description": "Author request asking Admin to delete an uploaded comic, chapter, or episode.",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "description": "Unique delete request ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicId": {
+          "type": "string",
+          "description": "Target comic ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicTitle": {
+          "type": "string",
+          "description": "Target comic title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "targetType": {
+          "type": "string",
+          "description": "Scope of deletion requested.",
+          "enum": ["series", "chapter", "episode"],
+          "minLength": 6,
+          "maxLength": 16
+        },
+        "authorId": {
+          "type": "string",
+          "description": "Requesting author UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Requesting author name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "reason": {
+          "type": "string",
+          "description": "Reason for deletion request.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "description": "Moderation status.",
+          "enum": ["pending", "approved", "rejected"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "requestId",
+        "comicId",
+        "comicTitle",
+        "targetType",
+        "authorId",
+        "authorName",
+        "reason",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted administrator lookup collection."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public non-PII user profile documents."
+    },
+    "/users/{userId}/private/{infoId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Strictly isolated PII, Gmail, Mobile, UPI ID, Age, and Paid Premium Details."
+    },
+    "/comics/{comicId}": {
+      "schema": { "$ref": "#/entities/ComicRecord" },
+      "description": "Comic catalog series documents."
+    },
+    "/purchases/{purchaseId}": {
+      "schema": { "$ref": "#/entities/PurchaseRecord" },
+      "description": "Customer UPI and Razorpay payment receipts."
+    },
+    "/deleteRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/DeleteRequestRecord" },
+      "description": "Author deletion requests awaiting Admin approval."
+    }
+  }
+}

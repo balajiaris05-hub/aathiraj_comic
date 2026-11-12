@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   X,
@@ -17,6 +17,7 @@ import {
   Lock
 } from 'lucide-react';
 import { Purchase } from '../types/comic';
+import { syncPurchaseToFirestore } from '../firebase';
 
 interface CheckoutProps {
   isOpen: boolean;
@@ -47,7 +48,9 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
 }) => {
   const { user, updateUser, refreshUser } = useAuth();
   const [selectedMethod, setSelectedMethod] = useState<'upi' | 'card' | 'netbanking' | 'wallet'>('upi');
-  const [upiId, setUpiId] = useState('balaji@okhdfcbank');
+  const [upiId, setUpiId] = useState(user?.upiId || 'balajiaris05@okaxis');
+  const [merchantUpiId, setMerchantUpiId] = useState('balajiaris05@okaxis');
+  const [merchantUpiName, setMerchantUpiName] = useState('Aathirai_Comic Official');
   const [upiApp, setUpiApp] = useState('Google Pay');
   const [bank, setBank] = useState('State Bank of India (SBI)');
   const [cardNumber, setCardNumber] = useState('4532 •••• •••• 8821');
@@ -56,10 +59,24 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Purchase | null>(null);
 
+  useEffect(() => {
+    if (user?.upiId) {
+      setUpiId(user.upiId);
+    }
+    fetch('/api/payments/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.merchantUpiId) setMerchantUpiId(data.merchantUpiId);
+        if (data?.merchantUpiName) setMerchantUpiName(data.merchantUpiName);
+      })
+      .catch(() => {});
+  }, [user?.upiId]);
+
   if (!isOpen) return null;
 
   const taxAmount = Number((amountInr * 0.18).toFixed(2));
   const basePrice = Number((amountInr - taxAmount).toFixed(2));
+  const upiDeepLink = `upi://pay?pa=${encodeURIComponent(merchantUpiId)}&pn=${encodeURIComponent(merchantUpiName)}&am=${amountInr}&cu=INR&tn=${encodeURIComponent(`${comicTitle} - ${itemTitle}`)}`;
 
   const handleProcessPayment = async () => {
     setIsProcessing(true);
@@ -97,7 +114,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
       else if (selectedMethod === 'netbanking') methodDesc = `Net Banking - ${bank}`;
       else methodDesc = `Digital Wallet - ${wallet}`;
 
-      // 2. Server-side payment verification & Gmail linkage
+      // 2. Server-side payment verification & Gmail + UPI linkage in database
       const verifyRes = await fetch('/api/payments/razorpay/verify-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -108,6 +125,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           userId: user?.id || 'usr_guest',
           userEmail: user?.email || 'customer@aathirai.com',
           userPhone: user?.phone,
+          userUpiId: selectedMethod === 'upi' ? upiId.trim() : user?.upiId,
           comicId,
           comicTitle,
           chapterId,
@@ -126,6 +144,19 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         if (verifyData.user) {
           updateUser(verifyData.user);
         }
+        await syncPurchaseToFirestore({
+          purchaseId: verifyData.purchase.id,
+          comicId,
+          itemTitle,
+          planType:
+            itemType === 'subscription'
+              ? subscriptionPlan || '1_month'
+              : itemType,
+          amountInr,
+          upiId: selectedMethod === 'upi' ? upiId.trim() : user?.upiId,
+          paymentMethod: verifyData.purchase.paymentMethod || methodDesc,
+          receiptNumber: verifyData.purchase.receiptNumber,
+        }).catch(() => {});
         await refreshUser();
         setReceipt(verifyData.purchase);
         onPaymentSuccess(verifyData.purchase);
@@ -345,8 +376,27 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
             {selectedMethod === 'upi' && (
               <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
                 <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400">
-                  <span>Fast UPI Payment</span>
+                  <span>Fast UPI Payment (Saved in Database)</span>
                   <span className="text-[10px] text-emerald-500 font-semibold">Zero Surcharge</span>
+                </div>
+
+                {/* Receiving Merchant UPI Box */}
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between gap-2 text-xs">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 block">
+                      Pay To Merchant UPI ID ({merchantUpiName})
+                    </span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white">
+                      {merchantUpiId}
+                    </span>
+                  </div>
+                  <a
+                    href={upiDeepLink}
+                    className="py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shrink-0 flex items-center gap-1"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>Open UPI App (₹{amountInr})</span>
+                  </a>
                 </div>
 
                 <div className="grid grid-cols-4 gap-2">
@@ -368,17 +418,17 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
 
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    UPI ID / VPA
+                    Customer Paying UPI ID / VPA (Stored in Database)
                   </label>
                   <input
                     type="text"
                     value={upiId}
                     onChange={(e) => setUpiId(e.target.value)}
-                    placeholder="username@okhdfcbank"
-                    className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                    placeholder="reader@okaxis or mobile@ybl"
+                    className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                   />
                   <span className="text-[10px] text-slate-400 block mt-1">
-                    Accepts Google Pay, PhonePe, Paytm, CRED &amp; other UPI apps.
+                    Your UPI ID is linked to your Gmail account in the Admin database for instant paywall verification.
                   </span>
                 </div>
               </div>

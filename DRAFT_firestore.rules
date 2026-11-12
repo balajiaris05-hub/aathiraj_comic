@@ -1,0 +1,379 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // PRIMITIVE HELPERS
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'balajiaris05@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // =========================================================================
+    // ENTITY VALIDATION BLUEPRINTS
+    // =========================================================================
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['adminId', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['adminId', 'email', 'createdAt']) &&
+        data.adminId is string && data.adminId.size() >= 1 && data.adminId.size() <= 128 && data.adminId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserPublicProfile(data) {
+      return data.keys().hasAll(['userId', 'name', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'name', 'role', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.role is string && data.role.size() >= 4 && data.role.size() <= 16 &&
+        (data.role == 'reader' || data.role == 'author' || data.role == 'admin') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll([
+          'userId', 'email', 'phone', 'upiId', 'age',
+          'premiumPlan', 'paymentMethod', 'transactionId', 'amountPaidInr',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'email', 'phone', 'upiId', 'age',
+          'premiumPlan', 'paymentMethod', 'transactionId', 'amountPaidInr',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.phone is string && data.phone.size() >= 3 && data.phone.size() <= 32 &&
+        data.upiId is string && data.upiId.size() >= 3 && data.upiId.size() <= 100 &&
+        data.age is number && data.age >= 5 && data.age <= 110 &&
+        data.premiumPlan is string && data.premiumPlan.size() >= 4 && data.premiumPlan.size() <= 16 &&
+        (data.premiumPlan == 'free' || data.premiumPlan == '1_month' || data.premiumPlan == '6_months') &&
+        data.paymentMethod is string && data.paymentMethod.size() >= 2 && data.paymentMethod.size() <= 80 &&
+        data.transactionId is string && data.transactionId.size() >= 2 && data.transactionId.size() <= 80 &&
+        data.amountPaidInr is number && (data.amountPaidInr == 0 || data.amountPaidInr == 49 || data.amountPaidInr == 249) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidComicRecord(data) {
+      return data.keys().hasAll([
+          'comicId', 'title', 'authorId', 'authorName', 'genre',
+          'accessType', 'fullUnlockPriceInr', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'comicId', 'title', 'authorId', 'authorName', 'genre',
+          'accessType', 'fullUnlockPriceInr', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+        data.genre is string && data.genre.size() >= 1 && data.genre.size() <= 50 &&
+        data.accessType is string && data.accessType.size() >= 4 && data.accessType.size() <= 16 &&
+        (data.accessType == 'free' || data.accessType == 'premium') &&
+        data.fullUnlockPriceInr is number && data.fullUnlockPriceInr >= 0 && data.fullUnlockPriceInr <= 10000 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'pending' || data.status == 'published' || data.status == 'rejected') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPurchaseRecord(data) {
+      return data.keys().hasAll([
+          'purchaseId', 'userId', 'comicId', 'itemTitle', 'planType',
+          'amountInr', 'upiId', 'paymentMethod', 'receiptNumber', 'status',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'purchaseId', 'userId', 'comicId', 'itemTitle', 'planType',
+          'amountInr', 'upiId', 'paymentMethod', 'receiptNumber', 'status',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.purchaseId is string && data.purchaseId.size() >= 1 && data.purchaseId.size() <= 128 && data.purchaseId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.itemTitle is string && data.itemTitle.size() >= 1 && data.itemTitle.size() <= 140 &&
+        data.planType is string && data.planType.size() >= 7 && data.planType.size() <= 16 &&
+        (data.planType == '1_month' || data.planType == '6_months' || data.planType == 'episode' || data.planType == 'chapter' || data.planType == 'full_comic') &&
+        data.amountInr is number && data.amountInr >= 1 && data.amountInr <= 50000 &&
+        data.upiId is string && data.upiId.size() >= 3 && data.upiId.size() <= 100 &&
+        data.paymentMethod is string && data.paymentMethod.size() >= 2 && data.paymentMethod.size() <= 80 &&
+        data.receiptNumber is string && data.receiptNumber.size() >= 3 && data.receiptNumber.size() <= 64 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'success' || data.status == 'refunded') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDeleteRequestRecord(data) {
+      return data.keys().hasAll([
+          'requestId', 'comicId', 'comicTitle', 'targetType',
+          'authorId', 'authorName', 'reason', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'requestId', 'comicId', 'comicTitle', 'targetType',
+          'authorId', 'authorName', 'reason', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.requestId is string && data.requestId.size() >= 1 && data.requestId.size() <= 128 && data.requestId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicTitle is string && data.comicTitle.size() >= 1 && data.comicTitle.size() <= 140 &&
+        data.targetType is string && data.targetType.size() >= 6 && data.targetType.size() <= 16 &&
+        (data.targetType == 'series' || data.targetType == 'chapter' || data.targetType == 'episode') &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+        data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // 1. /admins/{adminId}
+    // =========================================================================
+    match /admins/{adminId} {
+      allow get: if isVerifiedUser() && isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if false;
+      allow create: if isVerifiedUser() &&
+        isValidId(adminId) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().adminId == adminId &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+      allow update: if isValidAdminRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(adminId) &&
+        incoming().adminId == existing().adminId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email']) &&
+        isAdmin();
+      allow delete: if isVerifiedUser() && isValidId(adminId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 2. /users/{userId} (Public Non-PII Profile)
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming()) &&
+        incoming().userId == userId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role == 'reader' || isAdmin());
+
+      allow update: if isValidUserPublicProfile(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(userId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Owner updates display name only (cannot escalate role)
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt'])) ||
+          // Action 2: Admin updates name or role
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+
+      // =======================================================================
+      // 3. /users/{userId}/private/{infoId} (Strictly Isolated PII, UPI & Plan)
+      // =======================================================================
+      match /private/{infoId} {
+        allow get: if isVerifiedUser() && isValidId(userId) && isValidId(infoId) && (isOwner(userId) || isAdmin()) &&
+          get(/databases/$(database)/documents/users/$(userId)).data.userId == userId;
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(infoId) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().userId == userId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          (isOwner(userId) || isAdmin()) &&
+          get(/databases/$(database)/documents/users/$(userId)).data.userId == userId;
+
+        allow update: if isValidUserPrivateInfo(incoming()) &&
+          isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(infoId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            // Action 1: Owner updates their own PII, UPI ID, Age, and Paid Detail
+            (isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'email', 'phone', 'upiId', 'age',
+                'premiumPlan', 'paymentMethod', 'transactionId', 'amountPaidInr', 'updatedAt'
+              ]) &&
+              get(/databases/$(database)/documents/users/$(userId)).data.userId == userId) ||
+            // Action 2: Admin updates reader PII, UPI ID, or Paid Plan
+            (isAdmin() &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'email', 'phone', 'upiId', 'age',
+                'premiumPlan', 'paymentMethod', 'transactionId', 'amountPaidInr', 'updatedAt'
+              ]))
+          );
+
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(infoId) && isAdmin();
+      }
+    }
+
+    // =========================================================================
+    // 4. /comics/{comicId}
+    // =========================================================================
+    match /comics/{comicId} {
+      allow get: if isValidId(comicId) && (existing().status == 'published' || isOwner(existing().authorId) || isAdmin());
+      allow list: if resource.data.status == 'published' || (isVerifiedUser() && resource.data.authorId == request.auth.uid) || isAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(comicId) &&
+        isValidComicRecord(incoming()) &&
+        incoming().comicId == comicId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().authorId == request.auth.uid || isAdmin()) &&
+        exists(/databases/$(database)/documents/users/$(incoming().authorId));
+
+      allow update: if isValidComicRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(comicId) &&
+        incoming().comicId == existing().comicId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Author updates title, genre, or paywall price while pending
+          (isOwner(existing().authorId) &&
+            existing().status == 'pending' &&
+            incoming().status == existing().status &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'genre', 'accessType', 'fullUnlockPriceInr', 'updatedAt'
+            ])) ||
+          // Action 2: Admin moderates status or paywall settings
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'genre', 'accessType', 'fullUnlockPriceInr', 'status', 'updatedAt'
+            ]))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(comicId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 5. /purchases/{purchaseId}
+    // =========================================================================
+    match /purchases/{purchaseId} {
+      allow get: if isVerifiedUser() && isValidId(purchaseId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(purchaseId) &&
+        isValidPurchaseRecord(incoming()) &&
+        incoming().purchaseId == purchaseId &&
+        incoming().userId == request.auth.uid &&
+        incoming().status == 'success' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId));
+
+      allow update: if isValidPurchaseRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(purchaseId) &&
+        incoming().purchaseId == existing().purchaseId &&
+        incoming().userId == existing().userId &&
+        incoming().comicId == existing().comicId &&
+        incoming().amountInr == existing().amountInr &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action: Admin issues refund on a non-refunded purchase (terminal state lock)
+          (isAdmin() &&
+            existing().status == 'success' &&
+            incoming().status == 'refunded' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(purchaseId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 6. /deleteRequests/{requestId}
+    // =========================================================================
+    match /deleteRequests/{requestId} {
+      allow get: if isVerifiedUser() && isValidId(requestId) && (isOwner(existing().authorId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.authorId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(requestId) &&
+        isValidDeleteRequestRecord(incoming()) &&
+        incoming().requestId == requestId &&
+        incoming().authorId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/comics/$(incoming().comicId));
+
+      allow update: if isValidDeleteRequestRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(requestId) &&
+        incoming().requestId == existing().requestId &&
+        incoming().comicId == existing().comicId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Author updates reason while still pending (Terminal State Lock)
+          (isOwner(existing().authorId) &&
+            existing().status == 'pending' &&
+            incoming().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['reason', 'updatedAt'])) ||
+          // Action 2: Admin approves or rejects delete request
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(requestId) && isAdmin();
+    }
+  }
+}

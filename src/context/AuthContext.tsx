@@ -5,6 +5,7 @@ export interface LoginExtraOptions {
   phone?: string;
   name?: string;
   age?: number;
+  upiId?: string;
   paidPlan?: '1_month' | '6_months' | 'free';
   paymentMethod?: string;
   transactionId?: string;
@@ -29,13 +30,14 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Default to Balaji Reader with Gmail, Age & Mobile linked for Admin tracking
+  // Default to Balaji Reader with Gmail, Age, UPI ID & Mobile linked for Admin tracking
   const [user, setUser] = useState<User | null>({
     id: 'usr_reader',
     name: 'Balaji Reader',
     email: 'balajiaris05@gmail.com',
     age: 24,
     phone: '+91 8610950780',
+    upiId: 'balajiaris05@okaxis',
     role: 'reader',
     isVerified: true,
     avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=200&h=200&q=80',
@@ -58,6 +60,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: 'admin@aathirai.com',
         age: 30,
         phone: '+91 8610950780',
+        upiId: 'balajiaris05@okaxis',
         role: 'admin',
         isVerified: true,
         avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
@@ -71,6 +74,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: 'rajesh.singh@creator.in',
         age: 28,
         phone: '+91 9840123456',
+        upiId: 'rajesh.singh@okicici',
         role: 'author',
         isVerified: true,
         avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80',
@@ -84,6 +88,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: 'balajiaris05@gmail.com',
         age: 24,
         phone: '+91 8610950780',
+        upiId: 'balajiaris05@okaxis',
         role: 'reader',
         isVerified: true,
         avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=200&h=200&q=80',
@@ -113,6 +118,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           phone: opts.phone || (!credentialOrEmail.includes('@') ? credentialOrEmail : undefined),
           name: opts.name,
           age: opts.age,
+          upiId: opts.upiId,
           paidPlan: opts.paidPlan,
           paymentMethod: opts.paymentMethod,
           transactionId: opts.transactionId,
@@ -162,6 +168,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           next.premiumPaymentDetail = statusData.subscription.premiumPaymentDetail;
           if (statusData.subscription.age !== undefined) {
             next.age = statusData.subscription.age;
+          }
+          if (statusData.subscription.upiId) {
+            next.upiId = statusData.subscription.upiId;
           }
           if (statusData.subscription.verifiedPhone && !next.phone) {
             next.phone = statusData.subscription.verifiedPhone;
