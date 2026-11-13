@@ -228,15 +228,75 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
 
           {existingApp.status === 'pending' && (
             <div className="space-y-4">
-              <div className="w-16 h-16 rounded-full bg-amber-500/10 text-amber-500 mx-auto flex items-center justify-center">
-                <Clock className="w-8 h-8 animate-pulse" />
+              <div className="flex flex-col items-center gap-3">
+                {existingApp.authorAvatar ? (
+                  <img
+                    src={existingApp.authorAvatar}
+                    alt={existingApp.authorName}
+                    className="w-20 h-20 rounded-2xl object-cover border-2 border-amber-500 shadow-md"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-amber-500/10 text-amber-500 mx-auto flex items-center justify-center">
+                    <Clock className="w-8 h-8 animate-pulse" />
+                  </div>
+                )}
+                <span className="px-3 py-1 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 text-[11px] font-extrabold uppercase tracking-wider">
+                  Pending Administrator Approval
+                </span>
               </div>
               <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-                Application Status: Pending Administrator Approval
+                {existingApp.authorName} — Application Pending Approval
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-lg mx-auto">
-                Thank you, <strong className="text-slate-800 dark:text-slate-200">{existingApp.authorName}</strong>! Your submission for <span className="text-rose-500 font-semibold font-mono">"{existingApp.sampleComicTitle}"</span> is registered and your photo is on the Author List.
+                Thank you, <strong className="text-slate-800 dark:text-slate-200">{existingApp.authorName}</strong>! Your profile photo and sample comic <span className="text-rose-500 font-semibold font-mono">&ldquo;{existingApp.sampleComicTitle}&rdquo;</span> have been sent to the Admin Console for approval.
               </p>
+
+              {existingApp.sampleImages && existingApp.sampleImages.length > 0 && (
+                <div className="max-w-lg mx-auto pt-2 space-y-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                    Submitted Sample Comic Pages ({existingApp.sampleImages.length}):
+                  </span>
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {existingApp.sampleImages.map((imgUrl, idx) => (
+                      <img
+                        key={idx}
+                        src={imgUrl}
+                        alt={`Sample ${idx + 1}`}
+                        className="w-full h-20 object-cover rounded-xl border border-slate-200 dark:border-slate-700"
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('authors')}
+                  className="py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-md flex items-center gap-2 cursor-pointer"
+                >
+                  <Users className="w-4 h-4" />
+                  <span>View Author List</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    switchDemoRole('reader');
+                    setCurrentTab('books');
+                  }}
+                  className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>Browse as Reader</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingExisting(true)}
+                  className="py-2.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs uppercase tracking-wider cursor-pointer"
+                >
+                  Update Photo / Sample Photos
+                </button>
+              </div>
             </div>
           )}
 

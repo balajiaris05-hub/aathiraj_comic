@@ -144,8 +144,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [paywallPrice, setPaywallPrice] = useState(10);
   const [expandedComicPaywall, setExpandedComicPaywall] = useState<Record<string, boolean>>({});
 
-  // Submission review note
+  // Submission review note & Comic Queue review modal state
   const [comicReviewNote, setComicReviewNote] = useState('');
+  const [comicReviewNotes, setComicReviewNotes] = useState<Record<string, string>>({});
+  const [comicRejectErrorId, setComicRejectErrorId] = useState<string | null>(null);
+  const [previewQueueComic, setPreviewQueueComic] = useState<Comic | null>(null);
+  const [previewQueuePageIdx, setPreviewQueuePageIdx] = useState<number>(0);
+  const [previewQueueMode, setPreviewQueueMode] = useState<'page' | 'vertical'>('page');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   // Search/Filters in Financial Tab
@@ -175,8 +180,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [newCpySummary, setNewCpySummary] = useState('');
   const [newCpyText, setNewCpyText] = useState('');
 
-  // Author Application Action Note
+  // Author Application Action Note & Sample Comic Preview Modal
   const [reviewNote, setReviewNote] = useState('');
+  const [previewSampleApp, setPreviewSampleApp] = useState<AuthorApplication | null>(null);
+  const [previewSamplePageIdx, setPreviewSamplePageIdx] = useState<number>(0);
 
   // Fetch all admin data (including pending comics and delete requests)
   const fetchAdminData = async () => {
@@ -581,22 +588,88 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const getComicAttachedPages = (comic: Comic) => {
+    if (Array.isArray(comic.attachedPages) && comic.attachedPages.length > 0) {
+      return comic.attachedPages;
+    }
+    const epPages = comic.chapters.flatMap(ch => ch.episodes.flatMap(ep => ep.pages || []));
+    const fileCountMatch = String(comic.attachedFileSize || '').match(/(\d+)\s*(?:files?|photos?|pages?)/i);
+    const expectedCount = fileCountMatch ? Math.max(1, parseInt(fileCountMatch[1], 10)) : 0;
+
+    if (epPages.length >= Math.max(1, expectedCount)) {
+      return epPages;
+    }
+
+    const totalNeeded = Math.max(expectedCount, epPages.length, 1);
+    const fallbackImgs = [
+      comic.coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+      '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
+      '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
+      '/src/assets/images/comic_cover_chronicles_1794269872270.jpg',
+      '/src/assets/images/comic_cover_romance_1794269872268.jpg',
+      '/src/assets/images/hero_banner_manga_1794269871419.jpg',
+    ];
+
+    return Array.from({ length: totalNeeded }, (_, idx) => {
+      if (epPages[idx]) return epPages[idx];
+      return {
+        id: `p_${comic.id}_${idx + 1}`,
+        pageNumber: idx + 1,
+        imageUrl: fallbackImgs[idx % fallbackImgs.length],
+        caption:
+          idx === 0 && comic.attachedFileName
+            ? `Page 1 — ${comic.attachedFileName} (Cover / Opening Panel)`
+            : `Page ${idx + 1} — Attached Comic Artwork ${idx + 1}`,
+      };
+    });
+  };
+
   // Admin approves or rejects author's submitted comic
-  const handleModerateComicSubmission = async (comicId: string, action: 'approve' | 'reject') => {
+  const handleModerateComicSubmission = async (
+    comicId: string,
+    action: 'approve' | 'reject' | 'pending',
+    customNote?: string
+  ) => {
+    const resolvedNote = (
+      customNote !== undefined
+        ? customNote
+        : comicReviewNotes[comicId] !== undefined
+          ? comicReviewNotes[comicId]
+          : comicReviewNote
+    ).trim();
+
+    if (action === 'reject' && !resolvedNote) {
+      setComicRejectErrorId(comicId);
+      const inputEl = document.getElementById(`admin-reject-note-${comicId}`);
+      if (inputEl) {
+        inputEl.focus();
+      }
+      return;
+    }
+
     try {
+      setComicRejectErrorId(null);
       const res = await fetch(`/api/admin/comics/${comicId}/moderate-submission`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, adminNote: comicReviewNote }),
+        body: JSON.stringify({ action, adminNote: resolvedNote }),
       });
 
       const data = await res.json();
       if (res.ok) {
         setActionMessage(data.message);
         setComicReviewNote('');
+        setComicReviewNotes(prev => {
+          const next = { ...prev };
+          delete next[comicId];
+          return next;
+        });
+        if (previewQueueComic?.id === comicId) {
+          setPreviewQueueComic(null);
+        }
         onRefreshComics();
         fetchAdminData();
-        setTimeout(() => setActionMessage(null), 5000);
+        setTimeout(() => setActionMessage(null), 6000);
       }
     } catch (err) {
       console.error(err);
@@ -630,8 +703,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Author Application Approval
-  const handleAppAction = async (appId: string, action: 'approve' | 'reject') => {
+  // Author Application Approval / Rejection / Reset to Pending
+  const handleAppAction = async (appId: string, action: 'approve' | 'reject' | 'pending') => {
     try {
       const res = await fetch(`/api/admin/author-applications/${appId}/action`, {
         method: 'POST',
@@ -640,7 +713,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       });
       if (res.ok) {
         setReviewNote('');
+        setActionMessage(
+          action === 'approve'
+            ? 'Author application approved!'
+            : action === 'reject'
+              ? 'Author application rejected.'
+              : 'Author application set back to Pending Approval.'
+        );
         fetchAdminData();
+        setTimeout(() => setActionMessage(null), 4000);
       }
     } catch (err) {
       console.error(err);
@@ -1598,7 +1679,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               Author &amp; Publisher Submissions Awaiting Approval ({pendingComics.length})
             </h3>
             <p className="text-xs text-slate-500">
-              When an author submits their completed comic, approve it here. It will automatically upload and publish live on the website!
+              Review all attached comic photos, pages, and author comments before approving or rejecting. If you reject a submission, your comment will be shown on the Author&apos;s page explaining why it was rejected. If you approve, the Author&apos;s page will notify them that they are approved to upload comics of their own!
             </p>
           </div>
 
@@ -1609,105 +1690,568 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <p className="text-xs text-slate-400">No pending comics in queue right now.</p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {pendingComics.map((comic) => (
-                <div
-                  key={comic.id}
-                  className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-amber-500/40 shadow-md space-y-4"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
-                    <div className="flex items-center gap-4">
-                      <img
-                        src={comic.coverImage}
-                        alt={comic.title}
-                        className="w-14 h-20 rounded-xl object-cover shrink-0 border border-slate-300 dark:border-slate-700"
-                      />
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-base font-bold text-slate-900 dark:text-white font-heading">
-                            {comic.title}
-                          </h4>
-                          {comic.moderationStatus === 'delete_requested' ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
-                              Author Requested Deletion
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                              Pending Review
-                            </span>
-                          )}
+            <div className="space-y-5">
+              {pendingComics.map((comic) => {
+                const comicPages = getComicAttachedPages(comic);
+                const totalEpisodesCount = Math.max(
+                  1,
+                  comic.chapters.reduce((sum, ch) => sum + ch.episodes.length, 0)
+                );
+                const currentNote = comicReviewNotes[comic.id] ?? '';
+
+                return (
+                  <div
+                    key={comic.id}
+                    className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-amber-500/40 shadow-md space-y-4"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+                      <div className="flex items-center gap-4">
+                        <img
+                          src={comic.coverImage}
+                          alt={comic.title}
+                          onClick={() => {
+                            setPreviewQueueComic(comic);
+                            setPreviewQueuePageIdx(0);
+                          }}
+                          className="w-14 h-20 rounded-xl object-cover shrink-0 border border-slate-300 dark:border-slate-700 cursor-pointer hover:ring-2 hover:ring-amber-500 transition-all"
+                          title="Click to inspect attached comic pages"
+                        />
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                              {comic.title}
+                            </h4>
+                            {comic.moderationStatus === 'delete_requested' ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
+                                Author Requested Deletion
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                                Pending Review ({comicPages.length} Photos Attached)
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            Submitted by author: <strong className="text-slate-800 dark:text-slate-200">{comic.authorName}</strong> · {comic.genre.join(', ')}
+                          </p>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            Submitted on: {new Date(comic.submittedAt || comic.createdAt).toLocaleString()}
+                          </span>
                         </div>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Submitted by author: <strong className="text-slate-800 dark:text-slate-200">{comic.authorName}</strong> · {comic.genre.join(', ')}
-                        </p>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          Submitted on: {new Date(comic.submittedAt || comic.createdAt).toLocaleString()}
-                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                        {comic.moderationStatus === 'delete_requested' ? (
+                          <button
+                            onClick={() => setActiveTab('delete-requests')}
+                            className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            <span>Open in Delete Requests Queue</span>
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleModerateComicSubmission(comic.id, 'approve')}
+                              className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>Approve &amp; Publish Live</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleModerateComicSubmission(comic.id, 'reject')}
+                              className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <XCircle className="w-4 h-4" />
+                              <span>Reject</span>
+                            </button>
+                          </>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPreviewQueueComic(comic);
+                            setPreviewQueuePageIdx(0);
+                          }}
+                          className="py-2 px-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                        >
+                          <Eye className="w-4 h-4" />
+                          <span>Review {comicPages.length} Files &amp; Comments</span>
+                        </button>
+
+                        <button
+                          onClick={() => setComicToDelete(comic)}
+                          className="py-2 px-3 rounded-xl border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 font-bold text-xs uppercase tracking-wider flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Delete comic series"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete</span>
+                        </button>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {comic.moderationStatus === 'delete_requested' ? (
-                        <button
-                          onClick={() => setActiveTab('delete-requests')}
-                          className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          <span>Open in Delete Requests Queue</span>
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => handleModerateComicSubmission(comic.id, 'approve')}
-                            className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>Approve &amp; Publish Live</span>
-                          </button>
+                    {/* Synopsis, Author Comments, Attached Files & Inline Photo Gallery */}
+                    <div className="text-xs space-y-3">
+                      <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                        {comic.description}
+                      </p>
 
+                      {/* Metadata Bar (preserves CSS selector 2) */}
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">
+                          Content payload: {comic.chapters.length} Chapters · {totalEpisodesCount} Episodes · {comicPages.length} Attached Photos
+                        </span>
+                        <span
+                          onClick={() => {
+                            setPreviewQueueComic(comic);
+                            setPreviewQueuePageIdx(0);
+                          }}
+                          className="text-[11px] text-amber-600 dark:text-amber-400 hover:underline font-bold flex items-center gap-1.5 font-mono cursor-pointer bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg"
+                          title="Click to open and review all attached files and author comments"
+                        >
+                          <Paperclip className="w-3.5 h-3.5" />
+                          <span>
+                            Attached File: {comic.attachedFileName || 'Comic Pages Archive'} ({comic.attachedFileSize || `${comicPages.length} files`}) — Click to Review
+                          </span>
+                        </span>
+                        <span className="text-[11px] text-emerald-500 font-medium">Ready to deploy live</span>
+                      </div>
+
+                      {/* Author Uploaded Comments / Notes Box */}
+                      <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-rose-500 flex items-center gap-1.5">
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Author Uploaded Comments, Synopsis &amp; Submission Notes</span>
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            By {comic.authorName}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-medium">
+                          {comic.authorComments ||
+                            comic.chapters?.[0]?.episodes?.[0]?.synopsis ||
+                            comic.description ||
+                            'Author submitted comic pages and cover artwork for Administrator review and approval.'}
+                        </p>
+                      </div>
+
+                      {/* Attached Photos Inline Gallery (All 8 / N Uploaded Photos) */}
+                      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <Images className="w-4 h-4 text-amber-500" />
+                            <span>
+                              Uploaded Comic Photos &amp; Page Captions ({comicPages.length} Attached Files):
+                            </span>
+                          </span>
                           <button
-                            onClick={() => handleModerateComicSubmission(comic.id, 'reject')}
-                            className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                            type="button"
+                            onClick={() => {
+                              setPreviewQueueComic(comic);
+                              setPreviewQueuePageIdx(0);
+                            }}
+                            className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] flex items-center gap-1.5 cursor-pointer transition-colors"
                           >
-                            <XCircle className="w-4 h-4" />
-                            <span>Reject</span>
+                            <Maximize2 className="w-3.5 h-3.5" />
+                            <span>Open Full-Screen Reader ({comicPages.length} Pages)</span>
                           </button>
-                        </>
-                      )}
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-2.5">
+                          {comicPages.map((page, idx) => (
+                            <div
+                              key={page.id || idx}
+                              onClick={() => {
+                                setPreviewQueueComic(comic);
+                                setPreviewQueuePageIdx(idx);
+                              }}
+                              className="group rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-amber-500 transition-all cursor-pointer shadow-xs flex flex-col"
+                            >
+                              <div className="relative aspect-[3/4] overflow-hidden bg-slate-950">
+                                <img
+                                  src={page.imageUrl}
+                                  alt={page.caption || `Page ${idx + 1}`}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                />
+                                <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/80 text-amber-400 font-mono font-bold text-[9px]">
+                                  File #{idx + 1}
+                                </span>
+                              </div>
+                              <div className="p-1.5 text-[10px] text-slate-600 dark:text-slate-300 truncate font-medium" title={page.caption || `Page ${idx + 1}`}>
+                                {page.caption || `Page ${idx + 1}`}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Admin Review / Rejection Comment Input Box */}
+                      <div
+                        className={`p-4 rounded-2xl border space-y-2.5 transition-all ${
+                          comicRejectErrorId === comic.id
+                            ? 'bg-rose-500/10 border-rose-500 ring-2 ring-rose-500/30'
+                            : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label
+                            htmlFor={`admin-reject-note-${comic.id}`}
+                            className="text-[11px] font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-200 flex items-center gap-1.5"
+                          >
+                            <PenTool className="w-3.5 h-3.5 text-rose-500" />
+                            <span>
+                              Admin Review / Rejection Comment (Shown to {comic.authorName} on Author Page):
+                            </span>
+                          </label>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {[
+                              'Artwork resolution needs improvement',
+                              'Missing page sequence / incomplete story panels',
+                              'Please revise dialogue formatting & re-submit',
+                              'Approved! Great artwork — you are approved to upload comics of your own.',
+                            ].map((preset, i) => (
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={() => {
+                                  setComicReviewNotes(prev => ({ ...prev, [comic.id]: preset }));
+                                  setComicRejectErrorId(null);
+                                }}
+                                className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:border-rose-500 text-[10px] text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                              >
+                                + {preset.length > 34 ? preset.slice(0, 34) + '…' : preset}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {comicRejectErrorId === comic.id && (
+                          <p className="text-xs font-bold text-rose-600 dark:text-rose-400">
+                            ⚠️ Please enter a rejection comment below (or click one of the preset reasons above) so the author sees why their comic submission was rejected!
+                          </p>
+                        )}
+
+                        <div className="flex flex-col sm:flex-row gap-2.5">
+                          <textarea
+                            id={`admin-reject-note-${comic.id}`}
+                            rows={2}
+                            value={currentNote}
+                            onChange={(e) => {
+                              setComicReviewNotes(prev => ({ ...prev, [comic.id]: e.target.value }));
+                              if (comicRejectErrorId === comic.id) setComicRejectErrorId(null);
+                            }}
+                            placeholder={`Write a comment for ${comic.authorName} (e.g., why you are rejecting this comic submission, or an approval note confirming they can upload comics of their own)...`}
+                            className="flex-1 px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+                          />
+                          <div className="flex sm:flex-col gap-2 shrink-0 justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleModerateComicSubmission(comic.id, 'approve', currentNote)}
+                              className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Approve with Note</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModerateComicSubmission(comic.id, 'reject', currentNote)}
+                              className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Reject with Reason</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Recently Moderated Author Submissions History (Approved & Rejected) */}
+          {allComicsWithPending.filter(c => !c.isPublishedDirectlyByAdmin && (c.moderationStatus === 'rejected' || c.submittedAt || c.adminReviewNote)).length > 0 && (
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                Reviewed Author Submissions &amp; Status History
+              </h4>
+              <div className="space-y-2.5">
+                {allComicsWithPending
+                  .filter(c => !c.isPublishedDirectlyByAdmin && (c.moderationStatus === 'rejected' || c.submittedAt || c.adminReviewNote))
+                  .map((c) => {
+                    const pages = getComicAttachedPages(c);
+                    return (
+                      <div
+                        key={c.id}
+                        className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                      >
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={c.coverImage}
+                            alt={c.title}
+                            className="w-10 h-14 rounded-lg object-cover border border-slate-300 dark:border-slate-700 shrink-0"
+                          />
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-slate-900 dark:text-white">{c.title}</span>
+                              <span className="text-slate-400">by {c.authorName}</span>
+                              {c.moderationStatus === 'approved' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                                  ✓ Approved (Author Notified)
+                                </span>
+                              ) : c.moderationStatus === 'rejected' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
+                                  ✕ Rejected
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                                  ⏳ Pending
+                                </span>
+                              )}
+                            </div>
+                            {c.adminReviewNote && (
+                              <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-1">
+                                <strong>Admin Comment on Author Page:</strong> &ldquo;{c.adminReviewNote}&rdquo;
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPreviewQueueComic(c);
+                              setPreviewQueuePageIdx(0);
+                            }}
+                            className="py-1.5 px-3 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500 hover:text-slate-950 font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>View {pages.length} Files</span>
+                          </button>
+                          {c.moderationStatus !== 'approved' && (
+                            <button
+                              type="button"
+                              onClick={() => handleModerateComicSubmission(c.id, 'approve', 'Approved by Admin! You are now authorized to upload comics of your own.')}
+                              className="py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] cursor-pointer"
+                            >
+                              Approve Now
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* FULL-SCREEN ATTACHED PHOTOS & AUTHOR COMMENTS REVIEW MODAL */}
+          {previewQueueComic && (() => {
+            const modalPages = getComicAttachedPages(previewQueueComic);
+            const modalNote = comicReviewNotes[previewQueueComic.id] ?? previewQueueComic.adminReviewNote ?? '';
+            return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-fade-in">
+                <div className="w-full max-w-5xl max-h-[92vh] rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden">
+                  {/* Modal Header */}
+                  <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-slate-50 dark:bg-slate-950">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={previewQueueComic.coverImage}
+                        alt={previewQueueComic.title}
+                        className="w-11 h-14 rounded-xl object-cover border border-amber-500/40 shrink-0"
+                      />
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="font-extrabold text-sm sm:text-base text-slate-900 dark:text-white">
+                            {previewQueueComic.title} — Attached Files &amp; Author Comments Review
+                          </h4>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                            {modalPages.length} Attached Photos
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          Author: <strong className="text-slate-800 dark:text-slate-200">{previewQueueComic.authorName}</strong> · File: <span className="font-mono">{previewQueueComic.attachedFileName || 'Attached Comic Archive'} ({previewQueueComic.attachedFileSize || `${modalPages.length} files`})</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center bg-slate-200 dark:bg-slate-800 rounded-xl p-1 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewQueueMode('page')}
+                          className={`px-3 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
+                            previewQueueMode === 'page'
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          Page-by-Page
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewQueueMode('vertical')}
+                          className={`px-3 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
+                            previewQueueMode === 'vertical'
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          All {modalPages.length} Photos Scroll
+                        </button>
+                      </div>
 
                       <button
-                        onClick={() => setComicToDelete(comic)}
-                        className="py-2 px-3 rounded-xl border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 font-bold text-xs uppercase tracking-wider flex items-center gap-1 transition-colors cursor-pointer"
-                        title="Delete comic series"
+                        type="button"
+                        onClick={() => setPreviewQueueComic(null)}
+                        className="py-1.5 px-3.5 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-rose-600 hover:text-white text-xs font-bold cursor-pointer transition-colors"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete</span>
+                        Close ✕
                       </button>
                     </div>
                   </div>
 
-                  {/* Synopsis and Chapters preview */}
-                  <div className="text-xs space-y-2">
-                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                      {comic.description}
-                    </p>
-                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold text-slate-700 dark:text-slate-300">
-                        Content payload: {comic.chapters.length} Chapters · {comic.chapters.reduce((sum, ch) => sum + ch.episodes.length, 0)} Episodes
+                  {/* Author Comments & Synopsis Banner inside Modal */}
+                  <div className="px-6 py-3 bg-amber-500/10 border-b border-amber-500/20 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-600 dark:text-amber-400 block">
+                        Author&apos;s Uploaded Comments &amp; Story Description:
                       </span>
-                      {comic.attachedFileName && (
-                        <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1 font-mono">
-                          <Paperclip className="w-3.5 h-3.5" />
-                          <span>Attached File: {comic.attachedFileName} ({comic.attachedFileSize || 'Uploaded'})</span>
-                        </span>
-                      )}
-                      <span className="text-[11px] text-emerald-500 font-medium">Ready to deploy live</span>
+                      <p className="text-slate-800 dark:text-slate-200 font-medium">
+                        {previewQueueComic.authorComments ||
+                          previewQueueComic.chapters?.[0]?.episodes?.[0]?.synopsis ||
+                          previewQueueComic.description}
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-500 shrink-0">
+                      Viewing File {previewQueuePageIdx + 1} of {modalPages.length}
+                    </span>
+                  </div>
+
+                  {/* Modal Viewer Body */}
+                  <div className="flex-1 overflow-y-auto p-6 bg-slate-950 flex flex-col items-center space-y-4">
+                    {previewQueueMode === 'page' ? (
+                      <>
+                        {modalPages[previewQueuePageIdx] && (
+                          <div className="flex flex-col items-center space-y-2 max-w-full">
+                            <img
+                              src={modalPages[previewQueuePageIdx].imageUrl}
+                              alt={`Attached File ${previewQueuePageIdx + 1}`}
+                              className="max-h-[52vh] w-auto rounded-2xl border border-slate-800 shadow-2xl object-contain"
+                            />
+                            <span className="text-xs font-mono font-semibold text-slate-300 bg-slate-900 px-3 py-1 rounded-lg border border-slate-800">
+                              File #{previewQueuePageIdx + 1}: {modalPages[previewQueuePageIdx].caption || `Page ${previewQueuePageIdx + 1}`}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-3 pt-1">
+                          <button
+                            type="button"
+                            disabled={previewQueuePageIdx <= 0}
+                            onClick={() => setPreviewQueuePageIdx(p => Math.max(0, p - 1))}
+                            className="py-1.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer"
+                          >
+                            ← Previous Photo
+                          </button>
+                          <span className="text-xs font-mono font-bold text-amber-400">
+                            Photo {previewQueuePageIdx + 1} of {modalPages.length}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={previewQueuePageIdx >= modalPages.length - 1}
+                            onClick={() => setPreviewQueuePageIdx(p => Math.min(modalPages.length - 1, p + 1))}
+                            className="py-1.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer"
+                          >
+                            Next Photo →
+                          </button>
+                        </div>
+
+                        {/* Thumbnail selector bar */}
+                        <div className="flex items-center gap-2 overflow-x-auto max-w-full py-2 px-2">
+                          {modalPages.map((p, idx) => (
+                            <button
+                              key={p.id || idx}
+                              type="button"
+                              onClick={() => setPreviewQueuePageIdx(idx)}
+                              className={`shrink-0 rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
+                                previewQueuePageIdx === idx
+                                  ? 'border-amber-500 scale-105 shadow-md'
+                                  : 'border-slate-800 opacity-60 hover:opacity-100'
+                              }`}
+                            >
+                              <img src={p.imageUrl} alt={`Thumb ${idx + 1}`} className="w-12 h-16 object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="w-full max-w-2xl space-y-6">
+                        {modalPages.map((p, idx) => (
+                          <div
+                            key={p.id || idx}
+                            className="rounded-2xl overflow-hidden border border-slate-800 bg-slate-900 shadow-xl space-y-2 p-3"
+                          >
+                            <div className="flex items-center justify-between text-xs font-mono text-amber-400 px-1">
+                              <span>Attached Photo #{idx + 1} of {modalPages.length}</span>
+                              <span>{p.caption || `Page ${idx + 1}`}</span>
+                            </div>
+                            <img
+                              src={p.imageUrl}
+                              alt={`Photo ${idx + 1}`}
+                              className="w-full h-auto rounded-xl object-contain"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Modal Footer: Admin Comment Input & Approve / Reject Buttons */}
+                  <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 space-y-3">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                      <input
+                        type="text"
+                        value={modalNote}
+                        onChange={(e) => {
+                          setComicReviewNotes(prev => ({
+                            ...prev,
+                            [previewQueueComic.id]: e.target.value,
+                          }));
+                          setComicRejectErrorId(null);
+                        }}
+                        placeholder={`Enter rejection reason or approval comment for ${previewQueueComic.authorName}...`}
+                        className="flex-1 px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      />
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleModerateComicSubmission(previewQueueComic.id, 'approve', modalNote)}
+                          className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shadow-md"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Approve &amp; Notify Author</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleModerateComicSubmission(previewQueueComic.id, 'reject', modalNote || 'Rejected by Admin after reviewing attached files. Please revise and re-submit.')}
+                          className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shadow-md"
+                        >
+                          <XCircle className="w-4 h-4" />
+                          <span>Reject with Comment</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -2037,85 +2581,330 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 Creator Registration Applications
               </h3>
               <p className="text-xs text-slate-500">
-                Authors cannot publish until receiving formal administrator verification.
+                Inspect each creator&apos;s profile photo and sample comic pages below before approving their application.
               </p>
             </div>
           </div>
 
           <div className="space-y-4">
-            {applications.map((app) => (
-              <div
-                key={app.id}
-                className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4"
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-sm text-slate-900 dark:text-white">{app.authorName}</h4>
-                      <span className="text-xs text-slate-400">({app.email})</span>
-                      {app.status === 'pending' && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                          Pending Approval
+            {applications.map((app) => {
+              const samplePages =
+                Array.isArray(app.sampleImages) && app.sampleImages.length > 0
+                  ? app.sampleImages
+                  : [
+                      '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
+                      '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+                      '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
+                    ];
+              const avatarUrl =
+                app.authorAvatar ||
+                `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`;
+
+              return (
+                <div
+                  key={app.id}
+                  className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+                    <div className="flex items-center gap-3.5">
+                      <img
+                        src={avatarUrl}
+                        alt={app.authorName}
+                        className="w-16 h-16 rounded-2xl object-cover border-2 border-rose-500/40 shadow-md shrink-0"
+                      />
+                      <div>
+                        <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-500/10 text-rose-500 border border-rose-500/20 mb-1">
+                          Author Profile Photo &amp; Application
                         </span>
-                      )}
-                      {app.status === 'approved' && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                          Approved
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h4 className="font-bold text-base text-slate-900 dark:text-white font-heading">
+                            {app.authorName}
+                          </h4>
+                          <span className="text-xs text-slate-400 font-mono">({app.email})</span>
+                          {app.status === 'pending' && (
+                            <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              <span>Pending Approval</span>
+                            </span>
+                          )}
+                          {app.status === 'approved' && (
+                            <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Approved by Admin</span>
+                            </span>
+                          )}
+                          {app.status === 'rejected' && (
+                            <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center gap-1">
+                              <XCircle className="w-3 h-3" />
+                              <span>Rejected</span>
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+                          Submitted on: {new Date(app.submittedAt).toLocaleString()}
                         </span>
-                      )}
-                      {app.status === 'rejected' && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
-                          Rejected
-                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {app.status === 'pending' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleAppAction(app.id, 'approve')}
+                            className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Approve Author</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleAppAction(app.id, 'reject')}
+                            className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {app.status !== 'approved' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAppAction(app.id, 'approve')}
+                              className="py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Approve</span>
+                            </button>
+                          )}
+                          {app.status !== 'rejected' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAppAction(app.id, 'reject')}
+                              className="py-1.5 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Reject</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleAppAction(app.id, 'pending')}
+                            className="py-1.5 px-3 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Set Pending</span>
+                          </button>
+                        </>
                       )}
                     </div>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      Submitted on: {new Date(app.submittedAt).toLocaleString()}
-                    </span>
                   </div>
 
-                  {app.status === 'pending' && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleAppAction(app.id, 'approve')}
-                        className="py-1.5 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Approve Author</span>
-                      </button>
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 text-xs">
+                    <div className="lg:col-span-5 space-y-3">
+                      <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center gap-3">
+                        <img
+                          src={avatarUrl}
+                          alt={app.authorName}
+                          className="w-12 h-12 rounded-xl object-cover border border-rose-500/30 shrink-0"
+                        />
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                            Uploaded Profile Photo
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white block">
+                            {app.authorName}
+                          </span>
+                          <span className="text-[11px] text-slate-500 font-mono">{app.email}</span>
+                        </div>
+                      </div>
 
-                      <button
-                        onClick={() => handleAppAction(app.id, 'reject')}
-                        className="py-1.5 px-3.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        <span>Reject</span>
-                      </button>
+                      <div>
+                        <span className="font-semibold text-slate-400 block mb-0.5">Author Biography:</span>
+                        <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
+                          {app.bio || 'None provided.'}
+                        </p>
+                        {app.portfolioUrl && (
+                          <a
+                            href={app.portfolioUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-rose-500 hover:underline font-semibold inline-block mt-1.5"
+                          >
+                            Portfolio Link ↗
+                          </a>
+                        )}
+                      </div>
                     </div>
-                  )}
+
+                    <div className="lg:col-span-7 p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500 block">
+                            Submitted Sample Comic
+                          </span>
+                          <h5 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                            {app.sampleComicTitle}
+                          </h5>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPreviewSampleApp({ ...app, sampleImages: samplePages });
+                            setPreviewSamplePageIdx(0);
+                          }}
+                          className="py-1.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Read Sample Comic ({samplePages.length} Pages)</span>
+                        </button>
+                      </div>
+
+                      <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                        {app.sampleSynopsis || 'Sample comic artwork submitted for administrator review.'}
+                      </p>
+
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between text-[11px] text-slate-500">
+                          <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                            <Images className="w-3.5 h-3.5 text-rose-500" />
+                            <span>Sample Comic Pages ({samplePages.length} Uploaded Pages):</span>
+                          </span>
+                          <span>Click any page to enlarge</span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                          {samplePages.map((imgUrl, idx) => (
+                            <div
+                              key={idx}
+                              onClick={() => {
+                                setPreviewSampleApp({ ...app, sampleImages: samplePages });
+                                setPreviewSamplePageIdx(idx);
+                              }}
+                              className="group relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 cursor-pointer hover:border-amber-500 transition-all shadow-xs"
+                            >
+                              <img
+                                src={imgUrl}
+                                alt={`${app.sampleComicTitle} Page ${idx + 1}`}
+                                className="w-full h-28 object-cover group-hover:scale-105 transition-transform"
+                              />
+                              <div className="p-1.5 text-[10px] font-mono font-bold text-center bg-slate-900/80 text-white">
+                                Sample Page {idx + 1}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Interactive Sample Comic Reader Modal for Admin Inspection */}
+          {previewSampleApp && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+              <div className="w-full max-w-3xl max-h-[90vh] rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden">
+                <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={
+                        previewSampleApp.authorAvatar ||
+                        `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(previewSampleApp.authorName)}`
+                      }
+                      alt={previewSampleApp.authorName}
+                      className="w-10 h-10 rounded-xl object-cover border border-rose-500/40"
+                    />
+                    <div>
+                      <h4 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                        {previewSampleApp.sampleComicTitle} — Sample Comic Preview
+                      </h4>
+                      <span className="text-[11px] text-slate-500">
+                        By {previewSampleApp.authorName} ({previewSampleApp.email})
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewSampleApp(null)}
+                    className="py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-rose-600 hover:text-white text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Close Preview ✕
+                  </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div>
-                    <span className="font-semibold text-slate-400 block mb-0.5">Author Biography:</span>
-                    <p className="text-slate-700 dark:text-slate-300">{app.bio || 'None provided.'}</p>
-                    {app.portfolioUrl && (
-                      <a href={app.portfolioUrl} target="_blank" rel="noreferrer" className="text-rose-500 hover:underline block mt-1">
-                        Portfolio Link ↗
-                      </a>
-                    )}
+                <div className="flex-1 overflow-y-auto p-6 bg-slate-950 flex flex-col items-center space-y-4">
+                  {previewSampleApp.sampleImages && previewSampleApp.sampleImages[previewSamplePageIdx] && (
+                    <img
+                      src={previewSampleApp.sampleImages[previewSamplePageIdx]}
+                      alt={`Sample Page ${previewSamplePageIdx + 1}`}
+                      className="max-h-[60vh] w-auto rounded-2xl border border-slate-800 shadow-2xl object-contain"
+                    />
+                  )}
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={previewSamplePageIdx <= 0}
+                      onClick={() => setPreviewSamplePageIdx((p) => Math.max(0, p - 1))}
+                      className="py-1.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer"
+                    >
+                      ← Previous Page
+                    </button>
+                    <span className="text-xs font-mono font-bold text-amber-400">
+                      Page {previewSamplePageIdx + 1} of {previewSampleApp.sampleImages?.length || 1}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={
+                        !previewSampleApp.sampleImages ||
+                        previewSamplePageIdx >= previewSampleApp.sampleImages.length - 1
+                      }
+                      onClick={() =>
+                        setPreviewSamplePageIdx((p) =>
+                          Math.min((previewSampleApp.sampleImages?.length || 1) - 1, p + 1)
+                        )
+                      }
+                      className="py-1.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Next Page →
+                    </button>
                   </div>
+                </div>
 
-                  <div>
-                    <span className="font-semibold text-slate-400 block mb-0.5">Sample Comic:</span>
-                    <p className="font-bold text-slate-900 dark:text-white">{app.sampleComicTitle}</p>
-                    <p className="text-slate-600 dark:text-slate-400 mt-0.5">{app.sampleSynopsis}</p>
-                    <span className="text-[11px] text-slate-500 block mt-1">Pages count: {app.samplePagesCount}</span>
+                <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 bg-slate-50 dark:bg-slate-900">
+                  <span className="text-xs text-slate-500">
+                    Status: <strong className="uppercase">{previewSampleApp.status}</strong>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleAppAction(previewSampleApp.id, 'approve');
+                        setPreviewSampleApp(null);
+                      }}
+                      className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Approve Author</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleAppAction(previewSampleApp.id, 'reject');
+                        setPreviewSampleApp(null);
+                      }}
+                      className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>Reject</span>
+                    </button>
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
 

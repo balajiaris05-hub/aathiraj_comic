@@ -119,7 +119,10 @@ export interface Comic {
   updatedAt: string;
   moderationStatus: 'approved' | 'pending' | 'rejected' | 'delete_requested';
   submittedAt?: string;
+  moderatedAt?: string;
   adminReviewNote?: string;
+  authorComments?: string;
+  attachedPages?: ComicPage[];
   isPublishedDirectlyByAdmin?: boolean;
   attachedFileName?: string;
   attachedFileSize?: string;

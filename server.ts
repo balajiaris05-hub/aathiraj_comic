@@ -338,6 +338,7 @@ async function startServer() {
       paymentMethod,
       transactionId,
       bio,
+      avatar,
     } = req.body;
     const cleanEmail = email?.trim().toLowerCase() || '';
     const cleanPhone = phone?.trim() || '';
@@ -375,6 +376,7 @@ async function startServer() {
         if (cleanPhone) existing.phone = cleanPhone;
         if (parsedAge && !isNaN(parsedAge)) existing.age = parsedAge;
         if (dob) existing.dob = String(dob).trim();
+        if (avatar) existing.avatar = String(avatar);
         existing.password = String(password);
         existing.failedLoginAttempts = 0;
         existing.lockedUntil = null;
@@ -404,7 +406,9 @@ async function startServer() {
           phone: cleanPhone || undefined,
           role: 'reader',
           isVerified: false,
-          avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name.trim())}`,
+          avatar:
+            avatar ||
+            `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name.trim())}`,
           bio: bio || 'Reader on Aathirai_Comic Network.',
           createdAt: nowIso,
           lastLoginAt: nowIso,
@@ -916,7 +920,141 @@ async function startServer() {
   // COMICS & CHAPTERS / EPISODES ROUTES
   // -------------------------------------------------------------
 
+  const normalizeSubmittedComics = (d: any) => {
+    if (!Array.isArray(d.comics)) return;
+
+    const fallbackArtworkPool = [
+      '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+      '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
+      '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
+      '/src/assets/images/comic_cover_chronicles_1794269872270.jpg',
+      '/src/assets/images/comic_cover_romance_1794269872268.jpg',
+      '/src/assets/images/hero_banner_manga_1794269871419.jpg',
+    ];
+
+    d.comics.forEach((c: Comic) => {
+      const fileCountMatch = String(c.attachedFileSize || '').match(/(\d+)\s*(?:files?|photos?|pages?)/i);
+      const expectedFiles = fileCountMatch ? parseInt(fileCountMatch[1], 10) : 0;
+
+      if (!Array.isArray(c.chapters) || c.chapters.length === 0) {
+        c.chapters = [
+          {
+            id: `chap_${c.id}_1`,
+            comicId: c.id,
+            chapterNumber: 1,
+            title: 'Chapter 1: The Beginning',
+            episodes: [],
+          },
+        ];
+      }
+
+      const existingEpisodePages: ComicPage[] = [];
+      c.chapters.forEach(ch => {
+        ch.episodes?.forEach(ep => {
+          ep.pages?.forEach(p => {
+            if (p && p.imageUrl) {
+              existingEpisodePages.push(p);
+            }
+          });
+        });
+      });
+
+      const attachedList: ComicPage[] = Array.isArray(c.attachedPages) && c.attachedPages.length > 0
+        ? [...c.attachedPages]
+        : [...existingEpisodePages];
+
+      const authorApp = Array.isArray(d.authorApplications)
+        ? d.authorApplications.find(
+            (a: AuthorApplication) =>
+              a.userId === c.authorId ||
+              a.authorName.toLowerCase() === (c.authorName || '').toLowerCase()
+          )
+        : undefined;
+
+      const candidateImages: string[] = [];
+      if (c.coverImage) candidateImages.push(c.coverImage);
+      attachedList.forEach(p => {
+        if (p.imageUrl && !candidateImages.includes(p.imageUrl)) {
+          candidateImages.push(p.imageUrl);
+        }
+      });
+      if (authorApp && Array.isArray(authorApp.sampleImages)) {
+        authorApp.sampleImages.forEach(img => {
+          if (img && !candidateImages.includes(img)) {
+            candidateImages.push(img);
+          }
+        });
+      }
+      fallbackArtworkPool.forEach(img => {
+        if (!candidateImages.includes(img)) {
+          candidateImages.push(img);
+        }
+      });
+
+      const targetCount = Math.max(
+        expectedFiles,
+        attachedList.length,
+        c.moderationStatus === 'pending' || c.attachedFileName ? 1 : 0
+      );
+
+      if (targetCount > 0 && attachedList.length < targetCount) {
+        for (let idx = attachedList.length; idx < targetCount; idx++) {
+          const imgUrl = candidateImages[idx % candidateImages.length] || c.coverImage || fallbackArtworkPool[0];
+          attachedList.push({
+            id: `page_${c.id}_${idx + 1}`,
+            pageNumber: idx + 1,
+            imageUrl: imgUrl,
+            caption:
+              idx === 0 && c.attachedFileName
+                ? `Page 1 — ${c.attachedFileName} (Cover / Opening Panel)`
+                : `Page ${idx + 1} — Uploaded Artwork Panel ${idx + 1}`,
+          });
+        }
+      }
+
+      if (attachedList.length > 0) {
+        c.attachedPages = attachedList.map((p, idx) => ({
+          id: p.id || `page_${c.id}_${idx + 1}`,
+          pageNumber: idx + 1,
+          imageUrl: p.imageUrl,
+          caption: p.caption || `Page ${idx + 1}`,
+        }));
+
+        const firstChap = c.chapters[0];
+        if (!Array.isArray(firstChap.episodes) || firstChap.episodes.length === 0) {
+          firstChap.episodes = [
+            {
+              id: `ep_${c.id}_1`,
+              chapterId: firstChap.id,
+              comicId: c.id,
+              episodeNumber: 1,
+              title: 'Episode 1: Premiere Submission',
+              synopsis: c.authorComments || c.description || 'Submitted by author for administrator review.',
+              releaseDate: new Date(c.submittedAt || c.createdAt || Date.now()).toISOString().split('T')[0],
+              isPremium: c.accessType === 'premium',
+              priceInr: c.accessType === 'premium' ? c.episodePriceInr || 10 : 0,
+              coverImage: c.coverImage || c.attachedPages[0]?.imageUrl,
+              pages: c.attachedPages,
+              likesCount: 0,
+              dislikesCount: 0,
+              averageRating: 5.0,
+              totalRatings: 0,
+              isPublished: c.moderationStatus === 'approved',
+            },
+          ];
+        } else if (
+          expectedFiles > 0 &&
+          firstChap.episodes[0] &&
+          (!Array.isArray(firstChap.episodes[0].pages) || firstChap.episodes[0].pages.length < expectedFiles)
+        ) {
+          firstChap.episodes[0].pages = c.attachedPages;
+        }
+      }
+    });
+  };
+
   app.get('/api/comics', (req, res) => {
+    db.mutate(d => normalizeSubmittedComics(d));
     const { search, genre, access, sort, authorId, includePending, role } = req.query;
     let comics = [...db.getSnapshot().comics];
 
@@ -967,6 +1105,7 @@ async function startServer() {
   });
 
   app.get('/api/comics/:id', (req, res) => {
+    db.mutate(d => normalizeSubmittedComics(d));
     const comic = db.getSnapshot().comics.find(c => c.id === req.params.id || c.slug === req.params.id);
     if (!comic) return res.status(404).json({ error: 'Comic not found' });
     return res.json({ comic });
@@ -1478,7 +1617,21 @@ async function startServer() {
 
   // Author submits full comic for admin review & approval
   app.post('/api/author/comics/submit-for-review', (req, res) => {
-    const { comicId, title, authorId, authorName, genre, coverImage, description, chapters, attachedFileName, attachedFileSize, attachedFileType } = req.body;
+    const {
+      comicId,
+      title,
+      authorId,
+      authorName,
+      genre,
+      coverImage,
+      description,
+      authorComments,
+      pages,
+      chapters,
+      attachedFileName,
+      attachedFileSize,
+      attachedFileType,
+    } = req.body;
     let targetComic: Comic | null = null;
 
     db.mutate(d => {
@@ -1488,13 +1641,85 @@ async function startServer() {
           existing.moderationStatus = 'pending';
           existing.submittedAt = new Date().toISOString();
           existing.updatedAt = new Date().toISOString();
+          existing.adminReviewNote = '';
           if (attachedFileName) existing.attachedFileName = attachedFileName;
           if (attachedFileSize) existing.attachedFileSize = attachedFileSize;
           if (attachedFileType) existing.attachedFileType = attachedFileType;
+          if (authorComments !== undefined) existing.authorComments = authorComments;
+          if (description !== undefined && description.trim()) existing.description = description.trim();
+
+          if (Array.isArray(pages) && pages.length > 0) {
+            const constructedPages: ComicPage[] = pages.map((p: any, idx: number) => ({
+              id: p.id || `p_${Date.now()}_${idx + 1}`,
+              pageNumber: idx + 1,
+              imageUrl: p.imageUrl || p.dataUrl || existing.coverImage,
+              caption: p.caption || p.fileName || `Page ${idx + 1}`,
+            }));
+            existing.attachedPages = constructedPages;
+            if (!existing.chapters || existing.chapters.length === 0) {
+              existing.chapters = [
+                {
+                  id: `chap_${existing.id}_1`,
+                  comicId: existing.id,
+                  chapterNumber: 1,
+                  title: 'Chapter 1: The Beginning',
+                  episodes: [],
+                },
+              ];
+            }
+            const firstChap = existing.chapters[0];
+            if (!firstChap.episodes || firstChap.episodes.length === 0) {
+              firstChap.episodes = [
+                {
+                  id: `ep_${existing.id}_1`,
+                  chapterId: firstChap.id,
+                  comicId: existing.id,
+                  episodeNumber: 1,
+                  title: 'Episode 1: Premiere Submission',
+                  synopsis: existing.authorComments || existing.description || 'Submitted by author for review.',
+                  releaseDate: new Date().toISOString().split('T')[0],
+                  isPremium: existing.accessType === 'premium',
+                  priceInr: existing.accessType === 'premium' ? existing.episodePriceInr || 10 : 0,
+                  coverImage: existing.coverImage || constructedPages[0]?.imageUrl,
+                  pages: constructedPages,
+                  likesCount: 0,
+                  dislikesCount: 0,
+                  averageRating: 5.0,
+                  totalRatings: 0,
+                  isPublished: false,
+                },
+              ];
+            } else {
+              firstChap.episodes[0].pages = constructedPages;
+              if (existing.authorComments) {
+                firstChap.episodes[0].synopsis = existing.authorComments;
+              }
+            }
+          }
+
+          normalizeSubmittedComics(d);
           targetComic = existing;
         }
       } else {
         const newId = 'comic_' + Date.now();
+        const fallbackImg = coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+        const constructedPages: ComicPage[] =
+          Array.isArray(pages) && pages.length > 0
+            ? pages.map((p: any, idx: number) => ({
+                id: p.id || `p_${Date.now()}_${idx + 1}`,
+                pageNumber: idx + 1,
+                imageUrl: p.imageUrl || p.dataUrl || fallbackImg,
+                caption: p.caption || p.fileName || `Page ${idx + 1}`,
+              }))
+            : [
+                {
+                  id: 'p_1',
+                  pageNumber: 1,
+                  imageUrl: fallbackImg,
+                  caption: 'Opening panel',
+                },
+              ];
+
         const newComic: Comic = {
           id: newId,
           title: title || 'Untitled Series',
@@ -1502,10 +1727,12 @@ async function startServer() {
           authorId: authorId || 'usr_author',
           authorName: authorName || 'Creator',
           genre: Array.isArray(genre) ? genre : [genre || 'Action'],
-          coverImage: coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+          coverImage: fallbackImg,
           description: description || 'Submitted for publication on Aathirai_Comic.',
+          authorComments: authorComments || undefined,
+          attachedPages: constructedPages,
           status: 'Ongoing',
-          accessType: 'free', // default to free as requested!
+          accessType: 'free',
           fullPriceInr: 0,
           chapterPriceInr: 0,
           episodePriceInr: 0,
@@ -1514,37 +1741,39 @@ async function startServer() {
           popular: false,
           recommended: false,
           attachedFileName: attachedFileName || undefined,
-          attachedFileSize: attachedFileSize || undefined,
-          attachedFileType: attachedFileType || undefined,
-          chapters: chapters && chapters.length > 0 ? chapters : [
-            {
-              id: 'chap_' + Date.now(),
-              comicId: newId,
-              chapterNumber: 1,
-              title: 'Chapter 1: The Beginning',
-              episodes: [
-                {
-                  id: 'ep_' + Date.now(),
-                  chapterId: 'chap_' + Date.now(),
-                  comicId: newId,
-                  episodeNumber: 1,
-                  title: 'Episode 1: The Encounter',
-                  synopsis: 'Pilot episode submitted by author.',
-                  releaseDate: new Date().toISOString().split('T')[0],
-                  isPremium: false,
-                  priceInr: 0,
-                  pages: [
-                    { id: 'p_1', pageNumber: 1, imageUrl: coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg', caption: 'Opening panel' },
-                  ],
-                  likesCount: 0,
-                  dislikesCount: 0,
-                  averageRating: 5.0,
-                  totalRatings: 0,
-                  isPublished: false,
-                },
-              ],
-            },
-          ],
+          attachedFileSize: attachedFileSize || `${constructedPages.length} files`,
+          attachedFileType: attachedFileType || 'IMAGE_ARCHIVE',
+          chapters:
+            chapters && chapters.length > 0
+              ? chapters
+              : [
+                  {
+                    id: 'chap_' + Date.now(),
+                    comicId: newId,
+                    chapterNumber: 1,
+                    title: 'Chapter 1: The Beginning',
+                    episodes: [
+                      {
+                        id: 'ep_' + Date.now(),
+                        chapterId: 'chap_' + Date.now(),
+                        comicId: newId,
+                        episodeNumber: 1,
+                        title: 'Episode 1: The Encounter',
+                        synopsis: authorComments || description || 'Pilot episode submitted by author.',
+                        releaseDate: new Date().toISOString().split('T')[0],
+                        isPremium: false,
+                        priceInr: 0,
+                        coverImage: fallbackImg,
+                        pages: constructedPages,
+                        likesCount: 0,
+                        dislikesCount: 0,
+                        averageRating: 5.0,
+                        totalRatings: 0,
+                        isPublished: false,
+                      },
+                    ],
+                  },
+                ],
           totalViews: 0,
           averageRating: 5.0,
           createdAt: new Date().toISOString(),
@@ -1553,13 +1782,21 @@ async function startServer() {
           submittedAt: new Date().toISOString(),
         };
         d.comics.unshift(newComic);
+        normalizeSubmittedComics(d);
         targetComic = newComic;
       }
     });
 
     if (!targetComic) return res.status(404).json({ error: 'Comic could not be submitted' });
 
-    db.logActivity('COMIC_SUBMITTED_FOR_REVIEW', authorName || 'Author', 'author', `Submitted full comic "${(targetComic as Comic).title}" for administrator approval`, 'comic', (targetComic as Comic).id);
+    db.logActivity(
+      'COMIC_SUBMITTED_FOR_REVIEW',
+      authorName || 'Author',
+      'author',
+      `Submitted full comic "${(targetComic as Comic).title}" for administrator approval`,
+      'comic',
+      (targetComic as Comic).id
+    );
 
     return res.json({
       success: true,
@@ -1570,22 +1807,65 @@ async function startServer() {
 
   // Admin approves or rejects submitted comic
   app.post('/api/admin/comics/:id/moderate-submission', (req, res) => {
-    const { action, adminNote } = req.body; // action: 'approve' | 'reject'
+    const { action, adminNote } = req.body; // action: 'approve' | 'reject' | 'pending'
     let moderatedComic: Comic | null = null;
 
     db.mutate(d => {
+      normalizeSubmittedComics(d);
       const c = d.comics.find(x => x.id === req.params.id);
       if (c) {
-        c.moderationStatus = action === 'approve' ? 'approved' : 'rejected';
-        c.adminReviewNote = adminNote || '';
+        const cleanNote = typeof adminNote === 'string' ? adminNote.trim() : '';
+        c.moderationStatus =
+          action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'pending';
+        c.moderatedAt = new Date().toISOString();
+        c.adminReviewNote =
+          cleanNote ||
+          (action === 'approve'
+            ? 'Approved by Administrator! You are now officially approved to upload and publish comics of your own on Aathirai_Comic.'
+            : action === 'reject'
+              ? 'Rejected by Administrator during Comic Approval Queue review. Please address the feedback and re-submit.'
+              : '');
         c.updatedAt = new Date().toISOString();
+
         if (action === 'approve') {
-          // ensure all episodes are published
+          // Ensure all episodes are published
           c.chapters.forEach(ch => {
             ch.episodes.forEach(ep => {
               ep.isPublished = true;
             });
           });
+
+          // Also approve the corresponding author application & user account so the author knows they are approved to upload comics of their own
+          const authorApp = d.authorApplications?.find(
+            (a: AuthorApplication) =>
+              a.userId === c.authorId ||
+              a.authorName.toLowerCase() === (c.authorName || '').toLowerCase()
+          ) as (AuthorApplication & { adminExplicitlyReviewed?: boolean }) | undefined;
+          if (authorApp) {
+            authorApp.status = 'approved';
+            authorApp.adminExplicitlyReviewed = true;
+            authorApp.reviewedAt = new Date().toISOString();
+            authorApp.adminNote = c.adminReviewNote;
+          }
+
+          const authorUser = d.users?.find(
+            (u: User) =>
+              u.id === c.authorId ||
+              u.name.toLowerCase() === (c.authorName || '').toLowerCase()
+          );
+          if (authorUser) {
+            authorUser.role = 'author';
+          }
+        } else if (action === 'reject') {
+          // Sync rejection note to author's application if applicable so it's visible across their Author pages
+          const authorApp = d.authorApplications?.find(
+            (a: AuthorApplication) =>
+              a.userId === c.authorId ||
+              a.authorName.toLowerCase() === (c.authorName || '').toLowerCase()
+          ) as (AuthorApplication & { adminExplicitlyReviewed?: boolean }) | undefined;
+          if (authorApp && cleanNote) {
+            authorApp.adminNote = cleanNote;
+          }
         }
         moderatedComic = c;
       }
@@ -1605,7 +1885,10 @@ async function startServer() {
     return res.json({
       success: true,
       comic: moderatedComic,
-      message: action === 'approve' ? 'Comic approved and automatically uploaded live on website!' : 'Comic submission marked as rejected.',
+      message:
+        action === 'approve'
+          ? 'Comic approved and published live! The author has been notified on their Author Page that they are approved to upload comics of their own.'
+          : `Comic submission rejected with comment: "${(moderatedComic as Comic).adminReviewNote}". The author will see this reason on their Author Page.`,
     });
   });
 
@@ -1678,20 +1961,76 @@ async function startServer() {
   });
 
   app.post('/api/comics', (req, res) => {
-    const { title, authorId, authorName, genre, coverImage, description, accessType = 'free', fullPriceInr, chapterPriceInr, episodePriceInr, attachedFileName, attachedFileSize, attachedFileType } = req.body;
+    const {
+      title,
+      authorId,
+      authorName,
+      genre,
+      coverImage,
+      description,
+      authorComments,
+      pages,
+      accessType = 'free',
+      fullPriceInr,
+      chapterPriceInr,
+      episodePriceInr,
+      attachedFileName,
+      attachedFileSize,
+      attachedFileType,
+    } = req.body;
     if (!title || !authorName) {
       return res.status(400).json({ error: 'Title and Author are required' });
     }
 
+    const comicId = 'comic_' + Date.now();
+    const chapId = 'chap_' + Date.now();
+    const fallbackCover = coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+
+    const constructedPages: ComicPage[] =
+      Array.isArray(pages) && pages.length > 0
+        ? pages.map((p: any, idx: number) => ({
+            id: p.id || `p_${Date.now()}_${idx + 1}`,
+            pageNumber: idx + 1,
+            imageUrl: p.imageUrl || p.dataUrl || fallbackCover,
+            caption: p.caption || p.fileName || `Page ${idx + 1}`,
+          }))
+        : [];
+
+    const initialEpisodes: Episode[] =
+      constructedPages.length > 0
+        ? [
+            {
+              id: 'ep_' + Date.now(),
+              chapterId: chapId,
+              comicId,
+              episodeNumber: 1,
+              title: 'Episode 1: Premiere Submission',
+              synopsis: authorComments || description || 'Opening episode uploaded by author.',
+              releaseDate: new Date().toISOString().split('T')[0],
+              isPremium: accessType === 'premium',
+              priceInr: accessType === 'premium' ? Number(episodePriceInr) || 10 : 0,
+              coverImage: fallbackCover,
+              pages: constructedPages,
+              likesCount: 0,
+              dislikesCount: 0,
+              averageRating: 5.0,
+              totalRatings: 0,
+              isPublished: true,
+            },
+          ]
+        : [];
+
     const newComic: Comic = {
-      id: 'comic_' + Date.now(),
+      id: comicId,
       title,
       slug: title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
       authorId: authorId || 'usr_rajesh',
       authorName,
       genre: Array.isArray(genre) ? genre : [genre || 'Action'],
-      coverImage: coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+      coverImage: fallbackCover,
       description: description || 'New comic book series on Aathirai_Comic.',
+      authorComments: authorComments || undefined,
+      attachedPages: constructedPages.length > 0 ? constructedPages : undefined,
       status: 'Ongoing',
       accessType: accessType || 'free',
       fullPriceInr: accessType === 'premium' ? (Number(fullPriceInr) || 99) : 0,
@@ -1702,15 +2041,15 @@ async function startServer() {
       popular: false,
       recommended: false,
       attachedFileName: attachedFileName || undefined,
-      attachedFileSize: attachedFileSize || undefined,
+      attachedFileSize: attachedFileSize || (constructedPages.length > 0 ? `${constructedPages.length} files` : undefined),
       attachedFileType: attachedFileType || undefined,
       chapters: [
         {
-          id: 'chap_' + Date.now(),
-          comicId: 'comic_' + Date.now(),
+          id: chapId,
+          comicId,
           chapterNumber: 1,
           title: 'Prologue & Beginning',
-          episodes: [],
+          episodes: initialEpisodes,
         },
       ],
       totalViews: 0,
@@ -1720,10 +2059,9 @@ async function startServer() {
       moderationStatus: 'approved',
     };
 
-    newComic.chapters[0].comicId = newComic.id;
-
     db.mutate(d => {
       d.comics.unshift(newComic);
+      normalizeSubmittedComics(d);
     });
 
     db.logActivity('COMIC_CREATED', authorName, 'author', `Created new comic series: ${newComic.title}`, 'comic', newComic.id);
@@ -2424,7 +2762,18 @@ async function startServer() {
           a.email.toLowerCase() === cleanEmail
       );
 
-      const application: AuthorApplication = {
+      const fallbackSamplePages =
+        validSampleImages.length > 0
+          ? validSampleImages
+          : existingAppIdx >= 0 && Array.isArray(d.authorApplications[existingAppIdx].sampleImages) && d.authorApplications[existingAppIdx].sampleImages!.length > 0
+            ? d.authorApplications[existingAppIdx].sampleImages!
+            : d.comics[0]?.chapters?.[0]?.episodes?.[0]?.pages?.map(p => p.imageUrl) || [
+                '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+                '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
+                '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
+              ];
+
+      const application: AuthorApplication & { adminExplicitlyReviewed?: boolean } = {
         id: existingAppIdx >= 0 ? d.authorApplications[existingAppIdx].id : 'app_' + Date.now(),
         userId: updatedUser!.id,
         authorName: authorName.trim(),
@@ -2433,11 +2782,12 @@ async function startServer() {
         bio: bio || existingUser?.bio || 'Creator & Storyteller on Aathirai_Comic.',
         portfolioUrl: portfolioUrl || '',
         sampleComicTitle: sampleComicTitle.trim(),
-        sampleSynopsis: sampleSynopsis || '',
-        samplePagesCount: resolvedPagesCount,
-        sampleImages: validSampleImages,
-        status: 'approved',
+        sampleSynopsis: sampleSynopsis || 'Original sample comic submitted for editorial review.',
+        samplePagesCount: fallbackSamplePages.length,
+        sampleImages: fallbackSamplePages,
+        status: 'pending',
         submittedAt: new Date().toISOString(),
+        adminExplicitlyReviewed: false,
       };
 
       if (existingAppIdx >= 0) {
@@ -2452,7 +2802,7 @@ async function startServer() {
       'AUTHOR_APPLICATION_SUBMITTED',
       cleanEmail,
       'author',
-      `Registered as Author & Reader for "${sampleComicTitle}" with ${resolvedPagesCount} sample photo(s)`,
+      `Submitted Author application for "${sampleComicTitle}" with ${savedApp!.samplePagesCount} sample photo(s) (Pending Admin Approval)`,
       'author_application',
       savedApp!.id
     );
@@ -2462,7 +2812,7 @@ async function startServer() {
       application: savedApp,
       user: updatedUser,
       message:
-        'Author profile & sample photos uploaded! You are now active on the Author List and can use your account as both Author and Reader.',
+        'Author photo & sample comic pages submitted! Your application is now Pending Approval in the Admin Console.',
     });
   });
 
@@ -2493,7 +2843,12 @@ async function startServer() {
         if (authorName) app.authorName = authorName;
         updatedApp = app;
       } else if (u || cleanEmail || authorName) {
-        const newApp: AuthorApplication = {
+        const defaultPages =
+          d.comics[0]?.chapters?.[0]?.episodes?.[0]?.pages?.map(p => p.imageUrl) || [
+            '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+            '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
+          ];
+        const newApp: AuthorApplication & { adminExplicitlyReviewed?: boolean } = {
           id: 'app_' + Date.now(),
           userId: u?.id || userId || 'usr_' + Date.now(),
           authorName: authorName || u?.name || 'Featured Creator',
@@ -2502,11 +2857,12 @@ async function startServer() {
           bio: u?.bio || 'Creator & Storyteller on Aathirai_Comic.',
           portfolioUrl: '',
           sampleComicTitle: 'Original Comic Series',
-          sampleSynopsis: '',
-          samplePagesCount: 1,
-          sampleImages: [],
-          status: 'approved',
+          sampleSynopsis: 'Sample comic pages submitted for administrator review.',
+          samplePagesCount: defaultPages.length,
+          sampleImages: defaultPages,
+          status: 'pending',
           submittedAt: new Date().toISOString(),
+          adminExplicitlyReviewed: false,
         };
         d.authorApplications.unshift(newApp);
         updatedApp = newApp;
@@ -2947,7 +3303,67 @@ async function startServer() {
     return res.json({ success: true, message: `Deleted reader account ${removedEmail}` });
   });
 
+  const normalizeAuthorApplications = (d: any) => {
+    if (!Array.isArray(d.authorApplications)) d.authorApplications = [];
+    d.authorApplications.forEach((app: AuthorApplication & { adminExplicitlyReviewed?: boolean }) => {
+      if (!app.adminExplicitlyReviewed) {
+        app.status = 'pending';
+      }
+
+      if (!app.authorAvatar) {
+        const matchedUser = d.users.find(
+          (u: User) => (app.userId && u.id === app.userId) || u.email.toLowerCase() === app.email.toLowerCase()
+        );
+        if (matchedUser?.avatar) {
+          app.authorAvatar = matchedUser.avatar;
+        } else if (app.authorName.toLowerCase().includes('kavitha')) {
+          app.authorAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80';
+        } else if (app.authorName.toLowerCase().includes('rajesh')) {
+          app.authorAvatar = 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80';
+        } else {
+          app.authorAvatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`;
+        }
+      }
+
+      if (!Array.isArray(app.sampleImages) || app.sampleImages.length === 0) {
+        const matchingComic = d.comics.find(
+          (c: Comic) =>
+            (app.sampleComicTitle &&
+              c.title.toLowerCase().includes(app.sampleComicTitle.split(':')[0].trim().toLowerCase())) ||
+            c.authorId === app.userId ||
+            c.authorName.toLowerCase() === app.authorName.toLowerCase()
+        );
+        const comicPages: string[] = [];
+        if (matchingComic) {
+          if (matchingComic.coverImage) comicPages.push(matchingComic.coverImage);
+          matchingComic.chapters?.forEach((ch: Chapter) => {
+            ch.episodes?.forEach((ep: Episode) => {
+              ep.pages?.forEach((p: ComicPage) => {
+                if (p.imageUrl && !comicPages.includes(p.imageUrl)) {
+                  comicPages.push(p.imageUrl);
+                }
+              });
+            });
+          });
+        }
+        if (comicPages.length === 0) {
+          comicPages.push(
+            '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
+            '/src/assets/images/comic_cover_blade_1794269871791.jpg',
+            '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
+            '/src/assets/images/comic_cover_chronicles_1794269872270.jpg'
+          );
+        }
+        app.sampleImages = comicPages.slice(0, 6);
+        if (!app.samplePagesCount) {
+          app.samplePagesCount = app.sampleImages.length;
+        }
+      }
+    });
+  };
+
   app.get('/api/admin/stats', (req, res) => {
+    db.mutate(d => normalizeAuthorApplications(d));
     const snapshot = db.getSnapshot();
     const totalRevenueInr = snapshot.purchases
       .filter(p => p.status === 'success')
@@ -2982,6 +3398,7 @@ async function startServer() {
   });
 
   app.get('/api/admin/authors', (req, res) => {
+    db.mutate(d => normalizeAuthorApplications(d));
     const snapshot = db.getSnapshot();
     return res.json({
       applications: snapshot.authorApplications,
@@ -2990,20 +3407,30 @@ async function startServer() {
   });
 
   app.post('/api/admin/author-applications/:id/action', (req, res) => {
-    const { action, adminNote } = req.body; // action: 'approve' | 'reject'
-    if (!['approve', 'reject'].includes(action)) {
-      return res.status(400).json({ error: 'Valid action required (approve/reject)' });
+    const { action, adminNote } = req.body; // action: 'approve' | 'reject' | 'pending'
+    if (!['approve', 'reject', 'pending'].includes(action)) {
+      return res.status(400).json({ error: 'Valid action required (approve/reject/pending)' });
     }
 
-    let targetApp: AuthorApplication | null = null;
+    let targetApp: (AuthorApplication & { adminExplicitlyReviewed?: boolean }) | null = null;
     let promotedUser: User | null = null;
 
     db.mutate(d => {
-      const app = d.authorApplications.find(a => a.id === req.params.id);
+      normalizeAuthorApplications(d);
+      const app = d.authorApplications.find(a => a.id === req.params.id) as
+        | (AuthorApplication & { adminExplicitlyReviewed?: boolean })
+        | undefined;
       if (app) {
-        app.status = action === 'approve' ? 'approved' : 'rejected';
-        app.reviewedAt = new Date().toISOString();
-        if (adminNote) app.adminNote = adminNote;
+        if (action === 'pending') {
+          app.status = 'pending';
+          app.adminExplicitlyReviewed = false;
+          app.reviewedAt = undefined;
+        } else {
+          app.status = action === 'approve' ? 'approved' : 'rejected';
+          app.adminExplicitlyReviewed = true;
+          app.reviewedAt = new Date().toISOString();
+        }
+        if (adminNote !== undefined) app.adminNote = adminNote;
         targetApp = app;
 
         // If approved, elevate corresponding user or create author user
@@ -3011,15 +3438,18 @@ async function startServer() {
           const user = d.users.find(u => u.email.toLowerCase() === app.email.toLowerCase() || u.id === app.userId);
           if (user) {
             user.role = 'author';
+            if (app.authorAvatar) user.avatar = app.authorAvatar;
             promotedUser = user;
           } else {
             const newAuthor: User = {
-              id: 'usr_auth_' + Date.now(),
+              id: app.userId || 'usr_auth_' + Date.now(),
               name: app.authorName,
               email: app.email,
               role: 'author',
               isVerified: true,
-              avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(app.authorName)}`,
+              avatar:
+                app.authorAvatar ||
+                `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`,
               bio: app.bio,
               createdAt: new Date().toISOString(),
             };
@@ -3033,10 +3463,14 @@ async function startServer() {
     if (!targetApp) return res.status(404).json({ error: 'Application not found' });
 
     db.logActivity(
-      action === 'approve' ? 'AUTHOR_APPROVED' : 'AUTHOR_REJECTED',
+      action === 'approve'
+        ? 'AUTHOR_APPROVED'
+        : action === 'reject'
+          ? 'AUTHOR_REJECTED'
+          : 'AUTHOR_SET_PENDING',
       'admin@aathirai.com',
       'admin',
-      `${action === 'approve' ? 'Approved' : 'Rejected'} author application for ${(targetApp as AuthorApplication).authorName}. Note: ${adminNote || 'None'}`,
+      `${action === 'approve' ? 'Approved' : action === 'reject' ? 'Rejected' : 'Set to Pending'} author application for ${(targetApp as AuthorApplication).authorName}. Note: ${adminNote || 'None'}`,
       'author_application',
       req.params.id
     );

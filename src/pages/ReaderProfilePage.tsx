@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Comic, Purchase } from '../types/comic';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
@@ -29,6 +29,7 @@ import {
   EyeOff,
   AlertTriangle,
   Download,
+  Camera,
 } from 'lucide-react';
 
 interface ReaderProfilePageProps {
@@ -112,6 +113,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPhone, setRegPhone] = useState('');
+  const [regAvatar, setRegAvatar] = useState<string>('');
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [showRegPassword, setShowRegPassword] = useState(false);
@@ -122,6 +124,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     body?: string;
     message?: string;
   } | null>(null);
+  const regAvatarInputRef = useRef<HTMLInputElement | null>(null);
+  const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
 
   // Change / Forgot Password state
   const [resetEmail, setResetEmail] = useState('');
@@ -152,6 +156,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [editName, setEditName] = useState(user?.name || '');
   const [editEmail, setEditEmail] = useState(user?.email || '');
   const [editPhone, setEditPhone] = useState(user?.phone || '');
+  const [editAvatar, setEditAvatar] = useState(user?.avatar || '');
   const [editDobDay, setEditDobDay] = useState(initialDobParts[0] || '15');
   const [editDobMonth, setEditDobMonth] = useState(initialDobParts[1] || '05');
   const [editDobYear, setEditDobYear] = useState(initialDobParts[2] || '2002');
@@ -600,6 +605,52 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     }
   };
 
+  const handleRegAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setRegAvatar(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleAccountHolderPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      if (typeof reader.result === 'string') {
+        const newAvatarDataUrl = reader.result;
+        setEditAvatar(newAvatarDataUrl);
+        updateUser({ avatar: newAvatarDataUrl });
+        try {
+          const res = await fetch('/api/auth/update-profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: user.id,
+              avatar: newAvatarDataUrl,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok && data.user) {
+            updateUser(data.user);
+            setProfileMessage('Account holder profile image uploaded and saved to your account!');
+            setTimeout(() => setProfileMessage(null), 5000);
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const handleReaderRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!regEmail.trim()) {
@@ -631,6 +682,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           age: calculatedAge,
           dob: formattedDob,
           phone: regPhone.trim(),
+          avatar: regAvatar || undefined,
           password: regPassword,
           confirmPassword: regConfirmPassword,
           notifyGmail,
@@ -719,6 +771,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           age: updatedAge,
           dob: updatedDob,
           phone: editPhone.trim(),
+          avatar: editAvatar || user.avatar,
           notifyGmail: editNotifyGmail,
           notifyMobile: editNotifyMobile,
         }),
@@ -737,7 +790,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         }).catch(() => {});
         await handleLiveVerifyGmail();
         setProfileMessage(
-          `Customer Gmail, Mobile Number, DOB (${updatedDob}), and New Comic Notification preferences saved!`
+          `Account Holder Profile Image, Gmail, Mobile Number, DOB (${updatedDob}), and Notification preferences saved!`
         );
         setTimeout(() => setProfileMessage(null), 5000);
       }
@@ -1214,9 +1267,60 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 </form>
               )}
 
-              {/* TAB 2: FIRST-TIME CUSTOMER REGISTER (Name, DOB, Gmail, Mobile + Password & Confirm Password Div -> Backend DB + Welcome Email) */}
+              {/* TAB 2: FIRST-TIME CUSTOMER REGISTER (Profile Photo, Name, DOB, Gmail, Mobile + Password & Confirm Password Div -> Backend DB + Welcome Email) */}
               {authTab === 'register' && (
                 <form onSubmit={handleReaderRegister} className="space-y-4">
+                  {/* Account Holder Profile Photo Upload on Registration */}
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-3.5">
+                      <div
+                        onClick={() => regAvatarInputRef.current?.click()}
+                        className="w-14 h-14 rounded-2xl bg-slate-200 dark:bg-slate-800 border-2 border-rose-500/40 overflow-hidden flex items-center justify-center cursor-pointer shrink-0 shadow-sm hover:border-rose-500 transition-colors"
+                        title="Click to upload your account photo"
+                      >
+                        {regAvatar ? (
+                          <img src={regAvatar} alt="Customer Preview" className="w-full h-full object-cover" />
+                        ) : (
+                          <Camera className="w-6 h-6 text-rose-500" />
+                        )}
+                      </div>
+                      <div>
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-slate-900 dark:text-white block">
+                          Account Holder Profile Image
+                        </span>
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Upload your personal profile photo for your Aathirai_Comic account
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={regAvatarInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleRegAvatarSelect}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => regAvatarInputRef.current?.click()}
+                        className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>{regAvatar ? 'Change Image' : 'Upload Image'}</span>
+                      </button>
+                      {regAvatar && (
+                        <button
+                          type="button"
+                          onClick={() => setRegAvatar('')}
+                          className="px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-400 hover:text-rose-500 cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
                     <div className="sm:col-span-5">
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
@@ -1660,7 +1764,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     <img
                       src={user.avatar}
                       alt={user.name}
-                      className="w-14 h-14 rounded-2xl object-cover border-2 border-rose-500/40 shadow-md"
+                      onClick={() => profileAvatarInputRef.current?.click()}
+                      title="Click to upload a new profile image"
+                      className="w-14 h-14 rounded-2xl object-cover border-2 border-rose-500/40 shadow-md cursor-pointer hover:opacity-85 transition-opacity"
+                    />
+                    <input
+                      ref={profileAvatarInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAccountHolderPhotoUpload}
+                      className="hidden"
                     />
                     <div>
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
@@ -1669,6 +1782,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <h2 className="text-lg font-extrabold text-slate-900 dark:text-white font-heading mt-0.5">
                         {user.name}
                       </h2>
+                      <button
+                        type="button"
+                        onClick={() => profileAvatarInputRef.current?.click()}
+                        className="mt-1 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-extrabold transition-colors cursor-pointer shadow-xs"
+                      >
+                        <Camera className="w-3 h-3" />
+                        <span>Upload Photo</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1676,7 +1797,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     type="button"
                     onClick={() => setIsEditingProfile(!isEditingProfile)}
                     className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
-                    title="Edit Gmail, Mobile, DOB & Notifications"
+                    title="Edit Profile Image, Gmail, Mobile, DOB & Notifications"
                   >
                     <Edit3 className="w-4 h-4" />
                   </button>
@@ -1771,6 +1892,27 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   </div>
                 ) : (
                   <form onSubmit={handleSaveProfile} className="space-y-3 text-xs">
+                    <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <img
+                          src={editAvatar || user.avatar}
+                          alt={user.name}
+                          className="w-10 h-10 rounded-xl object-cover border border-rose-500/40"
+                        />
+                        <div>
+                          <div className="font-bold text-slate-800 dark:text-slate-200">Account Holder Image</div>
+                          <div className="text-[10px] text-slate-500">Upload JPG, PNG, or WEBP</div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => profileAvatarInputRef.current?.click()}
+                        className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Camera className="w-3 h-3" />
+                        <span>Upload Image</span>
+                      </button>
+                    </div>
                     <div>
                       <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">Full Name</label>
                       <input
