@@ -45,7 +45,169 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
   }, [user]);
 
   const handlePrint = (tx: Purchase) => {
-    window.print();
+    const receiptDate = tx.createdAt
+      ? new Date(tx.createdAt).toLocaleString()
+      : new Date().toLocaleString();
+
+    const receiptHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Payment Receipt - ${tx.receiptNumber}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 40px 20px;
+      margin: 0;
+    }
+    .card {
+      max-width: 520px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      padding: 32px;
+      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+    }
+    .brand {
+      font-size: 20px;
+      font-weight: 800;
+      color: #e11d48;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      font-size: 13px;
+      border-bottom: 1px dashed #e2e8f0;
+    }
+    .label {
+      color: #64748b;
+      font-weight: 500;
+    }
+    .value {
+      color: #0f172a;
+      font-weight: 700;
+      text-align: right;
+      font-family: monospace;
+    }
+    .total-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 16px;
+      margin-top: 8px;
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .total-val {
+      color: #059669;
+      font-family: monospace;
+    }
+    .footer {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">Aathirai_Comic — Official Payment Receipt</div>
+    <div class="subtitle">Verified Digital Purchase Receipt · Date: ${receiptDate}</div>
+    <div class="row">
+      <span class="label">Invoice Number</span>
+      <span class="value">${tx.receiptNumber}</span>
+    </div>
+    <div class="row">
+      <span class="label">Transaction ID</span>
+      <span class="value">${tx.razorpayPaymentId}</span>
+    </div>
+    <div class="row">
+      <span class="label">Item Purchased</span>
+      <span class="value" style="font-family: sans-serif;">${tx.comicTitle}</span>
+    </div>
+    <div class="row">
+      <span class="label">Customer Account</span>
+      <span class="value">${tx.userEmail}</span>
+    </div>
+    <div class="row">
+      <span class="label">Payment Channel</span>
+      <span class="value" style="font-family: sans-serif;">${tx.paymentMethod}</span>
+    </div>
+    <div class="row">
+      <span class="label">Base Price</span>
+      <span class="value">₹${tx.amountInr.toFixed(2)}</span>
+    </div>
+    <div class="total-row">
+      <span>Total Amount Paid</span>
+      <span class="total-val">₹${tx.amountInr.toFixed(2)} INR</span>
+    </div>
+    <div class="footer">
+      Thank you for supporting Aathirai_Comic!
+    </div>
+  </div>
+</body>
+</html>`;
+
+    try {
+      const blob = new Blob([receiptHtml], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Receipt-${tx.receiptNumber || 'Aathirai_Comic'}.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch {
+      // Ignore if restricted
+    }
+
+    try {
+      const printIframe = document.createElement('iframe');
+      printIframe.style.position = 'fixed';
+      printIframe.style.right = '0';
+      printIframe.style.bottom = '0';
+      printIframe.style.width = '0';
+      printIframe.style.height = '0';
+      printIframe.style.border = '0';
+      document.body.appendChild(printIframe);
+
+      const doc = printIframe.contentWindow?.document;
+      if (doc) {
+        doc.open();
+        doc.write(receiptHtml);
+        doc.close();
+        setTimeout(() => {
+          try {
+            printIframe.contentWindow?.focus();
+            printIframe.contentWindow?.print();
+          } catch {
+            window.print();
+          }
+          setTimeout(() => {
+            if (document.body.contains(printIframe)) {
+              document.body.removeChild(printIframe);
+            }
+          }, 2000);
+        }, 250);
+      }
+    } catch {
+      // Ignore if restricted
+    }
   };
 
   if (!user) {
@@ -58,7 +220,7 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
           Sign In to View Purchases
         </h3>
         <p className="text-xs text-slate-500 leading-relaxed">
-          Log in with your customer account to access your unlocked premium episodes, GST tax invoices, and reading library.
+          Log in with your customer account to access your unlocked premium episodes, payment receipts, and reading library.
         </p>
         <button
           onClick={openAuthModal}
@@ -79,7 +241,7 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
           My Purchases &amp; Reading Library
         </h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Account: <strong className="text-slate-800 dark:text-slate-200">{user.email}</strong> · Unlocked premium comics and official invoices.
+          Account: <strong className="text-slate-800 dark:text-slate-200">{user.email}</strong> · Unlocked premium comics and official payment receipts.
         </p>
       </div>
 
@@ -137,7 +299,6 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
                   <div className="text-base font-black text-emerald-600 dark:text-emerald-400 font-mono">
                     ₹{purchase.amountInr.toFixed(2)} INR
                   </div>
-                  <span className="text-[10px] text-slate-400">GST Paid</span>
                 </div>
 
                 {purchase.episodeId && (
@@ -151,9 +312,10 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
                 )}
 
                 <button
+                  type="button"
                   onClick={() => handlePrint(purchase)}
-                  className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                  title="Print Tax Receipt"
+                  className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  title="Print Receipt"
                 >
                   <Printer className="w-4 h-4" />
                 </button>

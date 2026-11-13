@@ -3,12 +3,25 @@ import { User, UserRole } from '../types/comic';
 
 export interface LoginExtraOptions {
   phone?: string;
+  password?: string;
   name?: string;
   age?: number;
+  dob?: string;
+  notifyGmail?: boolean;
+  notifyMobile?: boolean;
   upiId?: string;
   paidPlan?: '1_month' | '6_months' | 'free';
   paymentMethod?: string;
   transactionId?: string;
+}
+
+export interface LoginResult {
+  success: boolean;
+  error?: string;
+  user?: User;
+  isLocked?: boolean;
+  lockedUntil?: string | null;
+  remainingAttempts?: number;
 }
 
 interface AuthContextType {
@@ -20,7 +33,7 @@ interface AuthContextType {
     credentialOrEmail: string,
     phoneOrOptions?: string | LoginExtraOptions,
     name?: string
-  ) => Promise<{ success: boolean; error?: string; user?: User }>;
+  ) => Promise<LoginResult>;
   logout: () => void;
   switchDemoRole: (role: UserRole) => void;
   updateUser: (updated: Partial<User>) => void;
@@ -30,21 +43,8 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Default to Balaji Reader with Gmail, Age, UPI ID & Mobile linked for Admin tracking
-  const [user, setUser] = useState<User | null>({
-    id: 'usr_reader',
-    name: 'Balaji Reader',
-    email: 'balajiaris05@gmail.com',
-    age: 24,
-    phone: '+91 8610950780',
-    upiId: 'balajiaris05@okaxis',
-    role: 'reader',
-    isVerified: true,
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=200&h=200&q=80',
-    bio: 'Avid comic book lover, manhwa enthusiast, and collector of Indian mythic manga.',
-    createdAt: '2026-02-01T00:00:00Z',
-    premiumPlan: null,
-  });
+  // Always start signed out (null) — never auto-login to a default account
+  const [user, setUser] = useState<User | null>(null);
 
   const hasActivePremium = Boolean(
     user?.premiumPlan &&
@@ -52,57 +52,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     new Date(user.premiumExpiresAt).getTime() > Date.now()
   );
 
-  const switchDemoRole = (role: UserRole) => {
-    if (role === 'admin') {
-      setUser({
-        id: 'usr_admin',
-        name: 'Aathirai Editorial Admin',
-        email: 'admin@aathirai.com',
-        age: 30,
-        phone: '+91 8610950780',
-        upiId: 'balajiaris05@okaxis',
-        role: 'admin',
-        isVerified: true,
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
-        bio: 'Chief Content Administrator and Publisher at Aathirai_Comic.',
-        createdAt: '2026-01-01T00:00:00Z',
-      });
-    } else if (role === 'author') {
-      setUser({
-        id: 'usr_rajesh',
-        name: 'Rajesh Singh',
-        email: 'rajesh.singh@creator.in',
-        age: 28,
-        phone: '+91 9840123456',
-        upiId: 'rajesh.singh@okicici',
-        role: 'author',
-        isVerified: true,
-        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80',
-        bio: 'Graphic novelist and manga creator. Creator of Virasen and Neo Madras 2099.',
-        createdAt: '2026-01-15T00:00:00Z',
-      });
-    } else {
-      setUser({
-        id: 'usr_reader',
-        name: 'Balaji Reader',
-        email: 'balajiaris05@gmail.com',
-        age: 24,
-        phone: '+91 8610950780',
-        upiId: 'balajiaris05@okaxis',
-        role: 'reader',
-        isVerified: true,
-        avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=200&h=200&q=80',
-        bio: 'Avid comic book lover, manhwa enthusiast, and collector of Indian mythic manga.',
-        createdAt: '2026-02-01T00:00:00Z',
-      });
-    }
+  const switchDemoRole = (targetRole: UserRole) => {
+    setUser((prev) => {
+      // If signed out, stay signed out — never auto-login to any default account
+      if (!prev) {
+        return null;
+      }
+      // Keep the exact same logged-in customer account & Premium subscription, only switching the workspace role
+      return {
+        ...prev,
+        role: targetRole,
+      };
+    });
   };
 
   const login = async (
     credentialOrEmail: string,
     phoneOrOptions?: string | LoginExtraOptions,
     nameArg?: string
-  ) => {
+  ): Promise<LoginResult> => {
     const opts: LoginExtraOptions =
       typeof phoneOrOptions === 'string'
         ? { phone: phoneOrOptions, name: nameArg }
@@ -116,8 +84,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           credential: credentialOrEmail,
           email: credentialOrEmail.includes('@') ? credentialOrEmail : undefined,
           phone: opts.phone || (!credentialOrEmail.includes('@') ? credentialOrEmail : undefined),
+          password: opts.password,
           name: opts.name,
           age: opts.age,
+          dob: opts.dob,
+          notifyGmail: opts.notifyGmail,
+          notifyMobile: opts.notifyMobile,
           upiId: opts.upiId,
           paidPlan: opts.paidPlan,
           paymentMethod: opts.paymentMethod,
@@ -129,7 +101,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(data.user);
         return { success: true, user: data.user };
       }
-      return { success: false, error: data.error || 'Login failed' };
+      return {
+        success: false,
+        error: data.error || 'Login failed',
+        isLocked: data.isLocked,
+        lockedUntil: data.lockedUntil,
+        remainingAttempts: data.remainingAttempts,
+      };
     } catch (err: any) {
       return { success: false, error: err.message || 'Network error' };
     }

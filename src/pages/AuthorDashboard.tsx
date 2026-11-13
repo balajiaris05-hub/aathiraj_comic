@@ -1195,6 +1195,26 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
       )}
 
       {/* Header */}
+      {!user ? (
+        <div className="max-w-xl mx-auto my-12 p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center mx-auto">
+            <PenTool className="w-6 h-6" />
+          </div>
+          <h2 className="text-xl font-extrabold text-slate-900 dark:text-white font-heading">
+            Sign In Required for Author Publishing Studio
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            You are currently signed out. Sign in with your Reader account to publish comics in Author Studio while keeping your Reader profile and Premium plan.
+          </p>
+          <button
+            type="button"
+            onClick={() => setCurrentTab('reader_login')}
+            className="py-2.5 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-md transition-all cursor-pointer"
+          >
+            Go to Customer Login / Register
+          </button>
+        </div>
+      ) : (
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
         <div>
           <div className="flex items-center gap-2">
@@ -1206,7 +1226,14 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
             </h1>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Logged in as <strong className="text-slate-800 dark:text-slate-200">{user?.name}</strong> · Verified Creator Privileges Active
+            Logged in with Reader Account: <strong className="text-slate-800 dark:text-slate-200">{user.name}</strong> ({user.email})
+            {user.premiumPlan ? (
+              <span className="ml-2 text-emerald-600 dark:text-emerald-400 font-bold">
+                · Premium Plan Active ({user.premiumPlan === '6_months' ? '6 Months ₹249' : '1 Month ₹49'})
+              </span>
+            ) : (
+              <span className="ml-2 text-slate-400">· Free Reader Plan</span>
+            )}
           </p>
         </div>
 
@@ -1218,6 +1245,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           <span>Create New Comic Book</span>
         </button>
       </div>
+      )}
 
       {/* KPI STATS ROW */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

@@ -169,10 +169,6 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
     }
   };
 
-  const handlePrint = () => {
-    window.print();
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl relative text-slate-900 dark:text-slate-100 flex flex-col max-h-[90vh]">
@@ -221,7 +217,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
               </p>
             </div>
 
-            {/* Official Tax Receipt Box */}
+            {/* Official Payment Receipt Box */}
             <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 text-xs">
               <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
                 <span className="font-bold text-slate-700 dark:text-slate-300">Invoice Number</span>
@@ -245,11 +241,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Base Price</span>
-                <span className="font-mono text-slate-700 dark:text-slate-300">₹{(receipt.amountInr - receipt.taxAmount).toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">GST (18% Digital Content)</span>
-                <span className="font-mono text-slate-700 dark:text-slate-300">₹{receipt.taxAmount.toFixed(2)}</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">₹{receipt.amountInr.toFixed(2)}</span>
               </div>
               <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-sm font-bold">
                 <span className="text-slate-900 dark:text-white">Total Amount Paid</span>
@@ -259,16 +251,9 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
 
             <div className="flex items-center gap-3">
               <button
-                onClick={handlePrint}
-                className="flex-1 py-2.5 px-4 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Print Tax Receipt</span>
-              </button>
-
-              <button
+                type="button"
                 onClick={onClose}
-                className="flex-1 py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-md"
+                className="w-full py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-md cursor-pointer"
               >
                 <span>Start Reading Now</span>
                 <ArrowRight className="w-4 h-4" />
@@ -295,9 +280,6 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
               <div className="text-right shrink-0">
                 <div className="text-2xl font-black text-slate-900 dark:text-white font-mono">
                   ₹{amountInr}
-                </div>
-                <div className="text-[10px] text-slate-400">
-                  Incl. 18% GST (₹{taxAmount})
                 </div>
               </div>
             </div>
@@ -549,7 +531,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
 
               <div className="flex items-center justify-center gap-2 mt-3 text-[10px] text-slate-400">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Safe INR Transaction · Instant Episode Unlock · GST Invoice Provided</span>
+                <span>Safe INR Transaction · Instant Episode Unlock · Official Payment Receipt</span>
               </div>
             </div>
           </div>

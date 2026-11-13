@@ -79,6 +79,9 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({ openAuthModal, setCurr
       openAuthModal();
       return;
     }
+    if (hasActivePremium) {
+      return;
+    }
     setSelectedPlan({
       open: true,
       planKey,
@@ -255,18 +258,35 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({ openAuthModal, setCurr
               </li>
               <li className="flex items-center gap-2">
                 <Check className="w-4 h-4 text-emerald-500 shrink-0" />
-                <span>Official GST invoice &amp; 70% creator revenue support</span>
+                <span>Official payment receipt &amp; 70% creator revenue support</span>
               </li>
             </ul>
           </div>
 
           <button
             type="button"
+            disabled={hasActivePremium}
             onClick={() => openPlanCheckout('1_month', '1 Month Premium Pass (30 Days)', 49)}
-            className="w-full py-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-transform hover:scale-[1.02] cursor-pointer"
+            className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all ${
+              hasActivePremium
+                ? user?.premiumPlan === '1_month'
+                  ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
+                : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer'
+            }`}
           >
-            {user?.premiumPlan === '1_month' && hasActivePremium
-              ? '✓ Active Plan · Extend 1 Month (₹49)'
+            {hasActivePremium
+              ? user?.premiumPlan === '1_month'
+                ? `✓ Active Until ${
+                    user?.premiumExpiresAt
+                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                      : 'Expiry'
+                  } · Choose After Plan Ends`
+                : `Available After Current Plan Ends (${
+                    user?.premiumExpiresAt
+                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                      : ''
+                  })`
               : 'Subscribe 1 Month Premium — ₹49'}
           </button>
         </div>
@@ -313,18 +333,35 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({ openAuthModal, setCurr
               </li>
               <li className="flex items-center gap-2">
                 <Check className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Priority VIP Reader badge &amp; official GST tax invoice</span>
+                <span>Priority VIP Reader badge &amp; official payment receipt</span>
               </li>
             </ul>
           </div>
 
           <button
             type="button"
+            disabled={hasActivePremium}
             onClick={() => openPlanCheckout('6_months', '6 Months Premium Pass (180 Days)', 249)}
-            className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-xl transition-transform hover:scale-[1.02] cursor-pointer"
+            className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all ${
+              hasActivePremium
+                ? user?.premiumPlan === '6_months'
+                  ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                  : 'bg-slate-800 text-slate-400 cursor-not-allowed'
+                : 'bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer'
+            }`}
           >
-            {user?.premiumPlan === '6_months' && hasActivePremium
-              ? '✓ Active Plan · Extend 6 Months (₹249)'
+            {hasActivePremium
+              ? user?.premiumPlan === '6_months'
+                ? `✓ Active Until ${
+                    user?.premiumExpiresAt
+                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                      : 'Expiry'
+                  } · Choose After Plan Ends`
+                : `Available After Current Plan Ends (${
+                    user?.premiumExpiresAt
+                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                      : ''
+                  })`
               : 'Subscribe 6 Months Premium — ₹249'}
           </button>
         </div>

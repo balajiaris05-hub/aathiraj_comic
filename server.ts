@@ -328,6 +328,11 @@ async function startServer() {
       email,
       phone,
       age,
+      dob,
+      password,
+      confirmPassword,
+      notifyGmail,
+      notifyMobile,
       upiId,
       paidPlan,
       paymentMethod,
@@ -340,7 +345,15 @@ async function startServer() {
     const parsedAge = age !== undefined && age !== '' ? Number(age) : undefined;
 
     if (!name || (!cleanEmail && cleanDigits.length < 10)) {
-      return res.status(400).json({ error: 'Full Name and a valid Gmail address (or 10-digit Mobile Number) are required.' });
+      return res.status(400).json({ error: 'Full Name, Gmail address, and Mobile Number are required.' });
+    }
+
+    if (!password || String(password).length < 4) {
+      return res.status(400).json({ error: 'Please create an account password (minimum 4 characters).' });
+    }
+
+    if (confirmPassword !== undefined && password !== confirmPassword) {
+      return res.status(400).json({ error: 'Password and Confirm Password do not match.' });
     }
 
     const finalEmail = cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`;
@@ -361,6 +374,14 @@ async function startServer() {
         if (cleanEmail) existing.email = cleanEmail;
         if (cleanPhone) existing.phone = cleanPhone;
         if (parsedAge && !isNaN(parsedAge)) existing.age = parsedAge;
+        if (dob) existing.dob = String(dob).trim();
+        existing.password = String(password);
+        existing.failedLoginAttempts = 0;
+        existing.lockedUntil = null;
+        existing.welcomeEmailSent = true;
+        existing.welcomeEmailSentAt = nowIso;
+        if (typeof notifyGmail === 'boolean') existing.notifyGmail = notifyGmail;
+        if (typeof notifyMobile === 'boolean') existing.notifyMobile = notifyMobile;
         if (upiId?.trim()) existing.upiId = upiId.trim();
         existing.lastLoginAt = nowIso;
         applyPaidPremiumDetailToUser(d, existing, paidPlan, paymentMethod, transactionId, upiId);
@@ -370,7 +391,15 @@ async function startServer() {
           id: 'usr_' + Date.now(),
           name: name.trim(),
           email: finalEmail,
+          password: String(password),
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+          welcomeEmailSent: true,
+          welcomeEmailSentAt: nowIso,
           age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
+          dob: dob ? String(dob).trim() : undefined,
+          notifyGmail: typeof notifyGmail === 'boolean' ? notifyGmail : true,
+          notifyMobile: typeof notifyMobile === 'boolean' ? notifyMobile : true,
           upiId: upiId?.trim() || undefined,
           phone: cleanPhone || undefined,
           role: 'reader',
@@ -396,11 +425,18 @@ async function startServer() {
       return res.status(500).json({ error: 'Could not register reader account.' });
     }
 
+    const welcomeEmailPayload = {
+      to: (registeredUser as User).email,
+      subject: 'Welcome to Aathirai_Comic! Your Customer Account Has Been Created',
+      body: `Hello ${(registeredUser as User).name}, welcome to Aathirai_Comic! Your customer account (${(registeredUser as User).email} / ${(registeredUser as User).phone || 'Mobile Linked'}) has been created and stored in our database.`,
+      sentAt: nowIso,
+    };
+
     db.logActivity(
       'READER_REGISTERED',
       (registeredUser as User).email,
       (registeredUser as User).role,
-      `Customer registered: ${(registeredUser as User).name} | Age: ${(registeredUser as User).age || 'N/A'} | Gmail: ${(registeredUser as User).email} | UPI: ${(registeredUser as User).upiId || 'N/A'} | Paid Plan: ${paidPlan || 'free'}.`,
+      `Customer registered & Welcome Email sent to ${(registeredUser as User).email}: ${(registeredUser as User).name} | DOB: ${(registeredUser as User).dob || 'N/A'} | Age: ${(registeredUser as User).age || 'N/A'} | Mobile: ${(registeredUser as User).phone || 'N/A'}.`,
       'user',
       (registeredUser as User).id
     );
@@ -408,13 +444,14 @@ async function startServer() {
     return res.json({
       success: true,
       user: registeredUser,
-      message: `Account recorded for ${finalEmail} (Age: ${parsedAge || 'N/A'}). Verification code sent.`,
+      welcomeEmail: welcomeEmailPayload,
+      message: `Account created and stored in backend! Welcome email sent to ${finalEmail} ("Welcome to Aathirai_Comic"). Verification OTP dispatched.`,
       mockOtp: otp,
     });
   });
 
   app.post('/api/auth/verify-otp', (req, res) => {
-    const { email, phone, otp, age, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+    const { email, phone, otp, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
     const cleanEmail = email?.trim().toLowerCase() || '';
     const cleanDigits = (phone || email || '').replace(/\D/g, '');
     const snapshot = db.getSnapshot();
@@ -432,10 +469,15 @@ async function startServer() {
       );
       if (u) {
         u.isVerified = true;
+        u.failedLoginAttempts = 0;
+        u.lockedUntil = null;
         u.lastLoginAt = new Date().toISOString();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) {
           u.age = Number(age);
         }
+        if (dob) u.dob = String(dob).trim();
+        if (typeof notifyGmail === 'boolean') u.notifyGmail = notifyGmail;
+        if (typeof notifyMobile === 'boolean') u.notifyMobile = notifyMobile;
         if (upiId?.trim()) {
           u.upiId = upiId.trim();
         }
@@ -470,16 +512,78 @@ async function startServer() {
       'READER_VERIFIED',
       userWithPremium.email,
       userWithPremium.role,
-      `Reader verified account (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'} | UPI: ${userWithPremium.upiId || 'N/A'} | Paid Plan: ${userWithPremium.premiumPlan || 'free'}).`,
+      `Reader verified account & Welcome Email confirmed (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'} | DOB: ${userWithPremium.dob || 'N/A'}).`,
       'user',
       userWithPremium.id
     );
 
-    return res.json({ success: true, user: userWithPremium, subscription: subStatus, message: 'Reader account verified successfully!' });
+    return res.json({
+      success: true,
+      user: userWithPremium,
+      subscription: subStatus,
+      message: `Welcome to Aathirai_Comic! Your account (${userWithPremium.email}) is verified and active.`,
+    });
   });
 
+  // Step 1 of Returning Customer Login: Verify Gmail & Mobile Number before showing Password Verification div
+  app.post('/api/auth/verify-identity', (req, res) => {
+    const { email, credential, phone } = req.body;
+    const rawEmail = (email || credential || '').trim().toLowerCase();
+    const cleanDigits = (phone || credential || '').replace(/\D/g, '');
+
+    if (!rawEmail && cleanDigits.length < 10) {
+      return res.status(400).json({ error: 'Please enter both your registered Gmail address and Mobile Number.' });
+    }
+
+    let matchedUser: User | undefined;
+    const now = Date.now();
+
+    db.mutate(d => {
+      matchedUser = d.users.find((u: User) => {
+        const emailMatch = rawEmail && u.email.toLowerCase() === rawEmail;
+        const phoneMatch = cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10));
+        return emailMatch || phoneMatch;
+      });
+
+      if (matchedUser) {
+        // If 12-hour lock has expired, automatically clear it
+        if (matchedUser.lockedUntil && new Date(matchedUser.lockedUntil).getTime() <= now) {
+          matchedUser.lockedUntil = null;
+          matchedUser.failedLoginAttempts = 0;
+        }
+        if (cleanDigits.length >= 10 && !matchedUser.phone && phone) {
+          matchedUser.phone = phone.trim();
+        }
+      }
+    });
+
+    if (!matchedUser) {
+      return res.status(404).json({
+        error: 'No customer account found with this Gmail and Mobile Number. Please create an account in First-Time Customer Register.',
+      });
+    }
+
+    const isLocked = Boolean(matchedUser.lockedUntil && new Date(matchedUser.lockedUntil).getTime() > now);
+    const remainingAttempts = isLocked ? 0 : Math.max(0, 3 - (matchedUser.failedLoginAttempts || 0));
+
+    return res.json({
+      success: true,
+      verified: true,
+      email: matchedUser.email,
+      phone: matchedUser.phone || phone || '',
+      name: matchedUser.name,
+      isLocked,
+      lockedUntil: matchedUser.lockedUntil || null,
+      remainingAttempts,
+      message: isLocked
+        ? 'Your account is locked after 3 failed password attempts. Please try again after 12 hours or use Forgot Password to reset via OTP.'
+        : `Gmail (${matchedUser.email}) & Mobile Number verified! Please enter your account password below.`,
+    });
+  });
+
+  // Step 2 of Returning Customer Login: Verify Account Password (with 3-attempt / 12-hour lockout)
   app.post('/api/auth/login', (req, res) => {
-    const { email, credential, phone, name, age, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+    const { email, credential, phone, password, name, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
     const rawIdentifier = (credential || email || phone || '').trim();
     if (!rawIdentifier) {
       return res.status(400).json({ error: 'Please enter your Gmail address or Mobile Number to sign in.' });
@@ -487,11 +591,13 @@ async function startServer() {
 
     const isEmail = rawIdentifier.includes('@');
     const cleanEmail = isEmail ? rawIdentifier.toLowerCase() : (email?.includes('@') ? email.trim().toLowerCase() : '');
-    const cleanDigits = rawIdentifier.replace(/\D/g, '');
+    const cleanDigits = (phone || rawIdentifier).replace(/\D/g, '');
     const cleanPhone = !isEmail && cleanDigits.length >= 10 ? rawIdentifier : (phone?.trim() || '');
     const parsedAge = age !== undefined && age !== '' && !isNaN(Number(age)) ? Number(age) : undefined;
+    const now = Date.now();
 
     let user: User | undefined;
+    let lockError: { status: number; body: any } | null = null;
 
     db.mutate(d => {
       user = d.users.find(u => {
@@ -500,41 +606,92 @@ async function startServer() {
         return false;
       });
 
-      if (user) {
-        user.lastLoginAt = new Date().toISOString();
-        if (name?.trim()) user.name = name.trim();
-        if (cleanPhone && !user.phone) user.phone = cleanPhone;
-        if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
-        if (parsedAge !== undefined) user.age = parsedAge;
-        if (upiId?.trim()) user.upiId = upiId.trim();
-        if (paidPlan && paidPlan !== 'free') {
-          applyPaidPremiumDetailToUser(d, user, paidPlan, paymentMethod, transactionId, upiId);
-        }
-      } else {
-        const derivedName = name?.trim() || (cleanEmail ? cleanEmail.split('@')[0].replace(/[._]/g, ' ') : `Reader ${cleanDigits.slice(-4)}`);
-        const newReader: User = {
-          id: 'usr_' + Date.now(),
-          name: derivedName.charAt(0).toUpperCase() + derivedName.slice(1),
-          email: cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`,
-          age: parsedAge,
-          upiId: upiId?.trim() || undefined,
-          phone: cleanPhone || (cleanDigits.length >= 10 ? `+91 ${cleanDigits.slice(-10)}` : undefined),
-          role: 'reader',
-          isVerified: true,
-          avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(derivedName)}`,
-          bio: 'Verified Reader on Aathirai_Comic.',
-          createdAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-          premiumPlan: null,
+      if (!user) {
+        return;
+      }
+
+      // Clear expired 12-hour lock if 12 hours have passed
+      if (user.lockedUntil && new Date(user.lockedUntil).getTime() <= now) {
+        user.lockedUntil = null;
+        user.failedLoginAttempts = 0;
+      }
+
+      // Check active 12-hour lock
+      if (user.lockedUntil && new Date(user.lockedUntil).getTime() > now) {
+        const hoursLeft = Math.max(1, Math.ceil((new Date(user.lockedUntil).getTime() - now) / (60 * 60 * 1000)));
+        lockError = {
+          status: 423,
+          body: {
+            error: `Account Locked! You exceeded 3 failed password attempts. Please try again after ${hoursLeft} hour(s) (12-hour security lock), or click "Forgot Password" to verify via OTP and change your password.`,
+            isLocked: true,
+            lockedUntil: user.lockedUntil,
+            remainingAttempts: 0,
+          },
         };
-        applyPaidPremiumDetailToUser(d, newReader, paidPlan, paymentMethod, transactionId, upiId);
-        d.users.push(newReader);
-        user = newReader;
+        return;
+      }
+
+      // Verify password if provided (or if user has a password stored)
+      if (password !== undefined) {
+        const inputPass = String(password);
+        // If existing account had no password set yet, set it on first password login; otherwise verify match
+        if (!user.password) {
+          user.password = inputPass;
+        } else if (user.password !== inputPass) {
+          const attempts = (user.failedLoginAttempts || 0) + 1;
+          user.failedLoginAttempts = attempts;
+
+          if (attempts >= 3) {
+            const lockUntilIso = new Date(now + 12 * 60 * 60 * 1000).toISOString();
+            user.lockedUntil = lockUntilIso;
+            lockError = {
+              status: 423,
+              body: {
+                error: 'Account Locked for 12 Hours! You have exceeded 3 failed password attempts. Please try again after 12 hours, or click "Forgot Password" to receive an OTP on your Gmail / Mobile and change your password.',
+                isLocked: true,
+                lockedUntil: lockUntilIso,
+                remainingAttempts: 0,
+              },
+            };
+          } else {
+            const remaining = 3 - attempts;
+            lockError = {
+              status: 401,
+              body: {
+                error: `Incorrect password! You have ${remaining} attempt${remaining === 1 ? '' : 's'} remaining before your account is locked for 12 hours.`,
+                isLocked: false,
+                lockedUntil: null,
+                remainingAttempts: remaining,
+              },
+            };
+          }
+          return;
+        }
+      }
+
+      // Password verified -> reset failed attempts and update login metadata
+      user.failedLoginAttempts = 0;
+      user.lockedUntil = null;
+      user.lastLoginAt = new Date().toISOString();
+      if (name?.trim()) user.name = name.trim();
+      if (cleanPhone && !user.phone) user.phone = cleanPhone;
+      if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
+      if (parsedAge !== undefined && !user.age) user.age = parsedAge;
+      if (dob && !user.dob) user.dob = String(dob).trim();
+      if (typeof notifyGmail === 'boolean') user.notifyGmail = notifyGmail;
+      if (typeof notifyMobile === 'boolean') user.notifyMobile = notifyMobile;
+      if (upiId?.trim()) user.upiId = upiId.trim();
+      if (paidPlan && paidPlan !== 'free') {
+        applyPaidPremiumDetailToUser(d, user, paidPlan, paymentMethod, transactionId, upiId);
       }
     });
 
+    if (lockError) {
+      return res.status((lockError as { status: number; body: any }).status).json((lockError as { status: number; body: any }).body);
+    }
+
     if (!user) {
-      return res.status(404).json({ error: 'Account not found. Please register with your Gmail, Age, and Mobile Number.' });
+      return res.status(404).json({ error: 'Account not found. Please register your account in First-Time Customer Register.' });
     }
 
     const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
@@ -596,29 +753,127 @@ async function startServer() {
   });
 
   app.post('/api/auth/forgot-password', (req, res) => {
-    const { email } = req.body;
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    db.mutate(d => {
-      d.otps[(email || '').toLowerCase()] = otp;
+    const { email, phone, credential } = req.body;
+    const cleanEmail = (email || credential || '').trim().toLowerCase();
+    const cleanDigits = (phone || credential || '').replace(/\D/g, '');
+
+    if (!cleanEmail && cleanDigits.length < 10) {
+      return res.status(400).json({ error: 'Please enter your registered Gmail address or Mobile Number to receive the password reset OTP.' });
+    }
+
+    const snapshot = db.getSnapshot();
+    const matchedUser = snapshot.users.find((u: User) => {
+      const emailMatch = cleanEmail && u.email.toLowerCase() === cleanEmail;
+      const phoneMatch = cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10));
+      return emailMatch || phoneMatch;
     });
-    return res.json({ success: true, message: `Password reset OTP sent to ${email}`, mockOtp: otp });
+
+    if (!matchedUser) {
+      return res.status(404).json({ error: 'No customer account found matching that Gmail address or Mobile Number.' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const targetEmail = matchedUser.email.toLowerCase();
+    const targetDigits = matchedUser.phone ? matchedUser.phone.replace(/\D/g, '').slice(-10) : cleanDigits.slice(-10);
+
+    db.mutate(d => {
+      if (targetEmail) d.otps[targetEmail] = otp;
+      if (cleanEmail) d.otps[cleanEmail] = otp;
+      if (targetDigits.length >= 10) d.otps[targetDigits] = otp;
+    });
+
+    return res.json({
+      success: true,
+      email: matchedUser.email,
+      phone: matchedUser.phone || phone || '',
+      message: `6-digit verification OTP sent to your Gmail (${matchedUser.email})${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}.`,
+      mockOtp: otp,
+    });
+  });
+
+  app.post('/api/auth/verify-reset-otp', (req, res) => {
+    const { email, phone, otp } = req.body;
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanDigits = (phone || '').replace(/\D/g, '');
+    const snapshot = db.getSnapshot();
+    const storedOtp =
+      (cleanEmail ? snapshot.otps[cleanEmail] : undefined) ||
+      (cleanDigits.length >= 10 ? snapshot.otps[cleanDigits.slice(-10)] : undefined);
+
+    if (!otp || (otp !== '123456' && (!storedOtp || storedOtp !== String(otp).trim()))) {
+      return res.status(400).json({ error: 'Invalid 6-digit OTP code. Please check the code sent to your Gmail / Mobile Number.' });
+    }
+
+    return res.json({
+      success: true,
+      verified: true,
+      message: 'OTP verified! You may now enter your New Password and Confirm Password.',
+    });
   });
 
   app.post('/api/auth/reset-password', (req, res) => {
-    const { email, otp } = req.body;
-    const snapshot = db.getSnapshot();
-    const storedOtp = snapshot.otps[email?.toLowerCase()];
-    if (otp !== '123456' && storedOtp && storedOtp !== otp) {
-      return res.status(400).json({ error: 'Invalid reset OTP.' });
+    const { email, phone, otp, newPassword, confirmPassword } = req.body;
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanDigits = (phone || '').replace(/\D/g, '');
+
+    if (!newPassword || String(newPassword).length < 4) {
+      return res.status(400).json({ error: 'Please enter a valid new password (minimum 4 characters).' });
     }
+
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+      return res.status(400).json({ error: 'New Password and Confirm Password do not match.' });
+    }
+
+    const snapshot = db.getSnapshot();
+    const storedOtp =
+      (cleanEmail ? snapshot.otps[cleanEmail] : undefined) ||
+      (cleanDigits.length >= 10 ? snapshot.otps[cleanDigits.slice(-10)] : undefined);
+
+    if (otp !== '123456' && storedOtp && storedOtp !== String(otp || '').trim()) {
+      return res.status(400).json({ error: 'Invalid or expired reset OTP.' });
+    }
+
+    let updatedUser: User | undefined;
     db.mutate(d => {
-      delete d.otps[email?.toLowerCase()];
+      updatedUser = d.users.find((u: User) => {
+        const emailMatch = cleanEmail && u.email.toLowerCase() === cleanEmail;
+        const phoneMatch = cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10));
+        return emailMatch || phoneMatch;
+      });
+
+      if (updatedUser) {
+        updatedUser.password = String(newPassword);
+        // Immediately unlock account and reset failed attempts on password reset
+        updatedUser.failedLoginAttempts = 0;
+        updatedUser.lockedUntil = null;
+      }
+
+      if (cleanEmail) delete d.otps[cleanEmail];
+      if (cleanDigits.length >= 10) delete d.otps[cleanDigits.slice(-10)];
+      if (updatedUser?.email) delete d.otps[updatedUser.email.toLowerCase()];
     });
-    return res.json({ success: true, message: 'Password has been reset successfully. You may now log in.' });
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'Customer account not found.' });
+    }
+
+    db.logActivity(
+      'PASSWORD_RESET_COMPLETED',
+      updatedUser.email,
+      updatedUser.role,
+      `Customer reset password via OTP and unlocked account (${updatedUser.email}).`,
+      'user',
+      updatedUser.id
+    );
+
+    return res.json({
+      success: true,
+      message: 'Your new password has been saved in the backend and your account is unlocked! Returning to Login page...',
+    });
   });
 
   app.post('/api/auth/update-profile', (req, res) => {
-    const { userId, name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId, bio, avatar } = req.body;
+    const { userId, name, email, phone, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId, bio, avatar } = req.body;
     let updated: User | null = null;
     db.mutate(d => {
       const u = d.users.find(x => x.id === userId || (email && x.email.toLowerCase() === String(email).toLowerCase()));
@@ -627,6 +882,9 @@ async function startServer() {
         if (email && email.includes('@')) u.email = email.trim().toLowerCase();
         if (phone !== undefined) u.phone = phone.trim();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
+        if (dob !== undefined) u.dob = String(dob).trim();
+        if (typeof notifyGmail === 'boolean') u.notifyGmail = notifyGmail;
+        if (typeof notifyMobile === 'boolean') u.notifyMobile = notifyMobile;
         if (upiId !== undefined) u.upiId = upiId.trim();
         if (bio !== undefined) u.bio = bio;
         if (avatar) u.avatar = avatar;
@@ -2101,36 +2359,242 @@ async function startServer() {
   // -------------------------------------------------------------
 
   app.post('/api/author/apply', (req, res) => {
-    const { userId, authorName, email, bio, portfolioUrl, sampleComicTitle, sampleSynopsis, samplePagesCount } = req.body;
+    const {
+      userId,
+      authorName,
+      email,
+      authorAvatar,
+      bio,
+      portfolioUrl,
+      sampleComicTitle,
+      sampleSynopsis,
+      samplePagesCount,
+      sampleImages,
+    } = req.body;
     if (!authorName || !email || !sampleComicTitle) {
       return res.status(400).json({ error: 'Author name, email, and sample comic title are required' });
     }
 
-    const application: AuthorApplication = {
-      id: 'app_' + Date.now(),
-      userId: userId || 'usr_applicant',
-      authorName,
-      email: email.toLowerCase(),
-      bio: bio || '',
-      portfolioUrl: portfolioUrl || '',
-      sampleComicTitle,
-      sampleSynopsis: sampleSynopsis || '',
-      samplePagesCount: Number(samplePagesCount) || 5,
-      status: 'pending',
-      submittedAt: new Date().toISOString(),
-    };
+    const cleanEmail = String(email).trim().toLowerCase();
+    const validSampleImages = Array.isArray(sampleImages)
+      ? sampleImages.filter((img: unknown) => typeof img === 'string' && img.length > 0)
+      : [];
+    const resolvedPagesCount =
+      validSampleImages.length > 0 ? validSampleImages.length : Number(samplePagesCount) || 5;
+
+    let savedApp: AuthorApplication | null = null;
+    let updatedUser: User | null = null;
 
     db.mutate(d => {
-      d.authorApplications.unshift(application);
+      let existingUser = d.users.find(
+        u => (userId && u.id === userId) || u.email.toLowerCase() === cleanEmail
+      );
+
+      const resolvedAvatar =
+        authorAvatar ||
+        existingUser?.avatar ||
+        `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(authorName)}`;
+
+      if (existingUser) {
+        existingUser.name = authorName.trim() || existingUser.name;
+        if (authorAvatar) existingUser.avatar = authorAvatar;
+        if (bio) existingUser.bio = bio;
+        existingUser.isVerified = true;
+        updatedUser = existingUser;
+      } else {
+        const newUser: User = {
+          id: userId || 'usr_' + Date.now(),
+          name: authorName.trim(),
+          email: cleanEmail,
+          role: 'reader',
+          isVerified: true,
+          avatar: resolvedAvatar,
+          bio: bio || 'Published Creator & Reader on Aathirai_Comic',
+          createdAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+          premiumPlan: null,
+        };
+        d.users.push(newUser);
+        updatedUser = newUser;
+      }
+
+      const existingAppIdx = d.authorApplications.findIndex(
+        a =>
+          (userId && a.userId === userId) ||
+          a.email.toLowerCase() === cleanEmail
+      );
+
+      const application: AuthorApplication = {
+        id: existingAppIdx >= 0 ? d.authorApplications[existingAppIdx].id : 'app_' + Date.now(),
+        userId: updatedUser!.id,
+        authorName: authorName.trim(),
+        email: cleanEmail,
+        authorAvatar: resolvedAvatar,
+        bio: bio || existingUser?.bio || 'Creator & Storyteller on Aathirai_Comic.',
+        portfolioUrl: portfolioUrl || '',
+        sampleComicTitle: sampleComicTitle.trim(),
+        sampleSynopsis: sampleSynopsis || '',
+        samplePagesCount: resolvedPagesCount,
+        sampleImages: validSampleImages,
+        status: 'approved',
+        submittedAt: new Date().toISOString(),
+      };
+
+      if (existingAppIdx >= 0) {
+        d.authorApplications[existingAppIdx] = application;
+      } else {
+        d.authorApplications.unshift(application);
+      }
+      savedApp = application;
     });
 
-    db.logActivity('AUTHOR_APPLICATION_SUBMITTED', email, 'reader', `Submitted author application for "${sampleComicTitle}"`, 'author_application', application.id);
+    db.logActivity(
+      'AUTHOR_APPLICATION_SUBMITTED',
+      cleanEmail,
+      'author',
+      `Registered as Author & Reader for "${sampleComicTitle}" with ${resolvedPagesCount} sample photo(s)`,
+      'author_application',
+      savedApp!.id
+    );
 
     return res.json({
       success: true,
-      application,
-      message: 'Author application submitted successfully! Your account will be reviewed by the administrator.',
+      application: savedApp,
+      user: updatedUser,
+      message:
+        'Author profile & sample photos uploaded! You are now active on the Author List and can use your account as both Author and Reader.',
     });
+  });
+
+  app.post('/api/author/update-photo', (req, res) => {
+    const { userId, email, authorName, authorAvatar } = req.body;
+    if (!authorAvatar) {
+      return res.status(400).json({ error: 'Please select an author photo to upload.' });
+    }
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    let updatedUser: User | null = null;
+    let updatedApp: AuthorApplication | null = null;
+
+    db.mutate(d => {
+      const u = d.users.find(
+        usr => (userId && usr.id === userId) || (cleanEmail && usr.email.toLowerCase() === cleanEmail)
+      );
+      if (u) {
+        u.avatar = authorAvatar;
+        if (authorName) u.name = authorName;
+        updatedUser = u;
+      }
+
+      const app = d.authorApplications.find(
+        a => (userId && a.userId === userId) || (cleanEmail && a.email.toLowerCase() === cleanEmail)
+      );
+      if (app) {
+        app.authorAvatar = authorAvatar;
+        if (authorName) app.authorName = authorName;
+        updatedApp = app;
+      } else if (u || cleanEmail || authorName) {
+        const newApp: AuthorApplication = {
+          id: 'app_' + Date.now(),
+          userId: u?.id || userId || 'usr_' + Date.now(),
+          authorName: authorName || u?.name || 'Featured Creator',
+          email: cleanEmail || u?.email || 'creator@aathirai.com',
+          authorAvatar,
+          bio: u?.bio || 'Creator & Storyteller on Aathirai_Comic.',
+          portfolioUrl: '',
+          sampleComicTitle: 'Original Comic Series',
+          sampleSynopsis: '',
+          samplePagesCount: 1,
+          sampleImages: [],
+          status: 'approved',
+          submittedAt: new Date().toISOString(),
+        };
+        d.authorApplications.unshift(newApp);
+        updatedApp = newApp;
+      }
+    });
+
+    return res.json({
+      success: true,
+      user: updatedUser,
+      application: updatedApp,
+      message: 'Author photo updated on the Author List!',
+    });
+  });
+
+  app.get('/api/authors', (_req, res) => {
+    const snapshot = db.getSnapshot();
+    const defaultAuthors = [
+      {
+        id: 'usr_rajesh',
+        name: 'Rajesh Singh',
+        email: 'rajesh@aathirai.com',
+        role: 'Graphic Novelist & Manga Illustrator',
+        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80',
+        bio: 'Leading creator behind Virasen and Neo Madras 2099. Pioneering Indian mythic science fiction and cyberpunk webtoons.',
+        sampleComicTitle: 'Virasen: The Last Guardian',
+        sampleImages: [] as string[],
+        followers: '28.4K',
+        totalReads: '87.3K',
+      },
+      {
+        id: 'usr_ananya',
+        name: 'Ananya Sundaram',
+        email: 'ananya@aathirai.com',
+        role: 'Mythological Fantasy Writer & Inker',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
+        bio: 'Creator of Curse of Mahishur. Drawing inspiration from Sangam architecture and Dravidian temple guardian lore.',
+        sampleComicTitle: 'Curse of Mahishur',
+        sampleImages: [] as string[],
+        followers: '14.2K',
+        totalReads: '28.4K',
+      },
+      {
+        id: 'usr_luna',
+        name: 'Luna & Sky',
+        email: 'luna@aathirai.com',
+        role: 'Slice-of-Life Webtoon Duo',
+        avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=200&h=200&q=80',
+        bio: 'Artistic partnership creating gentle, heartwarming watercolor webtoons set in the misty Nilgiri hills.',
+        sampleComicTitle: 'Monsoon Melodies',
+        sampleImages: [] as string[],
+        followers: '32.1K',
+        totalReads: '52.1K',
+      },
+    ];
+
+    const customAuthors = snapshot.authorApplications.map(app => {
+      const matchedUser = snapshot.users.find(
+        u => u.id === app.userId || u.email.toLowerCase() === app.email.toLowerCase()
+      );
+      return {
+        id: app.userId || app.id,
+        name: app.authorName,
+        email: app.email,
+        role: 'Published Author & Reader',
+        avatar:
+          app.authorAvatar ||
+          matchedUser?.avatar ||
+          `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`,
+        bio: app.bio || matchedUser?.bio || `Creator of "${app.sampleComicTitle}" on Aathirai_Comic.`,
+        sampleComicTitle: app.sampleComicTitle,
+        sampleImages: app.sampleImages || [],
+        followers: '1.2K',
+        totalReads: '4.8K',
+      };
+    });
+
+    // Merge custom authors first, avoiding duplicates by email/name
+    const seen = new Set<string>();
+    const combined = [];
+    for (const a of [...customAuthors, ...defaultAuthors]) {
+      const key = (a.email || a.name).toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        combined.push(a);
+      }
+    }
+
+    return res.json({ authors: combined });
   });
 
   app.get('/api/author/me', (req, res) => {
@@ -2187,6 +2651,26 @@ async function startServer() {
       return res.status(400).json({ error: 'Valid amount is required' });
     }
 
+    if (type === 'subscription') {
+      const cleanEmail = (userEmail || '').trim().toLowerCase();
+      const snapshot = db.getSnapshot();
+      const existingUser = snapshot.users.find(
+        u => (userId && u.id === userId) || (cleanEmail && u.email.toLowerCase() === cleanEmail)
+      );
+      if (
+        existingUser &&
+        existingUser.premiumExpiresAt &&
+        new Date(existingUser.premiumExpiresAt).getTime() > Date.now()
+      ) {
+        const activePlanLabel =
+          existingUser.premiumPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)';
+        const expiryDateStr = new Date(existingUser.premiumExpiresAt).toLocaleDateString();
+        return res.status(400).json({
+          error: `Only one plan can be active at a time. Your ${activePlanLabel} plan is currently active until ${expiryDateStr}. You can choose another plan after your current plan ends.`,
+        });
+      }
+    }
+
     const orderId = 'order_' + crypto.randomBytes(8).toString('hex');
     const amountInPaise = Math.round(parsedAmount * 100);
 
@@ -2226,16 +2710,38 @@ async function startServer() {
       paymentMethod = 'UPI / Card',
     } = req.body;
 
+    const cleanEmailCheck = (userEmail || '').trim().toLowerCase();
+    if (type === 'subscription') {
+      const snapshot = db.getSnapshot();
+      const existingUser = snapshot.users.find(
+        u =>
+          (userId && u.id === userId) ||
+          (cleanEmailCheck && u.email.toLowerCase() === cleanEmailCheck)
+      );
+      if (
+        existingUser &&
+        existingUser.premiumExpiresAt &&
+        new Date(existingUser.premiumExpiresAt).getTime() > Date.now()
+      ) {
+        const activePlanLabel =
+          existingUser.premiumPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)';
+        const expiryDateStr = new Date(existingUser.premiumExpiresAt).toLocaleDateString();
+        return res.status(400).json({
+          error: `Only one plan can be active at a time. Your ${activePlanLabel} plan is currently active until ${expiryDateStr}. You can choose another plan after your current plan ends.`,
+        });
+      }
+    }
+
     // Server-side verification: in real production with live keys, verify HMAC SHA256
     const text = razorpayOrderId + '|' + razorpayPaymentId;
     const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(text).digest('hex');
 
-    // Calculate revenue split based on platform settings
+    // Calculate revenue split based on platform settings (no GST deduction)
     const settings = db.getSnapshot().settings;
     const revenueSharePct = settings.authorRevenueSharePercent || 70;
     const amountNum = Number(amountInr);
-    const taxAmount = Number((amountNum * 0.18).toFixed(2)); // 18% GST calculation
-    const baseRevenue = amountNum - taxAmount;
+    const taxAmount = 0;
+    const baseRevenue = amountNum;
     const authorEarningsInr = Number(((baseRevenue * revenueSharePct) / 100).toFixed(2));
     const platformFeeInr = Number((baseRevenue - authorEarningsInr).toFixed(2));
 
