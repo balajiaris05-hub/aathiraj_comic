@@ -73,10 +73,10 @@ export const HomePage: React.FC<HomePageProps> = ({
       <section className="relative overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 text-white shadow-2xl">
         <div className="absolute inset-0 z-0">
           <img
-            src="/src/assets/images/hero_comic_banner_1794269871202.jpg"
-            alt="Aathirai Comics Universe"
+            src="/src/assets/images/tamil_nadu_temple_anime_1794618935009.jpg"
+            alt="Anime-style Tamil Nadu twilight landscape with Dravidian temple gopurams and coastline"
             referrerPolicy="no-referrer"
-            className="w-full h-full object-cover object-center opacity-45 scale-105"
+            className="w-full h-full object-cover object-center opacity-50 scale-105"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-transparent" />
           <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/70 to-transparent" />
