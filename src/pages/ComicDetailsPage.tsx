@@ -23,7 +23,7 @@ import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 interface ComicDetailsPageProps {
   comic: Comic;
   onBack: () => void;
-  onOpenEpisode: (episodeId: string) => void;
+  onOpenEpisode: (episodeId: string) => void | Promise<void>;
   openAuthModal: () => void;
 }
 
@@ -42,7 +42,9 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
 
   // Real-Time Gmail Paywall Verification State (checked every time comic is accessed)
   const [gmailAccessVerified, setGmailAccessVerified] = useState<boolean>(false);
+  const [paywallChecked, setPaywallChecked] = useState<boolean>(false);
   const [verifyingGmail, setVerifyingGmail] = useState<boolean>(false);
+  const [verifyingEpisodeId, setVerifyingEpisodeId] = useState<string | null>(null);
   const [verifiedPlan, setVerifiedPlan] = useState<string | null>(null);
   const [verifiedExpiresAt, setVerifiedExpiresAt] = useState<string | null>(null);
 
@@ -65,6 +67,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
   const verifyReaderGmailPaywall = async () => {
     if (!user) {
       setGmailAccessVerified(false);
+      setPaywallChecked(true);
       return;
     }
     setVerifyingGmail(true);
@@ -75,7 +78,9 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
       if (user.email) params.set('email', user.email);
       if (user.phone) params.set('phone', user.phone);
 
-      const res = await fetch(`/api/payments/verify-access?${params.toString()}`);
+      const res = await fetch(`/api/payments/verify-access?${params.toString()}`, {
+        cache: 'no-store',
+      });
       if (res.ok) {
         const data = await res.json();
         setGmailAccessVerified(Boolean(data.unlocked || data.hasAccess));
@@ -85,6 +90,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
     } catch (e) {
       console.error('Error verifying Gmail paywall access:', e);
     } finally {
+      setPaywallChecked(true);
       setVerifyingGmail(false);
     }
   };
@@ -100,9 +106,25 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
     }));
   };
 
+  const handleReadClick = async (episodeId: string) => {
+    setVerifyingEpisodeId(episodeId);
+    try {
+      await onOpenEpisode(episodeId);
+    } finally {
+      setVerifyingEpisodeId(null);
+    }
+  };
+
   const totalEpisodes = comic.chapters.reduce((sum, ch) => sum + ch.episodes.length, 0);
   const firstEpisode = comic.chapters[0]?.episodes[0];
-  const isUnlockedForReader = comic.accessType === 'free' || gmailAccessVerified || hasActivePremium;
+  const isCreatorOrAdmin = Boolean(user && (user.role === 'admin' || user.id === comic.authorId));
+  const isUnlockedForReader =
+    comic.accessType === 'free' ||
+    isCreatorOrAdmin ||
+    (paywallChecked ? gmailAccessVerified : Boolean(user && hasActivePremium));
+  const isFirstEpPaywalled = Boolean(
+    comic.accessType === 'premium' || comic.chapters[0]?.isPremium || firstEpisode?.isPremium
+  );
 
   return (
     <div className="space-y-10 pb-24">
@@ -264,11 +286,24 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
           <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-3">
             {firstEpisode && (
               <button
-                onClick={() => onOpenEpisode(firstEpisode.id)}
-                className="py-3 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
+                onClick={() => handleReadClick(firstEpisode.id)}
+                disabled={verifyingEpisodeId === firstEpisode.id}
+                className="py-3 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-70 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
               >
-                <Play className="w-4 h-4 fill-white" />
-                <span>{isUnlockedForReader ? 'Read Now (Unlocked)' : 'Read Episode 1 Free'}</span>
+                {!isFirstEpPaywalled || isUnlockedForReader ? (
+                  <Play className="w-4 h-4 fill-white" />
+                ) : (
+                  <Lock className="w-4 h-4" />
+                )}
+                <span>
+                  {verifyingEpisodeId === firstEpisode.id
+                    ? 'Verifying Access...'
+                    : !isFirstEpPaywalled
+                    ? 'Read Episode 1 Free'
+                    : isUnlockedForReader
+                    ? 'Read Now (Unlocked)'
+                    : 'Read (Premium Required)'}
+                </span>
               </button>
             )}
 
@@ -440,66 +475,79 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                 {/* Episode Items Inside Chapter */}
                 {isExpanded && (
                   <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60 bg-slate-50/50 dark:bg-slate-950/40">
-                    {chapter.episodes.map((episode) => (
-                      <div
-                        key={episode.id}
-                        className="p-4 sm:px-6 flex items-center justify-between hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors gap-4"
-                      >
-                        <div
-                          onClick={() => onOpenEpisode(episode.id)}
-                          className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer group"
-                        >
-                          <img
-                            src={episode.coverImage || episode.pages?.[0]?.imageUrl || comic.coverImage}
-                            alt={episode.title}
-                            className="w-10 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
-                          />
+                    {chapter.episodes.map((episode) => {
+                      const isEpPaywalled =
+                        comic.accessType === 'premium' ||
+                        Boolean(chapter.isPremium) ||
+                        Boolean(episode.isPremium);
+                      const isVerifyingEp = verifyingEpisodeId === episode.id;
 
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">
-                                Ep {episode.episodeNumber}: {episode.title}
-                              </h4>
-                              {episode.isPremium ? (
-                                isUnlockedForReader ? (
-                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-0.5 shrink-0">
-                                    <CheckCircle2 className="w-2.5 h-2.5" />
-                                    <span>UNLOCKED</span>
-                                  </span>
+                      return (
+                        <div
+                          key={episode.id}
+                          className="p-4 sm:px-6 flex items-center justify-between hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors gap-4"
+                        >
+                          <div
+                            onClick={() => handleReadClick(episode.id)}
+                            className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer group"
+                          >
+                            <img
+                              src={episode.coverImage || episode.pages?.[0]?.imageUrl || comic.coverImage}
+                              alt={episode.title}
+                              className="w-10 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
+                            />
+
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">
+                                  Ep {episode.episodeNumber}: {episode.title}
+                                </h4>
+                                {isEpPaywalled ? (
+                                  isUnlockedForReader ? (
+                                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-0.5 shrink-0">
+                                      <CheckCircle2 className="w-2.5 h-2.5" />
+                                      <span>UNLOCKED</span>
+                                    </span>
+                                  ) : (
+                                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-0.5 shrink-0">
+                                      <Lock className="w-2.5 h-2.5" />
+                                      <span>PREMIUM</span>
+                                    </span>
+                                  )
                                 ) : (
-                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 flex items-center gap-0.5 shrink-0">
-                                    <Lock className="w-2.5 h-2.5" />
-                                    <span>PREMIUM</span>
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                    FREE
                                   </span>
-                                )
-                              ) : (
-                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                  FREE
-                                </span>
-                              )}
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                                {episode.synopsis || 'Read online in high quality manga viewer.'} · {episode.pages?.length || 1} Pages
+                              </p>
                             </div>
-                            <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                              {episode.synopsis || 'Read online in high quality manga viewer.'} · {episode.pages?.length || 1} Pages
-                            </p>
+                          </div>
+
+                          {/* Read or Buy Action */}
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[11px] text-slate-400 hidden sm:inline font-mono">
+                              {episode.releaseDate}
+                            </span>
+
+                            <button
+                              onClick={() => handleReadClick(episode.id)}
+                              disabled={isVerifyingEp}
+                              className="py-1.5 px-3.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-70 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                            >
+                              {!isEpPaywalled || isUnlockedForReader ? (
+                                <Play className="w-3 h-3 fill-white" />
+                              ) : (
+                                <Lock className="w-3 h-3" />
+                              )}
+                              <span>{isVerifyingEp ? 'Verifying...' : 'Read'}</span>
+                            </button>
                           </div>
                         </div>
-
-                        {/* Read or Buy Action */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-[11px] text-slate-400 hidden sm:inline font-mono">
-                            {episode.releaseDate}
-                          </span>
-
-                          <button
-                            onClick={() => onOpenEpisode(episode.id)}
-                            className="py-1.5 px-3.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
-                          >
-                            <Play className="w-3 h-3 fill-white" />
-                            <span>Read</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

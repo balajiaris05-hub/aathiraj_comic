@@ -32,6 +32,7 @@ function MainAppContent() {
   const [selectedComic, setSelectedComic] = useState<Comic | null>(null);
   const [activeReaderEpisodeId, setActiveReaderEpisodeId] = useState<string | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [premiumRedirectNotice, setPremiumRedirectNotice] = useState<string | null>(null);
   const [comics, setComics] = useState<Comic[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -66,7 +67,21 @@ function MainAppContent() {
 
   const handleTabChange = (tab: string) => {
     setSelectedComic(null);
+    if (tab !== 'premium') {
+      setPremiumRedirectNotice(null);
+    }
     setCurrentTab(tab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const redirectToPremiumTab = (message?: string) => {
+    setActiveReaderEpisodeId(null);
+    setSelectedComic(null);
+    setPremiumRedirectNotice(
+      message ||
+        'This comic is on Premium. Please verify an active paid account or choose a plan below before reading.'
+    );
+    setCurrentTab('premium');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -75,7 +90,56 @@ function MainAppContent() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleOpenEpisode = (episodeId: string) => {
+  const handleOpenEpisode = async (episodeId: string) => {
+    // Find owning comic/chapter locally so we can pass full context and handle fallbacks safely
+    let matchedComic: Comic | undefined = selectedComic || undefined;
+    let isLocallyPaywalled = false;
+
+    for (const c of comics) {
+      for (const ch of c.chapters) {
+        const ep = ch.episodes.find((e) => e.id === episodeId);
+        if (ep) {
+          matchedComic = c;
+          isLocallyPaywalled = Boolean(ep.isPremium || ch.isPremium || c.accessType === 'premium');
+          break;
+        }
+      }
+      if (matchedComic && isLocallyPaywalled) break;
+    }
+
+    try {
+      const params = new URLSearchParams();
+      params.set('episodeId', episodeId);
+      if (matchedComic?.id) params.set('comicId', matchedComic.id);
+      if (user?.id) params.set('userId', user.id);
+      if (user?.email) params.set('email', user.email);
+      if (user?.phone) params.set('phone', user.phone);
+
+      const res = await fetch(`/api/payments/verify-access?${params.toString()}`, {
+        cache: 'no-store',
+      });
+
+      if (res.ok) {
+        const verification = await res.json();
+        if (verification.hasAccess) {
+          setActiveReaderEpisodeId(episodeId);
+          return;
+        }
+        redirectToPremiumTab(
+          user
+            ? `No active paid subscription or purchase was verified for ${user.email || user.phone || 'your account'}. Subscribe or verify payment on this Premium tab to read.`
+            : 'This comic is on Premium. Please log in and complete payment on the Premium tab to unlock reading.'
+        );
+        return;
+      }
+    } catch (e) {
+      console.error('Error verifying premium read access:', e);
+    }
+
+    if (isLocallyPaywalled) {
+      redirectToPremiumTab();
+      return;
+    }
     setActiveReaderEpisodeId(episodeId);
   };
 
@@ -232,6 +296,8 @@ function MainAppContent() {
               <PremiumPage
                 openAuthModal={() => setAuthModalOpen(true)}
                 setCurrentTab={handleTabChange}
+                redirectNotice={premiumRedirectNotice}
+                onClearRedirectNotice={() => setPremiumRedirectNotice(null)}
               />
             )}
 
@@ -264,7 +330,8 @@ function MainAppContent() {
         <ComicReader
           episodeId={activeReaderEpisodeId}
           onClose={() => setActiveReaderEpisodeId(null)}
-          onSelectEpisode={(epId) => setActiveReaderEpisodeId(epId)}
+          onSelectEpisode={handleOpenEpisode}
+          onRedirectToPremium={() => redirectToPremiumTab()}
           openAuthModal={() => setAuthModalOpen(true)}
         />
       )}

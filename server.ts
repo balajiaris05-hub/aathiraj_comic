@@ -2771,8 +2771,12 @@ async function startServer() {
     const prevEpisodeId = currentIdx > 0 ? allEpisodes[currentIdx - 1].id : null;
     const nextEpisodeId = currentIdx >= 0 && currentIdx < allEpisodes.length - 1 ? allEpisodes[currentIdx + 1].id : null;
 
+    const safeEpisode = hasAccess
+      ? foundEpisode
+      : { ...foundEpisode, pages: [] };
+
     return res.json({
-      episode: foundEpisode,
+      episode: safeEpisode,
       comic: {
         id: foundComic.id,
         title: foundComic.title,
@@ -2806,7 +2810,7 @@ async function startServer() {
     });
   });
 
-  // Real-time endpoint to verify reader Gmail payment status for any comic/chapter/episode
+  // Real-time endpoint to verify reader Gmail/account payment status for any comic/chapter/episode
   app.get('/api/payments/verify-access', (req, res) => {
     const { userId, email, phone, comicId, chapterId, episodeId } = req.query;
     const snapshot = db.getSnapshot();
@@ -2816,22 +2820,94 @@ async function startServer() {
       phone: phone ? String(phone) : undefined,
     });
 
+    let foundComic: any = comicId ? snapshot.comics.find((c: Comic) => c.id === String(comicId)) : null;
+    let foundChapter: any = null;
+    let foundEpisode: any = null;
+
+    if (episodeId) {
+      for (const c of snapshot.comics) {
+        for (const ch of c.chapters) {
+          const ep = ch.episodes.find((e: Episode) => e.id === String(episodeId));
+          if (ep) {
+            foundComic = c;
+            foundChapter = ch;
+            foundEpisode = ep;
+            break;
+          }
+        }
+        if (foundEpisode) break;
+      }
+    } else if (chapterId && foundComic) {
+      foundChapter = foundComic.chapters.find((ch: Chapter) => ch.id === String(chapterId)) || null;
+    }
+
+    const hasTargetContext = Boolean(foundEpisode || foundChapter || foundComic || comicId || episodeId || chapterId);
+    const isPaywalled = foundEpisode
+      ? Boolean(foundEpisode.isPremium || foundChapter?.isPremium || foundComic?.accessType === 'premium')
+      : foundChapter
+      ? Boolean(foundChapter.isPremium || foundComic?.accessType === 'premium')
+      : foundComic
+      ? foundComic.accessType === 'premium'
+      : false;
+
+    const targetComicId = foundComic?.id || (comicId ? String(comicId) : '');
+    const targetChapterId = foundChapter?.id || (chapterId ? String(chapterId) : '');
+    const targetEpisodeId = foundEpisode?.id || (episodeId ? String(episodeId) : '');
+
+    const matchedUser = subStatus.matchedUser;
     const targetEmail = (email ? String(email) : subStatus.verifiedGmail || '').trim().toLowerCase();
-    const itemPurchase = comicId
-      ? snapshot.purchases.find(p =>
-          p.status === 'success' &&
-          ((userId && p.userId === userId) || (targetEmail && p.userEmail?.toLowerCase() === targetEmail)) &&
-          p.comicId === comicId &&
-          (p.type === 'full_comic' || (chapterId && p.chapterId === chapterId) || (episodeId && p.episodeId === episodeId))
-        )
+    const targetPhoneDigits = (phone ? String(phone) : subStatus.verifiedPhone || '').replace(/\D/g, '');
+
+    const itemPurchase = targetComicId
+      ? snapshot.purchases.find((p: Purchase) => {
+          if (p.status !== 'success' || p.comicId !== targetComicId) return false;
+          const userMatches =
+            (userId && p.userId === String(userId)) ||
+            (matchedUser?.id && p.userId === matchedUser.id) ||
+            (targetEmail && p.userEmail?.toLowerCase() === targetEmail) ||
+            (targetPhoneDigits.length >= 10 &&
+              p.userPhone &&
+              p.userPhone.replace(/\D/g, '').endsWith(targetPhoneDigits.slice(-10)));
+          if (!userMatches) return false;
+          return (
+            p.type === 'full_comic' ||
+            (targetChapterId && p.chapterId === targetChapterId) ||
+            (targetEpisodeId && p.episodeId === targetEpisodeId)
+          );
+        })
       : null;
+
+    const isAdminOrAuthor = Boolean(
+      matchedUser && (matchedUser.role === 'admin' || (foundComic && matchedUser.id === foundComic.authorId))
+    );
+
+    let hasAccess = false;
+    let accessReason = 'paywall_locked';
+
+    if (hasTargetContext && !isPaywalled && (foundComic || foundEpisode)) {
+      hasAccess = true;
+      accessReason = 'free_content';
+    } else if (isAdminOrAuthor) {
+      hasAccess = true;
+      accessReason = 'author_or_admin';
+    } else if (subStatus.hasActiveSubscription) {
+      hasAccess = true;
+      accessReason = `gmail_premium_${subStatus.activePlan}`;
+    } else if (itemPurchase) {
+      hasAccess = true;
+      accessReason = 'item_purchased';
+    }
 
     return res.json({
       verified: true,
       verifiedAt: new Date().toISOString(),
-      hasAccess: Boolean(subStatus.hasActiveSubscription || itemPurchase),
+      isPaywalled,
+      hasAccess,
+      unlocked: hasAccess,
+      accessReason,
       hasActiveSubscription: subStatus.hasActiveSubscription,
       activePlan: subStatus.activePlan,
+      plan: subStatus.activePlan,
       expiresAt: subStatus.expiresAt,
       activeReceipt: subStatus.activeReceipt || itemPurchase?.receiptNumber,
       verifiedGmail: subStatus.verifiedGmail,

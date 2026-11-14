@@ -19,9 +19,16 @@ import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 interface PremiumPageProps {
   openAuthModal: () => void;
   setCurrentTab: (tab: string) => void;
+  redirectNotice?: string | null;
+  onClearRedirectNotice?: () => void;
 }
 
-export const PremiumPage: React.FC<PremiumPageProps> = ({ openAuthModal, setCurrentTab }) => {
+export const PremiumPage: React.FC<PremiumPageProps> = ({
+  openAuthModal,
+  setCurrentTab,
+  redirectNotice,
+  onClearRedirectNotice,
+}) => {
   const { user, hasActivePremium, refreshUser } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState<{
     open: boolean;
@@ -92,6 +99,26 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({ openAuthModal, setCurr
 
   return (
     <div className="max-w-5xl mx-auto space-y-10 pb-24">
+      {redirectNotice && !hasActivePremium && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-slate-900 dark:text-amber-100 flex items-start justify-between gap-4 max-w-4xl mx-auto">
+          <div className="flex items-start gap-3">
+            <Lock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+            <div className="space-y-1 text-xs sm:text-sm">
+              <div className="font-extrabold">Premium Verification Required</div>
+              <p className="text-slate-700 dark:text-amber-200/90">{redirectNotice}</p>
+            </div>
+          </div>
+          {onClearRedirectNotice && (
+            <button
+              type="button"
+              onClick={onClearRedirectNotice}
+              className="text-xs font-bold text-slate-500 hover:text-slate-900 dark:text-amber-300 dark:hover:text-white shrink-0 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
       
       {/* Header */}
       <div className="text-center space-y-3">

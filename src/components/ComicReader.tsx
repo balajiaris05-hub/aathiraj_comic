@@ -32,6 +32,7 @@ interface ComicReaderProps {
   episodeId: string;
   onClose: () => void;
   onSelectEpisode: (epId: string) => void;
+  onRedirectToPremium?: () => void;
   openAuthModal: () => void;
 }
 
@@ -39,6 +40,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   episodeId,
   onClose,
   onSelectEpisode,
+  onRedirectToPremium,
   openAuthModal,
 }) => {
   const {
@@ -131,10 +133,15 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       const res = await fetch(
         `/api/episodes/${episodeId}?userId=${encodeURIComponent(user?.id || '')}&email=${encodeURIComponent(
           user?.email || ''
-        )}&phone=${encodeURIComponent(user?.phone || '')}`
+        )}&phone=${encodeURIComponent(user?.phone || '')}`,
+        { cache: 'no-store' }
       );
       const json = await res.json();
       if (res.ok) {
+        if (!json.hasAccess && onRedirectToPremium) {
+          onRedirectToPremium();
+          return;
+        }
         setData(json);
         setLikesCount(json.episode.likesCount || 0);
         setDislikesCount(json.episode.dislikesCount || 0);

@@ -338,7 +338,7 @@
       "trending": true,
       "popular": true,
       "recommended": true,
-      "totalViews": 48252,
+      "totalViews": 48253,
       "averageRating": 4.9,
       "createdAt": "2026-02-10T00:00:00Z",
       "updatedAt": "2026-11-05T00:00:00Z",
@@ -1714,11 +1714,11 @@
   "creditNotes": [],
   "migrationAudit": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-14T00:12:35.168Z",
-    "completedAt": "2026-11-14T00:12:35.183Z",
+    "startedAt": "2026-11-14T00:43:21.112Z",
+    "completedAt": "2026-11-14T00:43:21.126Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "b83da3ec944c893127d5982a8b998050018e971759e4d1a36003221dbd6d1ab0",
+    "backupSha256": "7f936b63e4ed5d15a5149461beb6645d4220e74b62c5c920c15ea5bc85202372",
     "status": "verified",
     "counts": {
       "users": 3,
@@ -1739,7 +1739,7 @@
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: b83da3ec944c8931...)",
+      "Backed up aathirai_db.json (SHA-256: 7f936b63e4ed5d15...)",
       "Migrated 3 users with isolated PII and scrypt password hashes",
       "Migrated 6 comics, 7 chapters, and 15 episodes",
       "Preserved 1 historical purchases and 1 payment transactions",
