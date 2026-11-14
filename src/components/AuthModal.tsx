@@ -56,7 +56,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
   const { login } = useAuth();
   const [mode, setMode] = useState<AuthMode>('login');
   const [credential, setCredential] = useState('');
-  const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
 
@@ -108,10 +107,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
   const handleVerifyIdentity = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!credential.trim() && !loginPhone.trim()) {
-      setError('Please enter your Gmail address and Mobile Number.');
+    const cleanInput = credential.trim();
+    if (!cleanInput) {
+      setError('Please enter your registered Email address or Phone number.');
       return;
     }
+    const isEmailInput = cleanInput.includes('@');
     setLoading(true);
     setError(null);
     setSuccessMsg(null);
@@ -120,9 +121,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: credential.trim(),
-          credential: credential.trim(),
-          phone: loginPhone.trim(),
+          email: isEmailInput ? cleanInput : '',
+          credential: cleanInput,
+          phone: !isEmailInput ? cleanInput : '',
         }),
       });
       const data = await res.json();
@@ -135,7 +136,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         if (data.isLocked) {
           setError(data.message || 'Account locked for 12 hours after 3 failed password attempts.');
         } else {
-          setSuccessMsg(data.message || 'Gmail & Mobile verified! Enter your password below.');
+          setSuccessMsg(data.message || 'Account verified! Enter your password below.');
         }
       } else {
         setIdentityVerified(false);
@@ -164,8 +165,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setLoading(true);
     setError(null);
 
-    const res = await login(credential.trim() || loginPhone.trim(), {
-      phone: loginPhone.trim() || undefined,
+    const cleanInput = credential.trim();
+    const isEmailInput = cleanInput.includes('@');
+    const res = await login(cleanInput, {
+      phone: !isEmailInput ? cleanInput : undefined,
       password: loginPassword,
       notifyGmail,
       notifyMobile,
@@ -229,7 +232,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         setSuccessMsg(
           `Welcome to Aathirai_Comic! Account created & welcome email sent to ${email}. Verify OTP below.`
         );
-        setSandboxOtp(data.mockOtp || '123456');
+        setSandboxOtp(data.devOtpHint || '');
         setMode('verify-otp');
       } else {
         setError(data.error || 'Registration failed');
@@ -294,7 +297,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
       const data = await res.json();
       setLoading(false);
       if (res.ok) {
-        setSandboxOtp(data.mockOtp || '123456');
+        setSandboxOtp(data.devOtpHint || '');
         setSuccessMsg(data.message || `Reset code sent to ${resetEmail}`);
         setResetStep('verify_otp');
       } else {
@@ -452,45 +455,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
         {mode === 'login' && (
           <form onSubmit={handleLogin} className="space-y-3.5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                  Gmail Address <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="email"
-                    required
-                    placeholder="Enter your Gmail address"
-                    value={credential}
-                    onChange={(e) => {
-                      setCredential(e.target.value);
-                      setIdentityVerified(false);
-                    }}
-                    className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                  Mobile Number (+91) <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <Phone className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="tel"
-                    required
-                    placeholder="Enter your mobile number (+91)"
-                    value={loginPhone}
-                    onChange={(e) => {
-                      setLoginPhone(e.target.value);
-                      setIdentityVerified(false);
-                    }}
-                    className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  />
-                </div>
+            <div>
+              <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
+                Email or Phone Number <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter email address or phone number"
+                  value={credential}
+                  onChange={(e) => {
+                    setCredential(e.target.value);
+                    setIdentityVerified(false);
+                  }}
+                  className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                />
               </div>
             </div>
 
@@ -501,7 +482,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                 disabled={loading}
                 className="w-full py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-colors shadow-md cursor-pointer"
               >
-                {loading ? 'Verifying...' : 'Verify Gmail & Mobile to Enter Password'}
+                {loading ? 'Verifying...' : 'Verify Email or Phone to Enter Password'}
               </button>
             ) : (
               <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 space-y-3">
@@ -524,8 +505,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                       type="button"
                       onClick={() => {
                         resetState();
-                        setResetEmail(credential);
-                        setResetPhone(loginPhone);
+                        const cleanInput = credential.trim();
+                        if (cleanInput.includes('@')) {
+                          setResetEmail(cleanInput);
+                          setResetPhone('');
+                        } else {
+                          setResetEmail('');
+                          setResetPhone(cleanInput);
+                        }
                         setResetStep('request_otp');
                         setMode('change-password');
                       }}
@@ -571,8 +558,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                 type="button"
                 onClick={() => {
                   resetState();
-                  setResetEmail(credential);
-                  setResetPhone(loginPhone);
+                  const cleanInput = credential.trim();
+                  if (cleanInput.includes('@')) {
+                    setResetEmail(cleanInput);
+                    setResetPhone('');
+                  } else {
+                    setResetEmail('');
+                    setResetPhone(cleanInput);
+                  }
                   setResetStep('request_otp');
                   setMode('change-password');
                 }}

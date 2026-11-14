@@ -320,10 +320,10 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
               </div>
 
               <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-                {existingApp.authorName} — Published Author &amp; Reader
+                {existingApp.authorName} — Admin Approved to Upload Comics of Your Own!
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                Your Author Photo is live on the Author List and your account works as both an Author and a Reader (carrying your Reader profile &amp; Premium plan).
+                {existingApp.adminNote || 'The Administrator has approved your creator account! You are approved to upload and publish comics of your own in the Author Studio, while also keeping full Reader access.'}
               </p>
 
               {existingApp.sampleImages && existingApp.sampleImages.length > 0 && (
@@ -362,7 +362,7 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
                   className="py-3 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-2 cursor-pointer"
                 >
                   <PenTool className="w-4 h-4" />
-                  <span>Go to Author Studio</span>
+                  <span>Go to Author Studio &amp; Upload Your Comic</span>
                 </button>
                 <button
                   type="button"
@@ -392,11 +392,11 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
                 <AlertCircle className="w-8 h-8" />
               </div>
               <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-                Application Decision: Needs Revision
+                Rejected by Admin — Reason Provided Below
               </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                {existingApp.adminNote || 'Editorial note: Please provide higher resolution sample inks and submit an updated application.'}
-              </p>
+              <div className="max-w-md mx-auto p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-600 dark:text-rose-400 font-semibold">
+                Why Admin Rejected: {existingApp.adminNote || 'Editorial note: Please provide higher resolution sample inks and submit an updated application.'}
+              </div>
               <button
                 type="button"
                 onClick={() => setExistingApp(null)}

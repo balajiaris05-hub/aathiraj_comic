@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Comic, Purchase } from '../types/comic';
+import { Comic, Purchase, GstBusinessSettings } from '../types/comic';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import {
   signInWithGoogleAndSyncToFirestore,
   syncReaderAccountToFirestore,
 } from '../firebase';
+import {
+  DEFAULT_GST_SETTINGS,
+  ensurePurchaseGstFields,
+  generateTaxInvoicePdfBytes,
+} from '../utils/gstUtils';
 import {
   User,
   Mail,
@@ -57,6 +62,56 @@ const DOB_MONTHS = [
 ];
 const DOB_YEARS = Array.from({ length: 82 }, (_, i) => String(2021 - i));
 
+const GLOBAL_COUNTRIES = [
+  { code: '+91', country: 'India', iso: 'IN' },
+  { code: '+1', country: 'United States / Canada', iso: 'US' },
+  { code: '+44', country: 'United Kingdom', iso: 'GB' },
+  { code: '+971', country: 'United Arab Emirates', iso: 'AE' },
+  { code: '+65', country: 'Singapore', iso: 'SG' },
+  { code: '+61', country: 'Australia', iso: 'AU' },
+  { code: '+60', country: 'Malaysia', iso: 'MY' },
+  { code: '+49', country: 'Germany', iso: 'DE' },
+  { code: '+33', country: 'France', iso: 'FR' },
+  { code: '+81', country: 'Japan', iso: 'JP' },
+  { code: '+82', country: 'South Korea', iso: 'KR' },
+  { code: '+966', country: 'Saudi Arabia', iso: 'SA' },
+  { code: '+974', country: 'Qatar', iso: 'QA' },
+  { code: '+965', country: 'Kuwait', iso: 'KW' },
+  { code: '+968', country: 'Oman', iso: 'OM' },
+  { code: '+973', country: 'Bahrain', iso: 'BH' },
+  { code: '+94', country: 'Sri Lanka', iso: 'LK' },
+  { code: '+977', country: 'Nepal', iso: 'NP' },
+  { code: '+880', country: 'Bangladesh', iso: 'BD' },
+  { code: '+27', country: 'South Africa', iso: 'ZA' },
+  { code: '+55', country: 'Brazil', iso: 'BR' },
+  { code: '+52', country: 'Mexico', iso: 'MX' },
+  { code: '+62', country: 'Indonesia', iso: 'ID' },
+  { code: '+63', country: 'Philippines', iso: 'PH' },
+  { code: '+66', country: 'Thailand', iso: 'TH' },
+  { code: '+84', country: 'Vietnam', iso: 'VN' },
+  { code: '+86', country: 'China', iso: 'CN' },
+  { code: '+852', country: 'Hong Kong', iso: 'HK' },
+  { code: '+64', country: 'New Zealand', iso: 'NZ' },
+  { code: '+39', country: 'Italy', iso: 'IT' },
+  { code: '+34', country: 'Spain', iso: 'ES' },
+  { code: '+31', country: 'Netherlands', iso: 'NL' },
+  { code: '+41', country: 'Switzerland', iso: 'CH' },
+  { code: '+46', country: 'Sweden', iso: 'SE' },
+  { code: '+353', country: 'Ireland', iso: 'IE' },
+  { code: '+7', country: 'Russia / Kazakhstan', iso: 'RU' },
+  { code: '+234', country: 'Nigeria', iso: 'NG' },
+  { code: '+254', country: 'Kenya', iso: 'KE' },
+];
+
+function formatPhoneWithCountry(rawPhone: string, countryCode: string): string {
+  const trimmed = rawPhone.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('+')) return trimmed;
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return '';
+  return `${countryCode} ${digits}`;
+}
+
 function calculateAgeFromDob(day: string, month: string, year: string): number {
   const y = Number(year) || 2002;
   const m = (Number(month) || 5) - 1;
@@ -98,12 +153,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
   const [authTab, setAuthTab] = useState<'login' | 'register' | 'verify-otp' | 'change-password'>('login');
   const [credential, setCredential] = useState('');
+  const [loginCountryCode, setLoginCountryCode] = useState('+91');
   const [loginPhone, setLoginPhone] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
 
   // Returning customer 2-step identity & password verification + 3-attempt lockout state
   const [identityVerified, setIdentityVerified] = useState(false);
+  const [verifiedDbStatus, setVerifiedDbStatus] = useState<'exists' | 'not_found' | null>(null);
   const [verifiedCustomerName, setVerifiedCustomerName] = useState('');
   const [remainingAttempts, setRemainingAttempts] = useState<number>(3);
   const [isAccountLocked, setIsAccountLocked] = useState<boolean>(false);
@@ -112,6 +169,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   // First-time customer register state
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
+  const [regCountryCode, setRegCountryCode] = useState('+91');
   const [regPhone, setRegPhone] = useState('');
   const [regAvatar, setRegAvatar] = useState<string>('');
   const [regPassword, setRegPassword] = useState('');
@@ -129,6 +187,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
   // Change / Forgot Password state
   const [resetEmail, setResetEmail] = useState('');
+  const [resetCountryCode, setResetCountryCode] = useState('+91');
   const [resetPhone, setResetPhone] = useState('');
   const [resetOtp, setResetOtp] = useState('');
   const [resetSandboxOtp, setResetSandboxOtp] = useState<string | null>(null);
@@ -155,6 +214,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editName, setEditName] = useState(user?.name || '');
   const [editEmail, setEditEmail] = useState(user?.email || '');
+  const [editCountryCode, setEditCountryCode] = useState(user?.countryCode || '+91');
   const [editPhone, setEditPhone] = useState(user?.phone || '');
   const [editAvatar, setEditAvatar] = useState(user?.avatar || '');
   const [editDobDay, setEditDobDay] = useState(initialDobParts[0] || '15');
@@ -204,142 +264,32 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   }, [user?.id, user?.email]);
 
   const [downloadedReceiptId, setDownloadedReceiptId] = useState<string | null>(null);
+  const [liveGstSettings, setLiveGstSettings] = useState<GstBusinessSettings>(DEFAULT_GST_SETTINGS);
+
+  useEffect(() => {
+    fetch('/api/gst/public-config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.gstSettings) {
+          setLiveGstSettings((prev) => ({ ...prev, ...data.gstSettings }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const isCustomerGstEnabled = Boolean(liveGstSettings.applyGstToDomesticSales);
 
   const handleDownloadReceipt = (p: Purchase) => {
-    const receiptDate = p.createdAt
-      ? new Date(p.createdAt).toLocaleString()
-      : new Date().toLocaleString();
-    const expiryDate = p.expiresAt
-      ? new Date(p.expiresAt).toLocaleDateString()
-      : null;
-
-    const receiptHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Payment Receipt - ${p.receiptNumber}</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
-      padding: 40px 20px;
-      margin: 0;
-    }
-    .card {
-      max-width: 520px;
-      margin: 0 auto;
-      background: #ffffff;
-      border: 1px solid #e2e8f0;
-      border-radius: 16px;
-      padding: 32px;
-      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
-    }
-    .brand {
-      font-size: 20px;
-      font-weight: 800;
-      color: #e11d48;
-      margin-bottom: 4px;
-    }
-    .subtitle {
-      font-size: 12px;
-      color: #64748b;
-      margin-bottom: 24px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid #e2e8f0;
-    }
-    .row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 0;
-      font-size: 13px;
-      border-bottom: 1px dashed #e2e8f0;
-    }
-    .label {
-      color: #64748b;
-      font-weight: 500;
-    }
-    .value {
-      color: #0f172a;
-      font-weight: 700;
-      text-align: right;
-      font-family: monospace;
-    }
-    .total-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-top: 16px;
-      margin-top: 8px;
-      font-size: 16px;
-      font-weight: 800;
-    }
-    .total-val {
-      color: #059669;
-      font-family: monospace;
-    }
-    .footer {
-      margin-top: 28px;
-      text-align: center;
-      font-size: 11px;
-      color: #94a3b8;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="brand">Aathirai_Comic — Official Payment Receipt</div>
-    <div class="subtitle">Verified Digital Purchase Receipt · Date: ${receiptDate}</div>
-    <div class="row">
-      <span class="label">Receipt Number</span>
-      <span class="value">${p.receiptNumber}</span>
-    </div>
-    <div class="row">
-      <span class="label">Transaction ID</span>
-      <span class="value">${p.razorpayPaymentId}</span>
-    </div>
-    <div class="row">
-      <span class="label">Plan / Item Purchased</span>
-      <span class="value" style="font-family: sans-serif;">${p.comicTitle}</span>
-    </div>
-    <div class="row">
-      <span class="label">Customer Account</span>
-      <span class="value">${p.userEmail}</span>
-    </div>
-    <div class="row">
-      <span class="label">Payment Channel</span>
-      <span class="value" style="font-family: sans-serif;">${p.paymentMethod || 'UPI / Card'}</span>
-    </div>
-    ${
-      expiryDate
-        ? `<div class="row">
-      <span class="label">Plan Valid Until</span>
-      <span class="value">${expiryDate}</span>
-    </div>`
-        : ''
-    }
-    <div class="row">
-      <span class="label">Plan Price</span>
-      <span class="value">₹${p.amountInr.toFixed(2)}</span>
-    </div>
-    <div class="total-row">
-      <span>Total Amount Paid</span>
-      <span class="total-val">₹${p.amountInr.toFixed(2)} INR</span>
-    </div>
-    <div class="footer">
-      Thank you for supporting Aathirai_Comic!
-    </div>
-  </div>
-</body>
-</html>`;
-
     try {
-      const blob = new Blob([receiptHtml], { type: 'text/html;charset=utf-8' });
+      const enriched = ensurePurchaseGstFields(p, liveGstSettings);
+      const pdfBytes = generateTaxInvoicePdfBytes(enriched, liveGstSettings);
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Receipt-${p.receiptNumber || 'Aathirai_Comic'}.html`;
+      link.download = isCustomerGstEnabled
+        ? `Tax-Invoice-${enriched.invoiceNumber || enriched.receiptNumber || 'Aathirai_Comic'}.pdf`
+        : `Payment-Receipt-${enriched.receiptNumber || 'Aathirai_Comic'}.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -356,6 +306,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setVerifyingStatus(true);
     try {
       await refreshUser();
+      fetch('/api/gst/public-config')
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.gstSettings) {
+            setLiveGstSettings((prev) => ({ ...prev, ...d.gstSettings }));
+          }
+        })
+        .catch(() => {});
       const params = new URLSearchParams();
       if (user.id) params.set('userId', user.id);
       if (user.email) params.set('email', user.email);
@@ -375,31 +333,40 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     }
   };
 
-  // Step 1 of Returning Customer Login: Verify Gmail & Mobile Number
+  // Step 1 of Returning Customer Login: Verify EITHER Gmail OR Global Mobile Number in Backend Database
   const handleVerifyCustomerIdentity = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!credential.trim() && !loginPhone.trim()) {
-      setAuthError('Please enter your Gmail address and/or Mobile Number to verify your account.');
+      setAuthError('Please enter either your Gmail address OR your Global Mobile Number to verify in the backend database.');
       return;
     }
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    setVerifiedDbStatus(null);
+    const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === loginCountryCode);
+    const fullLoginPhone = loginPhone.trim()
+      ? formatPhoneWithCountry(loginPhone, loginCountryCode)
+      : '';
     try {
       const res = await fetch('/api/auth/verify-identity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: credential.trim(),
-          phone: loginPhone.trim(),
+          phone: fullLoginPhone,
+          countryCode: loginCountryCode,
+          countryName: selectedCountryObj?.country || 'India',
         }),
       });
       const data = await res.json();
       setAuthLoading(false);
       if (res.ok && data.verified) {
         setIdentityVerified(true);
+        setVerifiedDbStatus('exists');
         setVerifiedCustomerName(data.name || '');
         if (data.email && !credential.trim()) setCredential(data.email);
+        if (data.countryCode) setLoginCountryCode(data.countryCode);
         if (data.phone && !loginPhone.trim()) setLoginPhone(data.phone);
         setIsAccountLocked(Boolean(data.isLocked));
         setLockedUntilIso(data.lockedUntil || null);
@@ -411,12 +378,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           );
         } else {
           setAuthSuccess(
-            `Gmail & Mobile Number verified for ${data.name || data.email}! Please enter your account password below.`
+            data.message ||
+              `Verified in Backend Database! Customer account exists for ${data.name || data.email} (${data.email}${data.phone ? ` · ${data.phone}` : ''}). Please enter your account password below.`
           );
         }
       } else {
         setIdentityVerified(false);
-        setAuthError(data.error || 'Customer account not found. Please register in First-Time Customer Register.');
+        setVerifiedDbStatus('not_found');
+        setAuthError(
+          data.error ||
+            'Customer account does not exist in the backend database. Please register in First-Time Customer Register.'
+        );
       }
     } catch (err: any) {
       setAuthLoading(false);
@@ -444,8 +416,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
-    const res = await login(credential.trim(), {
-      phone: loginPhone.trim() || undefined,
+    const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === loginCountryCode);
+    const fullLoginPhone = loginPhone.trim()
+      ? formatPhoneWithCountry(loginPhone, loginCountryCode)
+      : '';
+    const primaryIdentifier = credential.trim() || fullLoginPhone;
+    const res = await login(primaryIdentifier, {
+      phone: fullLoginPhone || undefined,
+      countryCode: loginCountryCode,
+      countryName: selectedCountryObj?.country || 'India',
       password: loginPassword,
       notifyGmail,
       notifyMobile,
@@ -455,7 +434,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setIsAccountLocked(false);
       setRemainingAttempts(3);
       setLoginPassword('');
-      setAuthSuccess('Password verified! Signed in with your Gmail & Mobile Number.');
+      setAuthSuccess('Password verified! Signed in & global mobile number saved in backend database for password recovery.');
       setTimeout(() => {
         setViewSection('profile_dashboard');
         handleLiveVerifyGmail();
@@ -474,8 +453,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     }
   };
 
-  const openChangePasswordTab = (prefillEmail?: string, prefillPhone?: string) => {
+  const openChangePasswordTab = (prefillEmail?: string, prefillPhone?: string, prefillCountryCode?: string) => {
     setResetEmail((prefillEmail ?? credential).trim() || regEmail.trim());
+    setResetCountryCode(prefillCountryCode || loginCountryCode || regCountryCode || '+91');
     setResetPhone((prefillPhone ?? loginPhone).trim() || regPhone.trim());
     setResetOtp('');
     setResetSandboxOtp(null);
@@ -490,28 +470,34 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const handleRequestPasswordResetOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetEmail.trim() && !resetPhone.trim()) {
-      setAuthError('Please enter your registered Gmail address or Mobile Number to receive the OTP.');
+      setAuthError('Please enter your registered Gmail address or Global Mobile Number to receive the OTP.');
       return;
     }
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    const fullResetPhone = resetPhone.trim()
+      ? formatPhoneWithCountry(resetPhone, resetCountryCode)
+      : '';
     try {
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: resetEmail.trim(),
-          phone: resetPhone.trim(),
+          phone: fullResetPhone,
+          countryCode: resetCountryCode,
         }),
       });
       const data = await res.json();
       setAuthLoading(false);
       if (res.ok) {
-        setResetSandboxOtp(data.mockOtp || '123456');
+        if (data.email && !resetEmail.trim()) setResetEmail(data.email);
+        if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
+        setResetSandboxOtp(data.devOtpHint || null);
         setResetStep('verify_otp');
         setAuthSuccess(
-          data.message || 'A 6-digit OTP has been sent to your registered Gmail and Mobile Number.'
+          data.message || 'A 6-digit OTP has been sent to your registered Gmail and Global Mobile Number.'
         );
       } else {
         setAuthError(data.error || 'Could not send password reset OTP.');
@@ -525,19 +511,23 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const handleVerifyResetOtpStep = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetOtp.trim()) {
-      setAuthError('Please enter the 6-digit OTP sent to your Gmail or Mobile Number.');
+      setAuthError('Please enter the 6-digit OTP sent to your Gmail or Global Mobile Number.');
       return;
     }
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    const fullResetPhone = resetPhone.trim()
+      ? formatPhoneWithCountry(resetPhone, resetCountryCode)
+      : '';
     try {
       const res = await fetch('/api/auth/verify-reset-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: resetEmail.trim(),
-          phone: resetPhone.trim(),
+          phone: fullResetPhone,
+          countryCode: resetCountryCode,
           otp: resetOtp.trim(),
         }),
       });
@@ -568,13 +558,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    const fullResetPhone = resetPhone.trim()
+      ? formatPhoneWithCountry(resetPhone, resetCountryCode)
+      : '';
     try {
       const res = await fetch('/api/auth/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: resetEmail.trim(),
-          phone: resetPhone.trim(),
+          phone: fullResetPhone,
+          countryCode: resetCountryCode,
           otp: resetOtp.trim(),
           newPassword,
           confirmPassword: confirmNewPassword,
@@ -587,9 +581,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         setIsAccountLocked(false);
         setLockedUntilIso(null);
         setRemainingAttempts(3);
-        setCredential(resetEmail.trim() || credential);
-        setLoginPhone(resetPhone.trim() || loginPhone);
+        setCredential(data.email || resetEmail.trim() || credential);
+        setLoginCountryCode(resetCountryCode);
+        setLoginPhone(data.phone || resetPhone.trim() || loginPhone);
         setIdentityVerified(true);
+        setVerifiedDbStatus('exists');
         setLoginPassword('');
         setAuthTab('login');
         setAuthSuccess(
@@ -657,6 +653,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setAuthError('Please enter your Gmail address.');
       return;
     }
+    if (!regPhone.trim()) {
+      setAuthError('Please choose your country and enter your mobile number.');
+      return;
+    }
     if (!dobDay || !dobMonth || !dobYear) {
       setAuthError('Please select your Date of Birth (Date, Month, and Year).');
       return;
@@ -672,6 +672,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === regCountryCode);
+    const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -681,7 +683,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           email: regEmail.trim(),
           age: calculatedAge,
           dob: formattedDob,
-          phone: regPhone.trim(),
+          phone: fullRegPhone,
+          countryCode: regCountryCode,
+          countryName: selectedCountryObj?.country || 'India',
           avatar: regAvatar || undefined,
           password: regPassword,
           confirmPassword: regConfirmPassword,
@@ -699,9 +703,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         if (data.welcomeEmail) {
           setWelcomeEmailNotice(data.welcomeEmail);
         }
-        setSandboxOtp(data.mockOtp || '123456');
+        setSandboxOtp(data.devOtpHint || null);
         setAuthSuccess(
-          `Welcome to Aathirai_Comic! Account created & stored in backend database. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
+          `Welcome to Aathirai_Comic! Account & Global Mobile (${fullRegPhone}) stored in backend database for password recovery. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
         );
         setAuthTab('verify-otp');
       } else {
@@ -717,13 +721,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     e.preventDefault();
     setAuthLoading(true);
     setAuthError(null);
+    const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === regCountryCode);
+    const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
     try {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: regEmail.trim(),
-          phone: regPhone.trim(),
+          phone: fullRegPhone,
+          countryCode: regCountryCode,
+          countryName: selectedCountryObj?.country || 'India',
           otp: otp.trim(),
           age: calculatedAge,
           dob: formattedDob,
@@ -734,8 +742,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       const data = await res.json();
       setAuthLoading(false);
       if (res.ok) {
-        await login(regEmail.trim() || regPhone.trim(), {
-          phone: regPhone.trim() || undefined,
+        await login(regEmail.trim() || fullRegPhone, {
+          phone: fullRegPhone || undefined,
+          countryCode: regCountryCode,
+          countryName: selectedCountryObj?.country || 'India',
           password: regPassword || undefined,
           name: regName.trim() || undefined,
           age: calculatedAge,
@@ -760,6 +770,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setProfileMessage(null);
     const updatedDob = `${editDobDay}/${editDobMonth}/${editDobYear}`;
     const updatedAge = calculateAgeFromDob(editDobDay, editDobMonth, editDobYear);
+    const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === editCountryCode);
+    const fullEditPhone = formatPhoneWithCountry(editPhone, editCountryCode);
     try {
       const res = await fetch('/api/auth/update-profile', {
         method: 'POST',
@@ -770,7 +782,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           email: editEmail.trim(),
           age: updatedAge,
           dob: updatedDob,
-          phone: editPhone.trim(),
+          phone: fullEditPhone,
+          countryCode: editCountryCode,
+          countryName: selectedCountryObj?.country || 'India',
           avatar: editAvatar || user.avatar,
           notifyGmail: editNotifyGmail,
           notifyMobile: editNotifyMobile,
@@ -784,13 +798,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           name: editName.trim(),
           email: editEmail.trim(),
           age: updatedAge,
-          phone: editPhone.trim(),
+          phone: fullEditPhone,
           upiId: user.upiId || 'balajiaris05@okaxis',
           paidPlan: user.premiumPlan || 'free',
         }).catch(() => {});
         await handleLiveVerifyGmail();
         setProfileMessage(
-          `Account Holder Profile Image, Gmail, Mobile Number, DOB (${updatedDob}), and Notification preferences saved!`
+          `Account Holder Profile Image, Gmail, Global Mobile Number (${fullEditPhone}), DOB (${updatedDob}), and Notification preferences saved in database!`
         );
         setTimeout(() => setProfileMessage(null), 5000);
       }
@@ -1096,54 +1110,73 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 </div>
               )}
 
-              {/* TAB 1: RETURNING CUSTOMER LOGIN (Step 1: Verify Gmail & Mobile -> Step 2: Verify Account Password Div with 3-Attempt 12h Lockout) */}
+              {/* TAB 1: RETURNING CUSTOMER LOGIN (Step 1: Verify EITHER Gmail OR Global Mobile in Backend DB -> Step 2: Verify Account Password Div) */}
               {authTab === 'login' && (
                 <form onSubmit={handleReaderLogin} className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-4">
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                        Connected Gmail Address <span className="text-rose-500">*</span>
+                        Connected Gmail Address
                       </label>
                       <div className="relative">
                         <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                         <input
                           type="email"
                           required
-                          placeholder="Enter your Gmail address"
+                          placeholder="Enter Gmail address"
                           value={credential}
                           onChange={(e) => {
                             setCredential(e.target.value);
                             setIdentityVerified(false);
+                            setVerifiedDbStatus(null);
                             setIsAccountLocked(false);
                           }}
                           className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                         />
                       </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                        Connected Mobile Number (+91) <span className="text-rose-500">*</span>
-                      </label>
-                      <div className="relative">
-                        <Phone className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
-                        <input
-                          type="tel"
-                          required
-                          placeholder="Enter your mobile number (+91)"
-                          value={loginPhone}
-                          onChange={(e) => {
-                            setLoginPhone(e.target.value);
-                            setIdentityVerified(false);
-                            setIsAccountLocked(false);
-                          }}
-                          className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        />
-                      </div>
+                      <span className="block text-[10px] text-slate-500 mt-1">
+                        Login with your registered Gmail address
+                      </span>
                     </div>
                   </div>
 
-                  {/* Step 1 Button: Verify Gmail & Mobile Number if not yet verified */}
+                  {/* Backend Database Verification Result Notice */}
+                  {verifiedDbStatus === 'exists' && (
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 font-bold">
+                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
+                        <span>
+                          Backend Database Verified: Customer Account Exists ({verifiedCustomerName || credential || loginPhone})
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 shrink-0">
+                        DB Verified
+                      </span>
+                    </div>
+                  )}
+
+                  {verifiedDbStatus === 'not_found' && (
+                    <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-600 dark:text-rose-400 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                      <div className="font-semibold">
+                        This Gmail / Global Mobile Number does not exist in our backend customer database yet.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (credential.trim()) setRegEmail(credential.trim());
+                          if (loginPhone.trim()) setRegPhone(loginPhone.trim());
+                          setRegCountryCode(loginCountryCode);
+                          setAuthError(null);
+                          setAuthTab('register');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[11px] shrink-0 cursor-pointer"
+                      >
+                        Create Customer Account →
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Step 1 Button: Verify Gmail OR Global Mobile Number in Backend DB if not yet verified */}
                   {!identityVerified && (
                     <div className="space-y-3">
                       <button
@@ -1154,25 +1187,26 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       >
                         <span>
                           {authLoading
-                            ? 'Verifying Gmail & Mobile Number...'
-                            : 'Verify Gmail & Mobile Number to Enter Password'}
+                            ? 'Checking Backend Database...'
+                            : 'Verify Mobile Number or Gmail in Backend Database'}
                         </span>
                         <ArrowRight className="w-4 h-4" />
                       </button>
 
-                      <div className="flex items-center justify-end">
+                      <div className="flex items-center justify-between text-[11px] text-slate-500">
+                        <span>Enter either your Mobile Number or Gmail above</span>
                         <button
                           type="button"
-                          onClick={() => openChangePasswordTab(credential, loginPhone)}
+                          onClick={() => openChangePasswordTab(credential, loginPhone, loginCountryCode)}
                           className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                         >
-                          Forgot Password / Change Password?
+                          Forgot Password / Recover via Mobile or Gmail?
                         </button>
                       </div>
                     </div>
                   )}
 
-                  {/* Step 2 Div: Account Password Verification Div (Appears after Gmail & Mobile Number are verified) */}
+                  {/* Step 2 Div: Account Password Verification Div (Appears after Gmail or Mobile Number is verified in Backend DB) */}
                   {identityVerified && (
                     <div className="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-4">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -1202,11 +1236,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             <span>Account Locked — Maximum 3 Password Attempts Exceeded</span>
                           </div>
                           <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                            Your customer account is locked for <strong>12 hours</strong>{lockedUntilIso ? ` (until ${new Date(lockedUntilIso).toLocaleString()})` : ''} due to 3 incorrect password attempts. Please try again after 12 hours, or click <strong>Forgot Password / Change Password</strong> below to receive an OTP on your Gmail or Mobile Number and unlock your account immediately.
+                            Your customer account is locked for <strong>12 hours</strong>{lockedUntilIso ? ` (until ${new Date(lockedUntilIso).toLocaleString()})` : ''} due to 3 incorrect password attempts. Please try again after 12 hours, or click <strong>Forgot Password / Recover via Global Mobile or Gmail</strong> below to receive an OTP and unlock your account immediately.
                           </p>
                           <button
                             type="button"
-                            onClick={() => openChangePasswordTab(credential, loginPhone)}
+                            onClick={() => openChangePasswordTab(credential, loginPhone, loginCountryCode)}
                             className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
                           >
                             <KeyRound className="w-4 h-4" />
@@ -1222,7 +1256,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               </label>
                               <button
                                 type="button"
-                                onClick={() => openChangePasswordTab(credential, loginPhone)}
+                                onClick={() => openChangePasswordTab(credential, loginPhone, loginCountryCode)}
                                 className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                               >
                                 Forgot Password?
@@ -1267,7 +1301,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 </form>
               )}
 
-              {/* TAB 2: FIRST-TIME CUSTOMER REGISTER (Profile Photo, Name, DOB, Gmail, Mobile + Password & Confirm Password Div -> Backend DB + Welcome Email) */}
+              {/* TAB 2: FIRST-TIME CUSTOMER REGISTER (Profile Photo, Name, DOB, Gmail, Global Mobile + Password & Confirm Password Div -> Backend DB + Welcome Email) */}
               {authTab === 'register' && (
                 <form onSubmit={handleReaderRegister} className="space-y-4">
                   {/* Account Holder Profile Photo Upload on Registration */}
@@ -1430,19 +1464,33 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                        Mobile Number (+91) <span className="text-rose-500">*</span>
+                        Global Mobile Number (Choose Country) <span className="text-rose-500">*</span>
                       </label>
-                      <div className="relative">
-                        <Phone className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                      <div className="flex items-stretch gap-1.5">
+                        <select
+                          aria-label="Registration Country Code"
+                          value={regCountryCode}
+                          onChange={(e) => setRegCountryCode(e.target.value)}
+                          className="w-36 shrink-0 px-2 py-3 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                        >
+                          {GLOBAL_COUNTRIES.map((c) => (
+                            <option key={`reg-${c.iso}-${c.code}`} value={c.code}>
+                              {c.country} ({c.code})
+                            </option>
+                          ))}
+                        </select>
                         <input
                           type="tel"
                           required
-                          placeholder="Enter your mobile number (+91)"
+                          placeholder={`Mobile number (${regCountryCode})`}
                           value={regPhone}
                           onChange={(e) => setRegPhone(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                          className="w-full min-w-0 px-3 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                         />
                       </div>
+                      <span className="block text-[10px] text-slate-500 mt-1">
+                        Stored in backend database for login &amp; password recovery
+                      </span>
                     </div>
                   </div>
 
@@ -1521,14 +1569,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 </form>
               )}
 
-              {/* TAB 3: CHANGE PASSWORD NEW TAB (Send OTP to Gmail/Mobile -> Verify OTP -> New Password & Confirm Password -> Update Backend & Return to Login) */}
+              {/* TAB 3: CHANGE PASSWORD NEW TAB (Send OTP to Gmail / Global Mobile -> Verify OTP -> New Password & Confirm Password -> Update Backend & Return to Login) */}
               {authTab === 'change-password' && (
                 <div className="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-4">
                   <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
                     <div className="flex items-center gap-2">
                       <KeyRound className="w-4 h-4 text-rose-500" />
                       <h3 className="text-sm font-extrabold uppercase tracking-wider text-slate-900 dark:text-white">
-                        Forgot / Change Customer Password
+                        Password Recovery via Global Mobile Number or Gmail
                       </h3>
                     </div>
                     <button
@@ -1561,16 +1609,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     </div>
                   )}
 
-                  {/* Step A: Enter Gmail / Mobile Number to Request OTP */}
+                  {/* Step A: Enter Gmail / Global Mobile Number to Request OTP */}
                   {resetStep === 'request_otp' && (
                     <form onSubmit={handleRequestPasswordResetOtp} className="space-y-4">
                       <p className="text-xs text-slate-600 dark:text-slate-400">
-                        Enter your registered <strong>Gmail Address</strong> or <strong>Mobile Number</strong> to receive a 6-digit verification OTP before changing your password.
+                        Enter either your registered <strong>Gmail Address</strong> or your <strong>Global Mobile Number</strong> (stored in the backend database) to receive a 6-digit password recovery OTP.
                       </p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                            Registered Gmail Address <span className="text-rose-500">*</span>
+                            Registered Gmail Address
                           </label>
                           <div className="relative">
                             <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
@@ -1587,16 +1635,28 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
                         <div>
                           <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                            Registered Mobile Number (+91)
+                            Registered Global Mobile Number
                           </label>
-                          <div className="relative">
-                            <Phone className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                          <div className="flex items-stretch gap-1.5">
+                            <select
+                              aria-label="Recovery Country Code"
+                              value={resetCountryCode}
+                              onChange={(e) => setResetCountryCode(e.target.value)}
+                              className="w-36 shrink-0 px-2 py-3 text-xs font-mono font-bold rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                            >
+                              {GLOBAL_COUNTRIES.map((c) => (
+                                <option key={`reset-${c.iso}-${c.code}`} value={c.code}>
+                                  {c.country} ({c.code})
+                                </option>
+                              ))}
+                            </select>
                             <input
                               type="tel"
-                              placeholder="Enter your mobile number (+91)"
+                              required={!resetEmail.trim()}
+                              placeholder={`Mobile number (${resetCountryCode})`}
                               value={resetPhone}
                               onChange={(e) => setResetPhone(e.target.value)}
-                              className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                              className="w-full min-w-0 px-3 py-3 text-sm font-mono rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                             />
                           </div>
                         </div>
@@ -1607,7 +1667,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         disabled={authLoading}
                         className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
                       >
-                        {authLoading ? 'Sending OTP...' : 'Send Verification OTP to Gmail / Mobile'}
+                        {authLoading ? 'Sending OTP...' : 'Send Verification OTP to Mobile Number / Gmail'}
                       </button>
                     </form>
                   )}
@@ -1617,7 +1677,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     <form onSubmit={handleVerifyResetOtpStep} className="space-y-4">
                       <div>
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                          Enter 6-Digit OTP Sent to Gmail / Mobile <span className="text-rose-500">*</span>
+                          Enter 6-Digit OTP Sent to Gmail / Global Mobile <span className="text-rose-500">*</span>
                         </label>
                         <div className="relative">
                           <KeyRound className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
@@ -1968,14 +2028,28 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       />
                     </div>
                     <div>
-                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">Mobile (+91)</label>
-                      <input
-                        type="tel"
-                        required
-                        value={editPhone}
-                        onChange={(e) => setEditPhone(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 font-mono"
-                      />
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">Global Mobile Number</label>
+                      <div className="flex items-stretch gap-1.5">
+                        <select
+                          aria-label="Edit Profile Country Code"
+                          value={editCountryCode}
+                          onChange={(e) => setEditCountryCode(e.target.value)}
+                          className="w-32 shrink-0 px-2 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 font-mono text-xs"
+                        >
+                          {GLOBAL_COUNTRIES.map((c) => (
+                            <option key={`edit-${c.iso}-${c.code}`} value={c.code}>
+                              {c.country} ({c.code})
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="tel"
+                          required
+                          value={editPhone}
+                          onChange={(e) => setEditPhone(e.target.value)}
+                          className="w-full min-w-0 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 font-mono"
+                        />
+                      </div>
                     </div>
                     <div className="flex items-center justify-between pt-1">
                       <span className="font-bold text-slate-700 dark:text-slate-300">Gmail Notifications</span>
@@ -2290,51 +2364,176 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {purchases.map((p) => (
-                      <div
-                        key={p.id}
-                        className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-slate-900 dark:text-white">{p.comicTitle}</span>
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                              PAID · ₹{p.amountInr}
-                            </span>
-                            {p.paymentMethod && (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                                {p.paymentMethod}
+                    {purchases.map((rawPurchase) => {
+                      const p = ensurePurchaseGstFields(rawPurchase, liveGstSettings);
+                      return (
+                        <div
+                          key={p.id}
+                          className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-slate-900 dark:text-white">{p.comicTitle}</span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                                {isCustomerGstEnabled
+                                  ? `PAID · ₹${p.amountInr.toFixed(2)} (Incl. GST)`
+                                  : `PAID · ₹${p.amountInr.toFixed(2)} (No GST)`}
                               </span>
+                              {p.paymentMethod && (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                                  {p.paymentMethod}
+                                </span>
+                              )}
+                            </div>
+                            {isCustomerGstEnabled ? (
+                              <>
+                                <div className="text-[11px] text-slate-500 font-mono">
+                                  Invoice: {p.invoiceNumber || p.receiptNumber} · Base: ₹{(p.taxableValue ?? p.amountInr).toFixed(2)} + GST ({p.taxRate ?? 18}%): ₹{p.taxAmount.toFixed(2)} · SAC {p.hsnSacCode || '998431'}
+                                </div>
+                                <div className="text-[11px] text-slate-400 font-mono">
+                                  Gmail: {p.userEmail} · Place of Supply: {p.placeOfSupplyStateCode || '33'} - {p.placeOfSupplyStateName || 'Tamil Nadu'}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="text-[11px] text-slate-500 font-mono">
+                                  Receipt: {p.receiptNumber} · Total Paid: ₹{p.amountInr.toFixed(2)} · Tax: No GST
+                                </div>
+                                <div className="text-[11px] text-slate-400 font-mono">
+                                  Gmail: {p.userEmail} · Verified Digital Payment Receipt
+                                </div>
+                              </>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500 font-mono">
-                            Gmail: {p.userEmail} · Age: {p.userAge || user.age || 24} · Receipt: {p.receiptNumber}
+                          <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
+                            <div className="text-right font-mono text-[11px] text-slate-400">
+                              <div>Paid: {new Date(p.createdAt).toLocaleDateString()}</div>
+                              {p.expiresAt && (
+                                <div className="text-emerald-500 font-bold">
+                                  Expires: {new Date(p.expiresAt).toLocaleDateString()}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadReceipt(p)}
+                              className="py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>
+                                {downloadedReceiptId === p.id
+                                  ? 'PDF Downloaded!'
+                                  : isCustomerGstEnabled
+                                    ? 'Download Tax Invoice (PDF)'
+                                    : 'Download Payment Receipt (PDF)'}
+                              </span>
+                            </button>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
-                          <div className="text-right font-mono text-[11px] text-slate-400">
-                            <div>Paid: {new Date(p.createdAt).toLocaleDateString()}</div>
-                            {p.expiresAt && (
-                              <div className="text-emerald-500 font-bold">
-                                Expires: {new Date(p.expiresAt).toLocaleDateString()}
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadReceipt(p)}
-                            className="py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            <span>
-                              {downloadedReceiptId === p.id ? 'Downloaded!' : 'Download Receipt'}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
+              </div>
+
+              {/* Section 4: Bookmarks, Favorites & Reading History */}
+              <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl space-y-6">
+                <div>
+                  <h3 className="text-lg font-extrabold text-slate-900 dark:text-white font-heading">
+                    My Library: Bookmarks, Favorites &amp; Reading History
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Synced with your reader account across devices.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Bookmarks */}
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                    <div className="text-xs font-extrabold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                      Bookmarked Series ({(user.bookmarks || []).length})
+                    </div>
+                    {(user.bookmarks || []).length === 0 ? (
+                      <p className="text-xs text-slate-500">No bookmarked comics yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {comics
+                          .filter((c) => user.bookmarks?.includes(c.id))
+                          .map((c) => (
+                            <div
+                              key={`bm-${c.id}`}
+                              onClick={() => onSelectComic(c)}
+                              className="flex items-center gap-2.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-amber-500 transition-colors"
+                            >
+                              <img src={c.coverImage} alt={c.title} className="w-8 h-11 rounded object-cover shrink-0" />
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</div>
+                                <div className="text-[10px] text-slate-500 truncate">{c.authorName}</div>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Favorites */}
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                    <div className="text-xs font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400">
+                      Favorite Comics ({(user.favorites || []).length})
+                    </div>
+                    {(user.favorites || []).length === 0 ? (
+                      <p className="text-xs text-slate-500">No favorite comics yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {comics
+                          .filter((c) => user.favorites?.includes(c.id))
+                          .map((c) => (
+                            <div
+                              key={`fav-${c.id}`}
+                              onClick={() => onSelectComic(c)}
+                              className="flex items-center gap-2.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-rose-500 transition-colors"
+                            >
+                              <img src={c.coverImage} alt={c.title} className="w-8 h-11 rounded object-cover shrink-0" />
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</div>
+                                <div className="text-[10px] text-slate-500 truncate">{c.authorName}</div>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Reading History */}
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                    <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                      Reading History ({(user.readingHistory || []).length})
+                    </div>
+                    {(user.readingHistory || []).length === 0 ? (
+                      <p className="text-xs text-slate-500">Open any episode to track your reading progress.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(user.readingHistory || []).slice(0, 5).map((item) => {
+                          const targetComic = comics.find((c) => c.id === item.comicId);
+                          return (
+                            <div
+                              key={`hist-${item.comicId}-${item.episodeId}`}
+                              onClick={() => targetComic && onSelectComic(targetComic)}
+                              className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-emerald-500 transition-colors"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{item.comicTitle}</div>
+                                <div className="text-[10px] text-slate-500 truncate">
+                                  {item.episodeTitle} · Page {item.pageIndex + 1}/{item.totalPages}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </div>

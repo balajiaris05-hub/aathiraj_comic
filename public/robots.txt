@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/admin/
+Disallow: /api/admin-auth/
+
+Sitemap: https://aathiraicomic.app/sitemap.xml

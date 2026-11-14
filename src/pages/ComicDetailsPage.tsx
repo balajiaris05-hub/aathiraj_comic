@@ -14,7 +14,9 @@ import {
   Sparkles,
   ShieldCheck,
   Mail,
-  RefreshCw
+  RefreshCw,
+  Bookmark,
+  Heart
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 
@@ -31,7 +33,9 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
   onOpenEpisode,
   openAuthModal,
 }) => {
-  const { user, hasActivePremium, refreshUser } = useAuth();
+  const { user, hasActivePremium, refreshUser, toggleBookmark, toggleFavorite } = useAuth();
+  const isBookmarked = Boolean(user?.bookmarks?.includes(comic.id));
+  const isFavorited = Boolean(user?.favorites?.includes(comic.id));
   const [expandedChapters, setExpandedChapters] = useState<Record<string, boolean>>({
     [comic.chapters[0]?.id || '']: true,
   });
@@ -74,8 +78,8 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
       const res = await fetch(`/api/payments/verify-access?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        setGmailAccessVerified(Boolean(data.unlocked));
-        setVerifiedPlan(data.plan || null);
+        setGmailAccessVerified(Boolean(data.unlocked || data.hasAccess));
+        setVerifiedPlan(data.plan || data.activePlan || null);
         setVerifiedExpiresAt(data.expiresAt || null);
       }
     } catch (e) {
@@ -267,6 +271,44 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                 <span>{isUnlockedForReader ? 'Read Now (Unlocked)' : 'Read Episode 1 Free'}</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (!user) {
+                  openAuthModal();
+                  return;
+                }
+                toggleBookmark(comic.id);
+              }}
+              className={`py-3 px-4 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                isBookmarked
+                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-600 dark:text-amber-400'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-amber-500'
+              }`}
+            >
+              <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-amber-500 text-amber-500' : ''}`} />
+              <span>{isBookmarked ? 'Bookmarked' : 'Bookmark'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (!user) {
+                  openAuthModal();
+                  return;
+                }
+                toggleFavorite(comic.id);
+              }}
+              className={`py-3 px-4 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                isFavorited
+                  ? 'bg-rose-500/15 border-rose-500/40 text-rose-600 dark:text-rose-400'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-rose-500'
+              }`}
+            >
+              <Heart className={`w-4 h-4 ${isFavorited ? 'fill-rose-500 text-rose-500' : ''}`} />
+              <span>{isFavorited ? 'Favorited' : 'Favorite'}</span>
+            </button>
 
             {comic.accessType === 'premium' && !isUnlockedForReader && (
               <>

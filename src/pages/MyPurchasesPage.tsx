@@ -30,7 +30,18 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [isCustomerGstEnabled, setIsCustomerGstEnabled] = useState<boolean>(true);
+
   useEffect(() => {
+    fetch('/api/gst/public-config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.gstSettings && typeof data.gstSettings.applyGstToDomesticSales === 'boolean') {
+          setIsCustomerGstEnabled(data.gstSettings.applyGstToDomesticSales);
+        }
+      })
+      .catch(() => {});
+
     if (user) {
       fetch(`/api/payments/my-purchases?userId=${user.id}&email=${user.email}`)
         .then((res) => res.json())
@@ -48,6 +59,24 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
     const receiptDate = tx.createdAt
       ? new Date(tx.createdAt).toLocaleString()
       : new Date().toLocaleString();
+
+    const taxSectionHtml = isCustomerGstEnabled
+      ? `<div class="row">
+      <span class="label">Base Price (Taxable Value)</span>
+      <span class="value">₹${(tx.taxableValue ?? Number((tx.amountInr * 100 / 118).toFixed(2))).toFixed(2)}</span>
+    </div>
+    <div class="row">
+      <span class="label">Included GST (${tx.taxRate ?? 18}%)</span>
+      <span class="value">₹${(tx.taxAmount ?? Number((tx.amountInr * 18 / 118).toFixed(2))).toFixed(2)}</span>
+    </div>`
+      : `<div class="row">
+      <span class="label">Item Price</span>
+      <span class="value">₹${tx.amountInr.toFixed(2)}</span>
+    </div>
+    <div class="row">
+      <span class="label">Tax / GST</span>
+      <span class="value">No GST</span>
+    </div>`;
 
     const receiptHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -125,11 +154,11 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
 </head>
 <body>
   <div class="card">
-    <div class="brand">Aathirai_Comic — Official Payment Receipt</div>
+    <div class="brand">Aathirai_Comic — ${isCustomerGstEnabled ? 'GST Tax Invoice & Payment Receipt' : 'Official Payment Receipt (No GST)'}</div>
     <div class="subtitle">Verified Digital Purchase Receipt · Date: ${receiptDate}</div>
     <div class="row">
-      <span class="label">Invoice Number</span>
-      <span class="value">${tx.receiptNumber}</span>
+      <span class="label">${isCustomerGstEnabled ? 'Invoice / Receipt Number' : 'Receipt Number'}</span>
+      <span class="value">${isCustomerGstEnabled ? (tx.invoiceNumber || tx.receiptNumber) : tx.receiptNumber}</span>
     </div>
     <div class="row">
       <span class="label">Transaction ID</span>
@@ -147,12 +176,9 @@ export const MyPurchasesPage: React.FC<MyPurchasesPageProps> = ({
       <span class="label">Payment Channel</span>
       <span class="value" style="font-family: sans-serif;">${tx.paymentMethod}</span>
     </div>
-    <div class="row">
-      <span class="label">Base Price</span>
-      <span class="value">₹${tx.amountInr.toFixed(2)}</span>
-    </div>
+    ${taxSectionHtml}
     <div class="total-row">
-      <span>Total Amount Paid</span>
+      <span>${isCustomerGstEnabled ? 'Total Amount Paid (Incl. GST)' : 'Total Amount Paid (No GST)'}</span>
       <span class="total-val">₹${tx.amountInr.toFixed(2)} INR</span>
     </div>
     <div class="footer">

@@ -3,12 +3,18 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  sendPasswordResetEmail,
   signOut,
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
+  setLogLevel,
   doc,
   getDoc,
   getDocFromServer,
@@ -18,11 +24,39 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
+// Suppress internal @firebase/firestore WebChannel transport timeout warnings in iframe environments
+try {
+  setLogLevel('silent');
+} catch {
+  // ignore
+}
+
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = (() => {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        experimentalAutoDetectLongPolling: true,
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+})();
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
-export { firebaseConfig, onAuthStateChanged, signOut };
+export {
+  firebaseConfig,
+  onAuthStateChanged,
+  signOut,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+};
 export type { FirebaseUser };
 
 export enum OperationType {
@@ -73,17 +107,17 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.warn('Firestore Operation Notice: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate connection to Firestore on boot
+// Validate connection to Firestore on boot without triggering fatal console.error overlays on offline/permission checks
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+      console.info('Firestore client operating in offline-capable mode.');
     }
   }
 }
@@ -93,6 +127,20 @@ testConnection();
 export function sanitizeFirestoreId(raw: string): string {
   const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
   return cleaned.length > 0 ? cleaned : 'doc_default';
+}
+
+/**
+ * Retrieve the current Firebase ID Token if a Firebase user is signed in
+ */
+export async function getCurrentFirebaseIdToken(): Promise<string | null> {
+  try {
+    if (auth.currentUser) {
+      return await auth.currentUser.getIdToken();
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 /**
@@ -284,8 +332,8 @@ export async function syncPurchaseToFirestore(params: {
 }
 
 /**
- * 1-Click Admin Sync: Signs in with Google (if not already signed in) and stores all
- * Reader Accounts (with UPI IDs & Paid Plans) and Comics into Firestore (`aathiraicomic`).
+ * 1-Click Admin Sync: Signs in with Google (if not already signed in) and migrates all
+ * Reader Accounts (with isolated PII, UPI IDs & Paid Plans) and Comics into Firestore (`aathiraicomic`).
  */
 export async function syncAllPlatformDataToFirestore(params: {
   readers: any[];
@@ -340,26 +388,27 @@ export async function syncAllPlatformDataToFirestore(params: {
 
     const comicRef = doc(db, 'comics', comicId);
     const comicSnap = await getDoc(comicRef);
+    const genreStr = Array.isArray(c.genre) ? c.genre.join(', ') : String(c.genre || 'Action');
     if (!comicSnap.exists()) {
       await setDoc(comicRef, {
         comicId,
         title: (c.title || 'Untitled Comic').slice(0, 140),
         authorId,
         authorName: (c.authorName || 'Creator').slice(0, 80),
-        genre: (c.genre || 'Action').slice(0, 50),
+        genre: genreStr.slice(0, 50),
         accessType: c.accessType === 'premium' ? 'premium' : 'free',
-        fullUnlockPriceInr: Math.min(10000, Math.max(0, Number(c.fullUnlockPriceInr) || 0)),
-        status: c.status === 'pending' ? 'pending' : c.status === 'rejected' ? 'rejected' : 'published',
+        fullUnlockPriceInr: Math.min(10000, Math.max(0, Number(c.fullPriceInr || c.fullUnlockPriceInr) || 0)),
+        status: c.moderationStatus === 'pending' ? 'pending' : c.moderationStatus === 'rejected' ? 'rejected' : 'published',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
       await updateDoc(comicRef, {
         title: (c.title || 'Untitled Comic').slice(0, 140),
-        genre: (c.genre || 'Action').slice(0, 50),
+        genre: genreStr.slice(0, 50),
         accessType: c.accessType === 'premium' ? 'premium' : 'free',
-        fullUnlockPriceInr: Math.min(10000, Math.max(0, Number(c.fullUnlockPriceInr) || 0)),
-        status: c.status === 'pending' ? 'pending' : c.status === 'rejected' ? 'rejected' : 'published',
+        fullUnlockPriceInr: Math.min(10000, Math.max(0, Number(c.fullPriceInr || c.fullUnlockPriceInr) || 0)),
+        status: c.moderationStatus === 'pending' ? 'pending' : c.moderationStatus === 'rejected' ? 'rejected' : 'published',
         updatedAt: serverTimestamp(),
       });
     }
@@ -368,3 +417,63 @@ export async function syncAllPlatformDataToFirestore(params: {
 
   return { syncedReaders, syncedComics, adminEmail: currentUser.email };
 }
+
+/**
+ * Syncs the Administrator's Business GST Settings into Firestore (`/gstSettings/business_profile`)
+ * when authenticated as an administrator.
+ */
+export async function syncGstSettingsToFirestore(params: {
+  legalBusinessName: string;
+  tradeName: string;
+  gstin: string;
+  stateCode: string;
+  stateName: string;
+  registeredAddress: string;
+  invoicePrefix: string;
+  defaultSacCode: string;
+  applicableGstRate: number;
+  updatedByEmail?: string;
+}) {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !currentUser.emailVerified) {
+    return null;
+  }
+
+  const settingId = 'business_profile';
+  const ref = doc(db, 'gstSettings', settingId);
+  const path = `gstSettings/${settingId}`;
+
+  const payload = {
+    settingId,
+    legalBusinessName: (params.legalBusinessName || 'Aathirai Media & Publishing Pvt Ltd').trim().slice(0, 140),
+    tradeName: (params.tradeName || 'Aathirai_Comic').trim().slice(0, 100),
+    gstin: (params.gstin || '').trim().toUpperCase().slice(0, 15),
+    stateCode: (params.stateCode || '33').trim().padStart(2, '0').slice(0, 2),
+    stateName: (params.stateName || 'Tamil Nadu').trim().slice(0, 80),
+    registeredAddress: (params.registeredAddress || 'Chennai, Tamil Nadu, India').trim().slice(0, 300),
+    invoicePrefix: (params.invoicePrefix || 'AAC/2627/').trim().slice(0, 12),
+    defaultSacCode: (params.defaultSacCode || '998431').trim().slice(0, 10),
+    applicableGstRate: Math.min(28, Math.max(0, Number(params.applicableGstRate) || 18)),
+    updatedByEmail: (params.updatedByEmail || currentUser.email || 'balajiaris05@gmail.com').trim().slice(0, 120),
+  };
+
+  try {
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        ...payload,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return payload;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+

@@ -402,6 +402,104 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "GstSettingsRecord": {
+      "title": "GstSettingsRecord",
+      "description": "Persistent business GST configuration, GSTIN, state code, SAC code, and invoice prefix managed by authorized administrators.",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "description": "Configuration document identifier (e.g., business_profile).",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "legalBusinessName": {
+          "type": "string",
+          "description": "Registered legal business name.",
+          "minLength": 2,
+          "maxLength": 140
+        },
+        "tradeName": {
+          "type": "string",
+          "description": "Brand or trade name.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "gstin": {
+          "type": "string",
+          "description": "15-character Indian GSTIN or empty string if unregistered.",
+          "minLength": 0,
+          "maxLength": 15
+        },
+        "stateCode": {
+          "type": "string",
+          "description": "2-digit Indian GST state code.",
+          "minLength": 2,
+          "maxLength": 2
+        },
+        "stateName": {
+          "type": "string",
+          "description": "Registered state or UT name.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "registeredAddress": {
+          "type": "string",
+          "description": "Full registered business address for tax invoices.",
+          "minLength": 3,
+          "maxLength": 300
+        },
+        "invoicePrefix": {
+          "type": "string",
+          "description": "Invoice numbering prefix (<= 10 chars).",
+          "minLength": 1,
+          "maxLength": 12
+        },
+        "defaultSacCode": {
+          "type": "string",
+          "description": "SAC code for digital comics (998431).",
+          "minLength": 4,
+          "maxLength": 10
+        },
+        "applicableGstRate": {
+          "type": "number",
+          "description": "Applicable GST rate percentage (0 to 28)."
+        },
+        "updatedByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email who updated the settings.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "settingId",
+        "legalBusinessName",
+        "tradeName",
+        "gstin",
+        "stateCode",
+        "stateName",
+        "registeredAddress",
+        "invoicePrefix",
+        "defaultSacCode",
+        "applicableGstRate",
+        "updatedByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -428,6 +526,10 @@
     "/deleteRequests/{requestId}": {
       "schema": { "$ref": "#/entities/DeleteRequestRecord" },
       "description": "Author deletion requests awaiting Admin approval."
+    },
+    "/gstSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/GstSettingsRecord" },
+      "description": "Persistent business GST configuration restricted to authorized administrators."
     }
   }
 }

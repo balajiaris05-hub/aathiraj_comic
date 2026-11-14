@@ -18,11 +18,17 @@ import { ReaderProfilePage } from './pages/ReaderProfilePage';
 import { AboutUsPage } from './pages/AboutUsPage';
 import { TermsPage } from './pages/TermsPage';
 import { CopyrightPage } from './pages/CopyrightPage';
-import { Comic } from './types/comic';
+import { Comic, NotificationItem } from './types/comic';
 
 function MainAppContent() {
-  const { user } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>('home');
+  const { user, hasActivePremium, refreshNotifications } = useAuth();
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    const path = window.location.pathname.toLowerCase();
+    if (path === '/admin' || path === '/admin.com') {
+      return 'admin_dashboard';
+    }
+    return 'home';
+  });
   const [selectedComic, setSelectedComic] = useState<Comic | null>(null);
   const [activeReaderEpisodeId, setActiveReaderEpisodeId] = useState<string | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -42,6 +48,7 @@ function MainAppContent() {
           if (updated) setSelectedComic(updated);
         }
       }
+      await refreshNotifications();
     } catch (e) {
       console.error('Error fetching comics:', e);
     } finally {
@@ -72,6 +79,70 @@ function MainAppContent() {
     setActiveReaderEpisodeId(episodeId);
   };
 
+  const handleNotificationClick = async (notification: NotificationItem) => {
+    const targetComicId = notification.comicId || notification.targetId;
+    const targetComic = targetComicId ? comics.find((c) => c.id === targetComicId) : undefined;
+
+    if (!targetComic) {
+      if (notification.type === 'author_approved' || notification.type === 'comic_approved' || notification.type === 'comic_rejected') {
+        handleTabChange('author_dashboard');
+      }
+      return;
+    }
+
+    const isComicPaywalled =
+      Boolean(notification.isPaywalled) ||
+      targetComic.accessType === 'premium' ||
+      Boolean(
+        targetComic.chapters?.some(
+          (ch) =>
+            ch.isPremium ||
+            ch.episodes?.some((ep) =>
+              notification.episodeId ? ep.id === notification.episodeId && ep.isPremium : ep.isPremium
+            )
+        )
+      );
+
+    if (!isComicPaywalled) {
+      handleSelectComic(targetComic);
+      return;
+    }
+
+    // Comic/episode is under paywall: verify whether customer has paid (active subscription or individual comic/episode purchase)
+    if (hasActivePremium) {
+      handleSelectComic(targetComic);
+      return;
+    }
+
+    if (user) {
+      try {
+        const res = await fetch(
+          `/api/payments/my-purchases?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email || '')}&phone=${encodeURIComponent(user.phone || '')}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const purchases = Array.isArray(data.purchases) ? data.purchases : [];
+          const hasPaidForTarget = purchases.some(
+            (p: any) =>
+              p.status === 'success' &&
+              (p.itemType === 'subscription' ||
+                (p.itemType === 'comic' && p.targetId === targetComic.id) ||
+                (notification.episodeId && p.itemType === 'episode' && p.targetId === notification.episodeId))
+          );
+          if (hasPaidForTarget) {
+            handleSelectComic(targetComic);
+            return;
+          }
+        }
+      } catch {
+        // fall through to premium plans page
+      }
+    }
+
+    // Customer has not paid for this paywalled comic/episode -> direct to Premium Plans page
+    handleTabChange('premium');
+  };
+
   const isAdminView = currentTab === 'admin_dashboard' || currentTab === 'admin_dashboard_delete_requests';
 
   return (
@@ -83,6 +154,7 @@ function MainAppContent() {
           currentTab={selectedComic ? 'books' : currentTab}
           setCurrentTab={handleTabChange}
           openAuthModal={() => setAuthModalOpen(true)}
+          onNotificationClick={handleNotificationClick}
         />
       )}
 

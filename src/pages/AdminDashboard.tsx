@@ -1,9 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Comic, AuthorApplication, Purchase, CopyrightDoc, PlatformSettings, ActivityLog, DeleteRequest } from '../types/comic';
+import {
+  Comic,
+  AuthorApplication,
+  Purchase,
+  CopyrightDoc,
+  PlatformSettings,
+  ActivityLog,
+  DeleteRequest,
+  GstBusinessSettings,
+  CreditNoteRecord,
+} from '../types/comic';
 import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
-import { firebaseConfig, syncAllPlatformDataToFirestore } from '../firebase';
+import { firebaseConfig, syncAllPlatformDataToFirestore, syncGstSettingsToFirestore } from '../firebase';
+import {
+  INDIAN_STATES_AND_UTS,
+  DEFAULT_GST_SETTINGS,
+  GST_MONTHS_LIST,
+  formatPeriodHumanLabel,
+  validateIndianGstin,
+  ensurePurchaseGstFields,
+  computeGstPeriodSummary,
+  validateGstExportData,
+  generateGstr1OfflineJson,
+  generateGstReconciliationCsv,
+  generateTaxInvoicePdfBytes,
+  generateMonthlyGstStatementPdfBytes,
+  getGstPeriodDetails,
+} from '../utils/gstUtils';
 import {
   Shield,
   Users,
@@ -68,9 +93,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const { user, switchDemoRole, updateUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'comics' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
+    'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
   >(() => {
     if (initialSubTab === 'delete-requests') return 'delete-requests';
+    if (initialSubTab === 'gst-billing') return 'gst-billing';
     return 'overview';
   });
 
@@ -99,6 +125,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [allComments, setAllComments] = useState<any[]>([]);
   const [allRatings, setAllRatings] = useState<any[]>([]);
   const [readerAccounts, setReaderAccounts] = useState<any[]>([]);
+
+  // GST & Billing Module State
+  const [gstSettings, setGstSettings] = useState<GstBusinessSettings>(DEFAULT_GST_SETTINGS);
+  const [creditNotes, setCreditNotes] = useState<CreditNoteRecord[]>([]);
+  const [gstPeriodFilter, setGstPeriodFilter] = useState<string>('052026');
+  const [gstSelectedMonth, setGstSelectedMonth] = useState<string>('05');
+  const [gstSelectedYear, setGstSelectedYear] = useState<string>('2026');
+  const [gstSaving, setGstSaving] = useState(false);
+  const [gstMessage, setGstMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [gstInvoiceSearch, setGstInvoiceSearch] = useState('');
 
   // Direct Comic & Episode Publishing state
   const [publishMode, setPublishMode] = useState<'add_episode' | 'new_series'>('add_episode');
@@ -212,6 +248,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(Array.isArray(d) ? d : (d.comics || []))),
       safeFetch('/api/admin/delete-requests', (d) => setDeleteRequests(Array.isArray(d) ? d : (d.deleteRequests || []))),
       safeFetch('/api/admin/readers', (d) => setReaderAccounts(Array.isArray(d) ? d : (d.readers || []))),
+      safeFetch('/api/admin/gst/settings', (d) => {
+        if (d?.gstSettings) setGstSettings(d.gstSettings);
+        if (Array.isArray(d?.creditNotes)) setCreditNotes(d.creditNotes);
+      }),
     ]);
   };
 
@@ -277,7 +317,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setOtpStep('enter_otp');
       setOtpDestinationMasked(data.destinationMasked || '');
       setOtpSuccessMessage(data.message);
-      setMockOtpPreview(data.mockOtp || data.otpCode || '123456');
+      setMockOtpPreview(data.devOtpHint || null);
     } catch (err: any) {
       setOtpLoading(false);
       setOtpError('Network error while requesting verification OTP.');
@@ -728,20 +768,278 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Refund
+  // Refund & GST Credit Note
   const handleRefund = async (txId: string) => {
-    if (!confirm('Issue refund for this transaction?')) return;
     try {
-      const res = await fetch(`/api/admin/transactions/${txId}/refund`, { method: 'POST' });
-      if (res.ok) fetchAdminData();
+      const res = await fetch(`/api/admin/transactions/${txId}/refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'Admin issued refund and GST Credit Note' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setActionMessage(
+          data.creditNote
+            ? `Transaction refunded and GST Credit Note ${data.creditNote.creditNoteNumber} issued.`
+            : 'Transaction refunded and GST Credit Note recorded.'
+        );
+        fetchAdminData();
+        setTimeout(() => setActionMessage(null), 5000);
+      }
     } catch (err) {
       console.error(err);
     }
   };
 
+  // Save GST Business Settings
+  const handleSaveGstSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setGstMessage(null);
+    const check = validateIndianGstin(gstSettings.gstin || '');
+    if (!check.isValid) {
+      setGstMessage({
+        type: 'error',
+        text: check.error || 'Invalid 15-character GSTIN format. Leave blank if not yet registered.',
+      });
+      return;
+    }
+
+    setGstSaving(true);
+    try {
+      const res = await fetch('/api/admin/gst/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...gstSettings,
+          gstin: check.normalized,
+        }),
+      });
+      const data = await res.json();
+      setGstSaving(false);
+      if (!res.ok) {
+        setGstMessage({ type: 'error', text: data.error || 'Failed to save GST settings.' });
+        return;
+      }
+      if (data.gstSettings) {
+        setGstSettings(data.gstSettings);
+        await syncGstSettingsToFirestore(data.gstSettings).catch(() => {});
+      }
+      setGstMessage({
+        type: 'success',
+        text: 'GST Business Settings saved to backend database & synced to Firebase Firestore. Historical invoices remain preserved.',
+      });
+      fetchAdminData();
+    } catch (err: any) {
+      setGstSaving(false);
+      setGstMessage({ type: 'error', text: err.message || 'Network error while saving GST settings.' });
+    }
+  };
+
+  // One-click Toggle for Customer-Side GST Billing (ON / OFF)
+  const handleToggleCustomerGstBilling = async (nextEnabled?: boolean) => {
+    const targetEnabled =
+      typeof nextEnabled === 'boolean' ? nextEnabled : !gstSettings.applyGstToDomesticSales;
+    setGstSaving(true);
+    setGstMessage(null);
+    const updatedPayload: GstBusinessSettings = {
+      ...gstSettings,
+      applyGstToDomesticSales: targetEnabled,
+    };
+    setGstSettings(updatedPayload);
+    try {
+      const res = await fetch('/api/admin/gst/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedPayload),
+      });
+      const data = await res.json().catch(() => ({}));
+      setGstSaving(false);
+      if (res.ok && data.gstSettings) {
+        setGstSettings(data.gstSettings);
+        await syncGstSettingsToFirestore(data.gstSettings).catch(() => {});
+        setGstMessage({
+          type: 'success',
+          text: targetEnabled
+            ? 'Customer GST Billing TURNED ON: Customers will now see 18% GST breakdown at checkout and receive GST Tax Invoices.'
+            : 'Customer GST Billing TURNED OFF: All GST amounts, GST percentages, and GST tax documents are now hidden from the customer checkout and customer receipts (receipts will show No GST).',
+        });
+        fetchAdminData();
+      } else {
+        setGstMessage({
+          type: 'error',
+          text: data.error || 'Failed to update Customer GST Billing mode.',
+        });
+      }
+    } catch (err: any) {
+      setGstSaving(false);
+      setGstMessage({
+        type: 'error',
+        text: err.message || 'Network error while toggling Customer GST Billing.',
+      });
+    }
+  };
+
+  // Download Single PDF Tax Invoice, Non-GST Payment Receipt, or Credit Note
+  const handleDownloadPdfBill = (tx: Purchase, creditNote?: CreditNoteRecord) => {
+    try {
+      const enriched = ensurePurchaseGstFields(tx, gstSettings);
+      const pdfBytes = generateTaxInvoicePdfBytes(enriched, gstSettings, creditNote);
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = creditNote
+        ? `GST-Credit-Note-${creditNote.creditNoteNumber}.pdf`
+        : gstSettings.applyGstToDomesticSales === false
+          ? `Payment-Receipt-No-GST-${enriched.receiptNumber}.pdf`
+          : `GST-Tax-Invoice-${enriched.invoiceNumber || enriched.receiptNumber}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch (e) {
+      console.error('Error generating PDF bill:', e);
+    }
+  };
+
+  // Download GST Sales & Tax Reconciliation CSV (works even if 0 bills / Nil Return month)
+  const handleExportGstCsv = (periodOverride?: string) => {
+    const targetPeriod =
+      typeof periodOverride === 'string' && periodOverride.trim()
+        ? periodOverride.trim()
+        : gstPeriodFilter;
+    const periodDetails = getGstPeriodDetails(targetPeriod);
+    const csvContent = generateGstReconciliationCsv(
+      transactions,
+      creditNotes,
+      gstSettings,
+      targetPeriod
+    );
+    const periodSummary = computeGstPeriodSummary(
+      transactions,
+      creditNotes,
+      gstSettings,
+      targetPeriod
+    );
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Aathirai_Comic_GST_Statement_${periodDetails.fileSlug}${periodSummary.totalInvoices === 0 ? '_NIL_RETURN' : ''}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    setGstMessage({
+      type: 'success',
+      text:
+        periodSummary.totalInvoices === 0
+          ? `Downloaded Nil-Return Monthly GST Statement CSV for ${periodDetails.monthYearLabel} (${periodDetails.dateRangeLabel} · Return Period ${periodDetails.periodCode} · 0 Bills — ₹0.00 Tax Liability).`
+          : `Downloaded Monthly GST Sales & Tax Reconciliation CSV for ${periodDetails.monthYearLabel} (${periodDetails.dateRangeLabel} · ${periodSummary.totalInvoices} Bills).`,
+    });
+  };
+
+  // Download GSTR-1 Offline Utility JSON (works even if 0 bills / Nil Return month)
+  const handleExportGstr1Json = (periodOverride?: string) => {
+    const targetPeriod =
+      typeof periodOverride === 'string' && periodOverride.trim()
+        ? periodOverride.trim()
+        : gstPeriodFilter;
+    const periodDetails = getGstPeriodDetails(targetPeriod);
+    const periodSummary = computeGstPeriodSummary(
+      transactions,
+      creditNotes,
+      gstSettings,
+      targetPeriod
+    );
+    const gstr1Obj = generateGstr1OfflineJson(
+      transactions,
+      creditNotes,
+      gstSettings,
+      targetPeriod,
+      true
+    );
+    const jsonString = JSON.stringify(gstr1Obj, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const safeGstinTag = (gstSettings.gstin || '').trim() || 'UNREGISTERED';
+    link.download = `GSTR1_${safeGstinTag}_${periodDetails.fileSlug}${periodSummary.totalInvoices === 0 ? '_NIL_RETURN' : ''}_OfflineUtility.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    setGstMessage({
+      type: 'success',
+      text:
+        periodSummary.totalInvoices === 0
+          ? `Downloaded Nil-Return GSTR-1 JSON for ${periodDetails.monthYearLabel} (${periodDetails.dateRangeLabel} · Period ${gstr1Obj.fp} · 0 Bills). ${!gstSettings.gstin ? 'Remember to save your 15-digit Seller GSTIN before uploading to services.gst.gov.in.' : 'Ready for Nil Return upload on services.gst.gov.in.'}`
+          : `Downloaded GSTR-1 JSON for ${periodDetails.monthYearLabel} (${periodDetails.dateRangeLabel} · Period ${gstr1Obj.fp}) compatible with the GST Portal Offline Utility (v3.1.6).`,
+    });
+  };
+
+  // Download Monthly GST Statement Summary PDF (works even if 0 bills / Nil Return month)
+  const handleExportMonthlyStatementPdf = (periodOverride?: string) => {
+    const targetPeriod =
+      typeof periodOverride === 'string' && periodOverride.trim()
+        ? periodOverride.trim()
+        : gstPeriodFilter;
+    const periodDetails = getGstPeriodDetails(targetPeriod);
+    try {
+      const periodSummary = computeGstPeriodSummary(
+        transactions,
+        creditNotes,
+        gstSettings,
+        targetPeriod
+      );
+      const pdfBytes = generateMonthlyGstStatementPdfBytes(
+        transactions,
+        creditNotes,
+        gstSettings,
+        targetPeriod
+      );
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Aathirai_Comic_GST_Statement_${periodDetails.fileSlug}${periodSummary.totalInvoices === 0 ? '_NIL_RETURN' : ''}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      setGstMessage({
+        type: 'success',
+        text:
+          periodSummary.totalInvoices === 0
+            ? `Downloaded Nil-Return Monthly GST Statement PDF for ${periodDetails.monthYearLabel} (${periodDetails.dateRangeLabel} · Return Period ${periodDetails.periodCode} · 0 Bills Recorded — ₹0.00 GST Payable).`
+            : `Downloaded Monthly GST Filing Statement PDF for ${periodDetails.monthYearLabel} (${periodDetails.dateRangeLabel} · ${periodSummary.totalInvoices} Bills).`,
+      });
+    } catch (e: any) {
+      setGstMessage({
+        type: 'error',
+        text: e?.message || 'Failed to generate Monthly GST Statement PDF.',
+      });
+    }
+  };
+
+  const gstLiveValidation = useMemo(
+    () => validateIndianGstin(gstSettings.gstin || ''),
+    [gstSettings.gstin]
+  );
+
+  const gstPeriodSummary = useMemo(
+    () => computeGstPeriodSummary(transactions, creditNotes, gstSettings, gstPeriodFilter),
+    [transactions, creditNotes, gstSettings, gstPeriodFilter]
+  );
+
+  const gstExportValidation = useMemo(
+    () => validateGstExportData(transactions, creditNotes, gstSettings, gstPeriodFilter, false),
+    [transactions, creditNotes, gstSettings, gstPeriodFilter]
+  );
+
   // Delete Comic
   const handleDeleteComic = async (comicId: string) => {
-    if (!confirm('Delete this comic series permanently?')) return;
     try {
       const res = await fetch(`/api/comics/${comicId}`, { method: 'DELETE' });
       if (res.ok) {
@@ -789,8 +1087,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         body: JSON.stringify(settings),
       });
       if (res.ok) {
-        alert('Settings saved successfully!');
+        setActionMessage('Platform commercial settings saved successfully!');
         fetchAdminData();
+        setTimeout(() => setActionMessage(null), 4000);
       }
     } catch (err) {
       console.error(err);
@@ -992,26 +1291,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </span>
                 </div>
 
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Your 6-digit administrator verification code is:
-                </p>
-
-                <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                  <div className="font-mono text-2xl font-black tracking-[0.3em] text-amber-600 dark:text-amber-400 select-all">
-                    {mockOtpPreview || '123456'}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setAdminOtpInput(mockOtpPreview || '123456')}
-                    className="py-1 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer shadow-sm transition-colors"
-                  >
-                    Use Code
-                  </button>
-                </div>
-
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Enter the 6-digit code above into the verification input below to authenticate.
-                </p>
+                {mockOtpPreview ? (
+                  <>
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      Development Mode 2FA Verification Code:
+                    </p>
+                    <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                      <div className="font-mono text-2xl font-black tracking-[0.3em] text-amber-600 dark:text-amber-400 select-all">
+                        {mockOtpPreview}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAdminOtpInput(mockOtpPreview)}
+                        className="py-1 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer shadow-sm transition-colors"
+                      >
+                        Use Code
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-600 dark:text-slate-300">
+                    Check your registered administrator inbox or SMS for the 6-digit verification code.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1223,6 +1525,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           { id: 'comic-queue', label: `Comic Approvals Queue (${pendingComics.length})` },
           { id: 'delete-requests', label: `🗑️ Delete Requests (${deleteRequests.filter(r => r.status === 'pending').length})` },
           { id: 'comics', label: 'Paywall & Catalog Moderation' },
+          { id: 'gst-billing', label: '🧾 GST & Billing' },
           { id: 'authors', label: `Author Profiles (${applications.filter(a => a.status === 'pending').length})` },
           { id: 'financial', label: 'Financial & Payments' },
           { id: 'comments', label: 'Comments' },
@@ -2403,7 +2706,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* TAB 4: PAYWALL CONTROL & CATALOG MODERATION */}
       {activeTab === 'comics' && (
         <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
             <div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
                 Paywall Control &amp; Series Catalog
@@ -2412,6 +2715,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 All comics are free by default. You have full access to put any comic, chapter, or episode behind paywall anytime.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('gst-billing')}
+              className="py-2 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer self-start sm:self-auto"
+            >
+              <FileText className="w-4 h-4" />
+              <span>Open GST &amp; Billing Portal Exports →</span>
+            </button>
           </div>
 
           <div className="space-y-4">
@@ -2568,6 +2879,917 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4.5: INDIAN GST & BILLING MODULE (GSTR-1 JSON, CSV RECONCILIATION & PDF TAX INVOICES) */}
+      {activeTab === 'gst-billing' && (
+        <div className="space-y-6">
+          {/* Header Banner with Customer GST ON/OFF Master Switch & Direct Monthly GST Statement Chooser (CSS Selector 2 Target) */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-amber-500/40 shadow-sm space-y-5">
+            {/* MASTER CUSTOMER-SIDE GST BILLING ON/OFF CONTROL BANNER */}
+            <div
+              className={`p-4 rounded-2xl border-2 transition-all flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+                gstSettings.applyGstToDomesticSales
+                  ? 'bg-emerald-500/10 border-emerald-500/40'
+                  : 'bg-rose-500/10 border-rose-500/40'
+              }`}
+            >
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`px-2.5 py-0.5 rounded-md text-[11px] font-black uppercase tracking-wider ${
+                      gstSettings.applyGstToDomesticSales
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-rose-600 text-white'
+                    }`}
+                  >
+                    {gstSettings.applyGstToDomesticSales
+                      ? 'CUSTOMER GST BILLING: ON (18% GST INCLUDED)'
+                      : 'CUSTOMER GST BILLING: OFF (NO GST ON CUSTOMER BILLS)'}
+                  </span>
+                  <span className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    {gstSettings.applyGstToDomesticSales
+                      ? 'Customers currently see 18% GST breakdown at checkout & receive GST Tax Invoices.'
+                      : 'GST is hidden on customer checkout & customer receipts show "No GST" (Standard Payment Receipt).'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {gstSettings.applyGstToDomesticSales
+                    ? 'If you are not currently filing GST for your bills, click "Turn OFF Customer GST Billing" so customers are billed without any GST amount, GST documents, or GST breakdown on their receipts.'
+                    : 'When you are ready to file GST, simply click "Turn ON Customer GST Billing" to automatically include GST on the customer page and issue GST Tax Invoices.'}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={gstSaving}
+                  onClick={() => handleToggleCustomerGstBilling(!gstSettings.applyGstToDomesticSales)}
+                  className={`py-3 px-5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg transition-all cursor-pointer disabled:opacity-50 ${
+                    gstSettings.applyGstToDomesticSales
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+                  }`}
+                >
+                  {gstSettings.applyGstToDomesticSales ? (
+                    <>
+                      <XCircle className="w-4 h-4" />
+                      <span>Turn OFF Customer GST Billing (Show No GST to Customer)</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Turn ON Customer GST Billing (Include GST for Customer)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                  <IndianRupee className="w-3 h-3" />
+                  <span>Indian GST Compliance &amp; Monthly Tax Statement · SAC {gstSettings.defaultSacCode || '998431'}</span>
+                </div>
+                <h2 className="text-xl font-black text-slate-900 dark:text-white font-heading">
+                  GST &amp; Billing — Choose Monthly Statement to File GST
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-3xl leading-relaxed">
+                  Select your <strong>Monthly Statement (Month &amp; Year)</strong> below to view that month&apos;s taxable sales, CGST, SGST, IGST, and download your <strong>Monthly GSTR-1 JSON</strong>, <strong>Monthly GST Statement CSV</strong>, or <strong>Monthly GST Statement PDF</strong> to file on <strong className="text-slate-700 dark:text-slate-200">services.gst.gov.in</strong>.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleExportMonthlyStatementPdf()}
+                  className="py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors cursor-pointer border border-slate-700"
+                  title="Download Printable Monthly GST Filing Statement in PDF format (works even for 0-bill Nil Return months)"
+                >
+                  <FileText className="w-4 h-4 text-amber-400" />
+                  <span>Download Monthly Statement (PDF)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleExportGstr1Json()}
+                  className="py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                  title="Download GSTR-1 JSON compatible with GST Portal Offline Utility (supports Nil Return months)"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>1. Download GSTR-1 JSON ({gstPeriodFilter === 'ALL' ? 'Monthly/All' : gstPeriodFilter})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleExportGstCsv()}
+                  className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                  title="Download GST Sales & Tax Reconciliation CSV for the selected month (supports Nil Return months)"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>2. Download Monthly GST CSV</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Interactive Monthly Statement Chooser Bar inside Header Card (CSS Selector 1 Target) */}
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-4">
+              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Choose Monthly Statement for GST Filing:</span>
+                  </span>
+
+                  {/* Month Dropdown (01 Jan - 12 Dec) */}
+                  <select
+                    aria-label="Select GST Statement Month"
+                    value={gstSelectedMonth}
+                    onChange={(e) => {
+                      const mm = e.target.value;
+                      setGstSelectedMonth(mm);
+                      setGstPeriodFilter(`${mm}${gstSelectedYear}`);
+                    }}
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    {GST_MONTHS_LIST.map((m) => (
+                      <option key={m.mm} value={m.mm}>
+                        {m.mm} - {m.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Year Dropdown */}
+                  <select
+                    aria-label="Select GST Statement Year"
+                    value={gstSelectedYear}
+                    onChange={(e) => {
+                      const yyyy = e.target.value;
+                      setGstSelectedYear(yyyy);
+                      setGstPeriodFilter(`${gstSelectedMonth}${yyyy}`);
+                    }}
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono"
+                  >
+                    <option value="2024">2024</option>
+                    <option value="2025">2025</option>
+                    <option value="2026">2026</option>
+                    <option value="2027">2027</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => setGstPeriodFilter(`${gstSelectedMonth}${gstSelectedYear}`)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-colors cursor-pointer ${
+                      gstPeriodFilter === `${gstSelectedMonth}${gstSelectedYear}`
+                        ? 'bg-amber-500 text-slate-950 shadow-xs'
+                        : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-amber-500/20'
+                    }`}
+                  >
+                    Active Month: {GST_MONTHS_LIST.find((m) => m.mm === gstSelectedMonth)?.short} {gstSelectedYear} ({gstSelectedMonth}{gstSelectedYear})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setGstPeriodFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                      gstPeriodFilter === 'ALL'
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : 'bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-rose-500'
+                    }`}
+                  >
+                    View All Months ({transactions.length} Bills)
+                  </button>
+                </div>
+
+                {/* Direct Monthly Download Bar inside div:nth-of-type(2) (works even when 0 bills in month) */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                    {GST_MONTHS_LIST.find((m) => m.mm === gstSelectedMonth)?.name} {gstSelectedYear} ({gstPeriodSummary.totalInvoices === 0 ? '0 Bills · Nil Return' : `${gstPeriodSummary.totalInvoices} Bills`}):
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleExportMonthlyStatementPdf(`${gstSelectedMonth}${gstSelectedYear}`)}
+                    className="py-1.5 px-3 rounded-lg bg-slate-900 dark:bg-slate-800 hover:bg-slate-700 text-white text-[11px] font-extrabold flex items-center gap-1.5 shadow-xs cursor-pointer border border-slate-700"
+                    title="Download Monthly GST Statement PDF even if there are 0 bills (Nil Return) for this month"
+                  >
+                    <Download className="w-3.5 h-3.5 text-amber-400" />
+                    <span>
+                      Download {GST_MONTHS_LIST.find((m) => m.mm === gstSelectedMonth)?.short} {gstSelectedYear} PDF{' '}
+                      {gstPeriodSummary.totalInvoices === 0 ? '(Nil Statement)' : ''}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleExportGstCsv(`${gstSelectedMonth}${gstSelectedYear}`)}
+                    className="py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-extrabold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                    title="Download Monthly GST CSV even if there are 0 bills (Nil Return) for this month"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>
+                      Download {GST_MONTHS_LIST.find((m) => m.mm === gstSelectedMonth)?.short} CSV{' '}
+                      {gstPeriodSummary.totalInvoices === 0 ? '(Nil)' : ''}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleExportGstr1Json(`${gstSelectedMonth}${gstSelectedYear}`)}
+                    className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-extrabold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                    title="Download GSTR-1 JSON for this month even if there are 0 bills (Nil Return)"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>
+                      Download {GST_MONTHS_LIST.find((m) => m.mm === gstSelectedMonth)?.short} GSTR-1 JSON{' '}
+                      {gstPeriodSummary.totalInvoices === 0 ? '(Nil)' : ''}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 12-Month Quick Statement Selector & Per-Month Direct Download Grid (Even When 0 Bills) */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 pt-0.5">
+                {GST_MONTHS_LIST.map((m) => {
+                  const fpCode = `${m.mm}${gstSelectedYear}`;
+                  const isSelected = gstPeriodFilter === fpCode;
+                  const monthInvoiceCount = transactions.filter((inv) => {
+                    const d = new Date(inv.createdAt);
+                    if (isNaN(d.getTime())) return false;
+                    const invMm = String(d.getUTCMonth() + 1).padStart(2, '0');
+                    const invYyyy = String(d.getUTCFullYear());
+                    return invMm === m.mm && invYyyy === gstSelectedYear;
+                  }).length;
+
+                  return (
+                    <div
+                      key={fpCode}
+                      onClick={() => {
+                        setGstSelectedMonth(m.mm);
+                        setGstPeriodFilter(fpCode);
+                      }}
+                      className={`p-2.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                        isSelected
+                          ? 'bg-amber-500/15 border-amber-500 text-slate-900 dark:text-white shadow-sm ring-1 ring-amber-500/40'
+                          : monthInvoiceCount > 0
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-slate-900 dark:text-white hover:border-amber-500'
+                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-slate-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <div>
+                          <span className="text-xs font-extrabold block leading-tight">
+                            {m.name} {gstSelectedYear}
+                          </span>
+                          <span className="text-[9px] font-mono text-slate-400">
+                            Period: {fpCode}
+                          </span>
+                        </div>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold shrink-0 ${
+                            monthInvoiceCount > 0
+                              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                          }`}
+                        >
+                          {monthInvoiceCount === 0
+                            ? '0 bills (Nil)'
+                            : `${monthInvoiceCount} ${monthInvoiceCount === 1 ? 'bill' : 'bills'}`}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1 pt-1 border-t border-slate-200/70 dark:border-slate-800/80">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGstSelectedMonth(m.mm);
+                            setGstPeriodFilter(fpCode);
+                            handleExportMonthlyStatementPdf(fpCode);
+                          }}
+                          className="py-1 px-1.5 rounded bg-slate-900 dark:bg-slate-800 hover:bg-slate-700 text-white text-[9px] font-bold flex items-center justify-center gap-0.5 cursor-pointer"
+                          title={`Download ${m.name} ${gstSelectedYear} (${fpCode}) Monthly GST Statement PDF (${monthInvoiceCount === 0 ? 'Nil Return - 0 Bills' : `${monthInvoiceCount} Bills`})`}
+                        >
+                          <Download className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                          <span>{m.short} PDF</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGstSelectedMonth(m.mm);
+                            setGstPeriodFilter(fpCode);
+                            handleExportGstCsv(fpCode);
+                          }}
+                          className="py-1 px-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold flex items-center justify-center gap-0.5 cursor-pointer"
+                          title={`Download ${m.name} ${gstSelectedYear} (${fpCode}) Monthly GST Statement CSV (${monthInvoiceCount === 0 ? 'Nil Return - 0 Bills' : `${monthInvoiceCount} Bills`})`}
+                        >
+                          <Download className="w-2.5 h-2.5 shrink-0" />
+                          <span>{m.short} CSV</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGstSelectedMonth(m.mm);
+                            setGstPeriodFilter(fpCode);
+                            handleExportGstr1Json(fpCode);
+                          }}
+                          className="py-1 px-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[9px] font-extrabold flex items-center justify-center gap-0.5 cursor-pointer"
+                          title={`Download ${m.name} ${gstSelectedYear} (${fpCode}) GSTR-1 JSON (${monthInvoiceCount === 0 ? 'Nil Return - 0 Bills' : `${monthInvoiceCount} Bills`})`}
+                        >
+                          <Download className="w-2.5 h-2.5 shrink-0" />
+                          <span>{m.short} JSON</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Feedback Banner */}
+          {gstMessage && (
+            <div
+              className={`p-4 rounded-xl border text-xs font-semibold flex items-center justify-between gap-3 ${
+                gstMessage.type === 'success'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {gstMessage.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                )}
+                <span>{gstMessage.text}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGstMessage(null)}
+                className="text-[11px] underline shrink-0 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Statutory Distinction & Manual GST Portal Filing Guide */}
+          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-2">
+            <div className="flex items-center gap-2 font-extrabold text-amber-700 dark:text-amber-300 uppercase tracking-wider text-[11px]">
+              <Info className="w-4 h-4 text-amber-500 shrink-0" />
+              <span>Important Statutory Notice: Report Download vs. Official GST Return Filing &amp; Tax Payment</span>
+            </div>
+            <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
+              Downloading GSTR-1 JSON, CSV reconciliation sheets, or PDF bills from Aathirai_Comic <strong>does not automatically file your GST return or pay tax on the Government GST Portal</strong>. To complete filing and tax payment:
+            </p>
+            <ol className="list-decimal list-inside space-y-1 text-slate-600 dark:text-slate-300 font-medium pl-1">
+              <li>
+                Enter and save your valid 15-digit <strong>Seller GSTIN</strong> below, then select your <strong>Monthly Statement</strong> (or Quarterly period).
+              </li>
+              <li>
+                Click <strong>&ldquo;1. Download GSTR-1 JSON&rdquo;</strong> to generate the GST3.1.6 Offline Utility JSON file for your chosen month.
+              </li>
+              <li>
+                Log in to <a href="https://services.gst.gov.in" target="_blank" rel="noreferrer" className="text-amber-600 dark:text-amber-400 underline font-bold">services.gst.gov.in</a> → <em>Returns Dashboard</em> → <em>GSTR-1 / IFF</em> → <em>Prepare Offline</em> → Upload the downloaded JSON file.
+              </li>
+              <li>
+                Verify the populated B2B, B2CS, CDNR, and HSN summary tables on the GST Portal, sign with DSC / EVC, and pay net tax liability via <strong>GSTR-3B / PMT-06 Challan</strong>.
+              </li>
+            </ol>
+          </div>
+
+          {/* Period Filter & Live Tax Liability Summary Cards */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                  Monthly Statement &amp; GST Liability Summary — {formatPeriodHumanLabel(gstPeriodFilter)}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Formula: Included GST = Total × {gstSettings.applicableGstRate} / {100 + gstSettings.applicableGstRate} · Taxable Value = Total − GST · Intra-State ({gstSettings.stateCode}-{gstSettings.stateName}) = CGST + SGST · Inter-State = IGST
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                  Monthly / Quarterly Statement:
+                </label>
+                <select
+                  value={gstPeriodFilter}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setGstPeriodFilter(val);
+                    if (/^\d{6}$/.test(val)) {
+                      setGstSelectedMonth(val.slice(0, 2));
+                      setGstSelectedYear(val.slice(2, 6));
+                    }
+                  }}
+                  className="px-3 py-2 text-xs font-bold rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                >
+                  <option value="ALL">All Periods (Complete Ledger)</option>
+                  <optgroup label={`Monthly Statements (${gstSelectedYear})`}>
+                    {GST_MONTHS_LIST.map((m) => (
+                      <option key={`${m.mm}${gstSelectedYear}`} value={`${m.mm}${gstSelectedYear}`}>
+                        {m.name} {gstSelectedYear} ({m.mm}{gstSelectedYear} - Monthly Statement)
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label={`Quarterly Statements (${gstSelectedYear})`}>
+                    <option value={`Q1-${gstSelectedYear}`}>Q1 {gstSelectedYear} (Jan – Mar {gstSelectedYear})</option>
+                    <option value={`Q2-${gstSelectedYear}`}>Q2 {gstSelectedYear} (Apr – Jun {gstSelectedYear})</option>
+                    <option value={`Q3-${gstSelectedYear}`}>Q3 {gstSelectedYear} (Jul – Sep {gstSelectedYear})</option>
+                    <option value={`Q4-${gstSelectedYear}`}>Q4 {gstSelectedYear} (Oct – Dec {gstSelectedYear})</option>
+                  </optgroup>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                  Invoices / Credit Notes
+                </span>
+                <div className="text-lg font-black font-mono text-slate-900 dark:text-white mt-1">
+                  {gstPeriodSummary.totalInvoices} / {gstPeriodSummary.totalCreditNotes}
+                </div>
+                <span className="text-[10px] text-slate-500">
+                  B2B: {gstPeriodSummary.b2bCount} · B2CS: {gstPeriodSummary.b2csCount}
+                </span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                  Net Taxable Value
+                </span>
+                <div className="text-lg font-black font-mono text-slate-900 dark:text-white mt-1">
+                  ₹{gstPeriodSummary.netTaxableValue.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-slate-500">Base value excl. GST</span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                  Net CGST (9%)
+                </span>
+                <div className="text-lg font-black font-mono text-amber-600 dark:text-amber-400 mt-1">
+                  ₹{gstPeriodSummary.netCgst.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-slate-500">Intra-state Central GST</span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                  Net SGST (9%)
+                </span>
+                <div className="text-lg font-black font-mono text-amber-600 dark:text-amber-400 mt-1">
+                  ₹{gstPeriodSummary.netSgst.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-slate-500">Intra-state State GST</span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                  Net IGST (18%)
+                </span>
+                <div className="text-lg font-black font-mono text-sky-600 dark:text-sky-400 mt-1">
+                  ₹{gstPeriodSummary.netIgst.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-slate-500">Inter-state Integrated GST</span>
+              </div>
+
+              <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 block">
+                  Net GST Payable to Govt
+                </span>
+                <div className="text-lg font-black font-mono text-emerald-600 dark:text-emerald-400 mt-1">
+                  ₹{gstPeriodSummary.netTaxLiability.toFixed(2)}
+                </div>
+                <span className="text-[10px] text-emerald-600/80 dark:text-emerald-400/80">
+                  Gross Sales: ₹{gstPeriodSummary.netInvoiceValue.toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {/* Pre-Export Validation Status Bar */}
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                {gstExportValidation.isValid && gstSettings.gstin ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                    <CheckCircle2 className="w-3 h-3" /> GSTR-1 &amp; CSV Ready
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                    <AlertTriangle className="w-3 h-3" /> Action Needed for GSTR-1 JSON
+                  </span>
+                )}
+                <span className="text-slate-600 dark:text-slate-300">
+                  {gstSettings.gstin
+                    ? `Registered Seller GSTIN: ${gstSettings.gstin} (${gstSettings.stateCode} - ${gstSettings.stateName})`
+                    : 'Seller GSTIN is currently blank (Unregistered Mode). Enter your 15-digit GSTIN below to enable GSTR-1 JSON export.'}
+                </span>
+              </div>
+              {gstExportValidation.warnings.length > 0 && (
+                <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+                  {gstExportValidation.warnings[0]}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Business GST Profile & Configuration Form */}
+          <form
+            onSubmit={handleSaveGstSettings}
+            className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                  Seller GSTIN &amp; Business Billing Configuration
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Saved in the backend database and Firebase Firestore. Updating these details applies to new invoices while preserving historical invoice snapshots.
+                </p>
+              </div>
+              <span
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold ${
+                  gstSettings.gstin
+                    ? gstLiveValidation.isValid
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                      : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                }`}
+              >
+                {gstSettings.gstin
+                  ? gstLiveValidation.isValid
+                    ? `✓ Valid GSTIN (${gstLiveValidation.stateName})`
+                    : `✕ ${gstLiveValidation.error}`
+                  : 'Unregistered / No GSTIN Set'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  15-Digit Seller GSTIN (Leave blank if unregistered)
+                </label>
+                <input
+                  type="text"
+                  maxLength={15}
+                  value={gstSettings.gstin}
+                  onChange={(e) => {
+                    const upper = e.target.value.toUpperCase();
+                    const check = validateIndianGstin(upper);
+                    setGstSettings((prev) => ({
+                      ...prev,
+                      gstin: upper,
+                      stateCode: check.stateCode || prev.stateCode,
+                      stateName: check.stateName || prev.stateName,
+                    }));
+                  }}
+                  placeholder="e.g. 33AABCA1234C1Z..."
+                  className="w-full px-3 py-2 font-mono font-bold uppercase rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                />
+                <span className="text-[10px] text-slate-400 block mt-1">
+                  Validated with Indian GSTN Modulo-36 checksum. Never fabricated.
+                </span>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Legal Business Name (As on PAN / GST Certificate)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={gstSettings.legalBusinessName}
+                  onChange={(e) => setGstSettings({ ...gstSettings, legalBusinessName: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Trade / Brand Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={gstSettings.tradeName}
+                  onChange={(e) => setGstSettings({ ...gstSettings, tradeName: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Principal Place of Business (Seller State Code)
+                </label>
+                <select
+                  value={gstSettings.stateCode}
+                  onChange={(e) => {
+                    const code = e.target.value;
+                    const st = INDIAN_STATES_AND_UTS.find((s) => s.code === code);
+                    setGstSettings({
+                      ...gstSettings,
+                      stateCode: code,
+                      stateName: st ? st.name : gstSettings.stateName,
+                    });
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                >
+                  {INDIAN_STATES_AND_UTS.filter((s) => s.code !== '96').map((s) => (
+                    <option key={s.code} value={s.code}>
+                      {s.code} - {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Default HSN / SAC Code (OIDAR / e-Publishing)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={gstSettings.defaultSacCode}
+                  onChange={(e) => setGstSettings({ ...gstSettings, defaultSacCode: e.target.value })}
+                  className="w-full px-3 py-2 font-mono rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Applicable GST Rate (%) &amp; Invoice Prefix
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={gstSettings.applicableGstRate}
+                    onChange={(e) =>
+                      setGstSettings({ ...gstSettings, applicableGstRate: Number(e.target.value) })
+                    }
+                    className="px-3 py-2 font-mono rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    <option value={18}>18% GST</option>
+                    <option value={12}>12% GST</option>
+                    <option value={5}>5% GST</option>
+                    <option value={0}>0% Exempt</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={gstSettings.invoicePrefix}
+                    onChange={(e) =>
+                      setGstSettings({ ...gstSettings, invoicePrefix: e.target.value.toUpperCase() })
+                    }
+                    placeholder="INV-GST"
+                    className="px-3 py-2 font-mono uppercase rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Registered Business Address (Printed on Tax Invoices)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={gstSettings.registeredAddress}
+                  onChange={(e) => setGstSettings({ ...gstSettings, registeredAddress: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="flex items-end">
+                <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer w-full">
+                  <input
+                    type="checkbox"
+                    checked={gstSettings.applyGstToDomesticSales}
+                    onChange={(e) =>
+                      setGstSettings({ ...gstSettings, applyGstToDomesticSales: e.target.checked })
+                    }
+                    className="rounded text-amber-500 focus:ring-amber-500"
+                  />
+                  <span className="font-bold text-slate-800 dark:text-slate-200">
+                    Enable GST-Inclusive Split at Checkout
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <span className="text-[11px] text-slate-400 font-mono">
+                Last Updated: {new Date(gstSettings.updatedAt).toLocaleString()} by {gstSettings.updatedByEmail || 'balajiaris05@gmail.com'}
+              </span>
+              <button
+                type="submit"
+                disabled={gstSaving}
+                className="py-2.5 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {gstSaving ? 'Saving & Syncing...' : 'Save GST Profile to Database & Firestore'}
+              </button>
+            </div>
+          </form>
+
+          {/* GST Tax Invoice & Credit Note Register Table */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                  Customer Tax Invoices &amp; Refund Credit Notes Register ({gstPeriodSummary.filteredInvoices.length} Invoices)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Download individual customer PDF Tax Invoices or issue GST Credit Notes for refunded transactions.
+                </p>
+              </div>
+
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={gstInvoiceSearch}
+                  onChange={(e) => setGstInvoiceSearch(e.target.value)}
+                  placeholder="Search invoice #, email, GSTIN..."
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                />
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-950 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
+                  <tr>
+                    <th className="p-3">Invoice # / Date</th>
+                    <th className="p-3">Customer / B2B GSTIN</th>
+                    <th className="p-3">Place of Supply</th>
+                    <th className="p-3">Taxable Value</th>
+                    <th className="p-3">CGST + SGST</th>
+                    <th className="p-3">IGST</th>
+                    <th className="p-3">Total (Incl. GST)</th>
+                    <th className="p-3">Status / Credit Note</th>
+                    <th className="p-3">3. PDF Bill &amp; Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {gstPeriodSummary.filteredInvoices.length === 0 && (
+                    <tr className="bg-amber-500/5">
+                      <td colSpan={9} className="p-6 text-center space-y-3">
+                        <div className="text-xs font-extrabold text-slate-800 dark:text-slate-200">
+                          No customer bills recorded for {formatPeriodHumanLabel(gstPeriodFilter)} (Nil Return Period — ₹0.00 GST Liability)
+                        </div>
+                        <p className="text-[11px] text-slate-500 max-w-xl mx-auto">
+                          Even when there are 0 bills in this month, you can download the official Nil-Return Monthly GST Statement (PDF, CSV, or GSTR-1 JSON) below to file your Nil Return on the GST Portal.
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleExportMonthlyStatementPdf()}
+                            className="py-2 px-3.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Download Nil Monthly Statement (PDF)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleExportGstCsv()}
+                            className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download Nil Monthly Statement (CSV)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleExportGstr1Json()}
+                            className="py-2 px-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download Nil GSTR-1 JSON ({gstPeriodFilter})</span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {gstPeriodSummary.filteredInvoices
+                    .filter((inv: Purchase) => {
+                      if (!gstInvoiceSearch.trim()) return true;
+                      const q = gstInvoiceSearch.toLowerCase();
+                      return (
+                        (inv.invoiceNumber || inv.receiptNumber).toLowerCase().includes(q) ||
+                        inv.userEmail.toLowerCase().includes(q) ||
+                        (inv.customerGstin || '').toLowerCase().includes(q) ||
+                        inv.comicTitle.toLowerCase().includes(q)
+                      );
+                    })
+                    .map((inv: Purchase) => {
+                      const linkedCn = creditNotes.find(
+                        (cn) => cn.originalPurchaseId === inv.id || cn.id === inv.creditNoteId
+                      );
+                      return (
+                        <tr key={inv.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="p-3 font-mono">
+                            <div className="font-bold text-slate-900 dark:text-white">
+                              {inv.invoiceNumber || inv.receiptNumber}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {new Date(inv.createdAt).toLocaleDateString()} · SAC {inv.hsnSacCode}
+                            </div>
+                          </td>
+                          <td className="p-3">
+                            <div className="font-semibold text-slate-800 dark:text-slate-200">
+                              {inv.userEmail}
+                            </div>
+                            {inv.customerGstin ? (
+                              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                B2B: {inv.customerGstin}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400">B2CS Consumer</span>
+                            )}
+                          </td>
+                          <td className="p-3 font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                            {inv.placeOfSupplyStateCode} - {inv.placeOfSupplyStateName}
+                          </td>
+                          <td className="p-3 font-mono font-semibold text-slate-800 dark:text-slate-200">
+                            ₹{(inv.taxableValue || 0).toFixed(2)}
+                          </td>
+                          <td className="p-3 font-mono text-[11px] text-amber-600 dark:text-amber-400">
+                            {inv.taxType === 'CGST_SGST'
+                              ? `₹${(inv.cgstAmount || 0).toFixed(2)} + ₹${(inv.sgstAmount || 0).toFixed(2)}`
+                              : '—'}
+                          </td>
+                          <td className="p-3 font-mono text-[11px] text-sky-600 dark:text-sky-400">
+                            {inv.taxType === 'IGST' ? `₹${(inv.igstAmount || 0).toFixed(2)}` : '—'}
+                          </td>
+                          <td className="p-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                            ₹{inv.amountInr.toFixed(2)}
+                          </td>
+                          <td className="p-3">
+                            {inv.status === 'refunded' || linkedCn ? (
+                              <div className="space-y-0.5">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 inline-block">
+                                  Refunded (CDNR)
+                                </span>
+                                {linkedCn && (
+                                  <div className="text-[10px] font-mono text-rose-400">
+                                    CN: {linkedCn.creditNoteNumber}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                                Active Tax Invoice
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadPdfBill(inv)}
+                                className="py-1.5 px-2.5 rounded-lg bg-slate-900 dark:bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                                title="Download Customer GST Tax Invoice in PDF format"
+                              >
+                                <Download className="w-3 h-3 text-amber-400" />
+                                <span>Invoice PDF</span>
+                              </button>
+
+                              {linkedCn ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadPdfBill(inv, linkedCn)}
+                                  className="py-1.5 px-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                                  title="Download GST Credit Note in PDF format"
+                                >
+                                  <Download className="w-3 h-3" />
+                                  <span>Credit Note PDF</span>
+                                </button>
+                              ) : (
+                                inv.status === 'success' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRefund(inv.id)}
+                                    className="py-1.5 px-2.5 rounded-lg border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 text-[10px] font-bold cursor-pointer"
+                                    title="Refund transaction and issue GST Credit Note"
+                                  >
+                                    Issue Credit Note
+                                  </button>
+                                )
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

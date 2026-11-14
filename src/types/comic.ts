@@ -10,13 +10,29 @@ export interface PremiumPaymentDetail {
   paidAt?: string;
   expiresAt?: string;
   status: 'paid' | 'unpaid';
+  environment?: 'test' | 'live';
+}
+
+export interface ReadingProgressItem {
+  episodeId: string;
+  comicId: string;
+  comicTitle: string;
+  episodeTitle: string;
+  episodeNumber: number;
+  chapterNumber: number;
+  coverImage?: string;
+  pageIndex: number;
+  totalPages: number;
+  updatedAt: string;
 }
 
 export interface User {
   id: string;
+  firebaseUid?: string;
   name: string;
   email: string;
   password?: string;
+  passwordHash?: string;
   failedLoginAttempts?: number;
   lockedUntil?: string | null;
   welcomeEmailSent?: boolean;
@@ -28,15 +44,30 @@ export interface User {
   upiId?: string;
   role: UserRole;
   isVerified: boolean;
+  emailVerified?: boolean;
+  isSuspended?: boolean;
+  suspendedReason?: string;
   avatar: string;
   phone?: string;
+  countryCode?: string;
+  countryName?: string;
   bio?: string;
+  socialLinks?: {
+    website?: string;
+    instagram?: string;
+    twitter?: string;
+    artstation?: string;
+  };
+  bookmarks?: string[];
+  favorites?: string[];
+  readingHistory?: ReadingProgressItem[];
   createdAt: string;
   lastLoginAt?: string;
   premiumPlan?: '1_month' | '6_months' | null;
   premiumStartedAt?: string;
   premiumExpiresAt?: string;
   premiumPaymentDetail?: PremiumPaymentDetail;
+  sessionToken?: string;
 }
 
 export interface AuthorApplication {
@@ -55,12 +86,14 @@ export interface AuthorApplication {
   submittedAt: string;
   reviewedAt?: string;
   adminNote?: string;
+  adminExplicitlyReviewed?: boolean;
 }
 
 export interface ComicPage {
   id: string;
   pageNumber: number;
   imageUrl: string;
+  thumbnailUrl?: string;
   caption?: string;
 }
 
@@ -81,6 +114,7 @@ export interface Episode {
   averageRating: number;
   totalRatings: number;
   isPublished: boolean;
+  isDraft?: boolean;
 }
 
 export interface Chapter {
@@ -101,7 +135,9 @@ export interface Comic {
   authorId: string;
   authorName: string;
   genre: string[];
+  tags?: string[];
   coverImage: string;
+  bannerImage?: string;
   description: string;
   status: 'Ongoing' | 'Completed';
   accessType: 'free' | 'premium';
@@ -117,7 +153,7 @@ export interface Comic {
   averageRating: number;
   createdAt: string;
   updatedAt: string;
-  moderationStatus: 'approved' | 'pending' | 'rejected' | 'delete_requested';
+  moderationStatus: 'approved' | 'pending' | 'rejected' | 'delete_requested' | 'draft';
   submittedAt?: string;
   moderatedAt?: string;
   adminReviewNote?: string;
@@ -139,6 +175,11 @@ export interface Comment {
   content: string;
   createdAt: string;
   updatedAt?: string;
+  isEdited?: boolean;
+  likesCount?: number;
+  likedBy?: string[];
+  isReported?: boolean;
+  reportReason?: string;
   parentId?: string;
   replies?: Comment[];
 }
@@ -161,9 +202,91 @@ export interface Vote {
   createdAt: string;
 }
 
+export type GstTaxType = 'CGST_SGST' | 'IGST' | 'NONE';
+
+export interface SellerGstSnapshot {
+  legalBusinessName: string;
+  tradeName?: string;
+  gstin: string;
+  isGstRegistered: boolean;
+  stateCode: string;
+  stateName: string;
+  registeredAddress: string;
+  hsnSacCode: string;
+  hsnSacDescription: string;
+}
+
+export interface GstAuditEntry {
+  id: string;
+  timestamp: string;
+  adminId: string;
+  adminEmail: string;
+  action: string;
+  summary: string;
+  previousGstin?: string;
+  newGstin?: string;
+}
+
+export interface GstBusinessSettings {
+  legalBusinessName: string;
+  tradeName: string;
+  gstin: string;
+  isGstRegistered: boolean;
+  gstinVerificationStatus: 'unregistered' | 'format_valid_unverified' | 'verified';
+  gstinVerifiedAt?: string;
+  stateCode: string;
+  stateName: string;
+  registeredAddress: string;
+  invoicePrefix: string;
+  creditNotePrefix: string;
+  nextInvoiceSequence: number;
+  nextCreditNoteSequence: number;
+  defaultSacCode: string;
+  defaultSacDescription: string;
+  applicableGstRate: number;
+  applyGstToDomesticSales: boolean;
+  updatedAt: string;
+  updatedByEmail?: string;
+  auditHistory: GstAuditEntry[];
+}
+
+export interface CreditNoteRecord {
+  id: string;
+  creditNoteNumber: string;
+  originalPurchaseId: string;
+  originalInvoiceNumber: string;
+  originalInvoiceDate: string;
+  userId: string;
+  customerName?: string;
+  userEmail: string;
+  userPhone?: string;
+  customerGstin?: string;
+  placeOfSupplyStateCode: string;
+  placeOfSupplyStateName: string;
+  supplyType: 'INTRA' | 'INTER' | 'EXPORT';
+  taxType: GstTaxType;
+  hsnSacCode: string;
+  hsnSacDescription: string;
+  reason: string;
+  grossAmountInr: number;
+  taxableValue: number;
+  taxRate: number;
+  taxAmount: number;
+  cgstRate: number;
+  cgstAmount: number;
+  sgstRate: number;
+  sgstAmount: number;
+  igstRate: number;
+  igstAmount: number;
+  sellerSnapshot: SellerGstSnapshot;
+  createdAt: string;
+  createdByEmail: string;
+}
+
 export interface Purchase {
   id: string;
   userId: string;
+  customerName?: string;
   userEmail: string;
   userPhone?: string;
   userAge?: number;
@@ -180,12 +303,101 @@ export interface Purchase {
   paymentMethod: string;
   razorpayOrderId: string;
   razorpayPaymentId: string;
-  status: 'success' | 'failed' | 'pending';
+  signatureVerified?: boolean;
+  environment?: 'test' | 'live';
+  idempotencyKey?: string;
+  status: 'success' | 'failed' | 'pending' | 'refunded';
   createdAt: string;
   receiptNumber: string;
+  invoiceNumber?: string;
+  taxableValue?: number;
   taxAmount: number;
+  taxRate?: number;
+  taxType?: GstTaxType;
+  cgstRate?: number;
+  cgstAmount?: number;
+  sgstRate?: number;
+  sgstAmount?: number;
+  igstRate?: number;
+  igstAmount?: number;
+  hsnSacCode?: string;
+  hsnSacDescription?: string;
+  placeOfSupplyStateCode?: string;
+  placeOfSupplyStateName?: string;
+  isInternational?: boolean;
+  supplyType?: 'INTRA' | 'INTER' | 'EXPORT';
+  customerGstin?: string;
+  sellerSnapshot?: SellerGstSnapshot;
+  creditNoteId?: string;
+  creditNoteNumber?: string;
+  refundReason?: string;
+  refundedAt?: string;
   authorEarningsInr: number;
   platformFeeInr: number;
+}
+
+export interface PaymentTransaction {
+  id: string;
+  orderId: string;
+  paymentId?: string;
+  userId: string;
+  userEmail: string;
+  comicId: string;
+  itemTitle: string;
+  type: 'full_comic' | 'chapter' | 'episode' | 'subscription';
+  subscriptionPlan?: '1_month' | '6_months';
+  amountInr: number;
+  amountPaise: number;
+  currency: 'INR';
+  environment: 'test' | 'live';
+  status: 'created' | 'verified' | 'failed' | 'refunded';
+  signatureVerified: boolean;
+  webhookReceived?: boolean;
+  idempotencyKey: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationItem {
+  id: string;
+  userId: string;
+  userEmail?: string;
+  type:
+    | 'author_approved'
+    | 'author_rejected'
+    | 'comic_approved'
+    | 'comic_rejected'
+    | 'new_comic'
+    | 'new_episode'
+    | 'comment_reply'
+    | 'payment_success'
+    | 'system';
+  title: string;
+  message: string;
+  read: boolean;
+  targetId?: string;
+  comicId?: string;
+  episodeId?: string;
+  isPaywalled?: boolean;
+  gmailSent?: boolean;
+  gmailSentTo?: string;
+  gmailSentAt?: string;
+  createdAt: string;
+}
+
+export interface ContentReport {
+  id: string;
+  reporterId: string;
+  reporterEmail: string;
+  targetType: 'comment' | 'comic' | 'episode';
+  targetId: string;
+  episodeId?: string;
+  targetSummary: string;
+  reason: string;
+  status: 'pending' | 'resolved' | 'dismissed';
+  createdAt: string;
+  resolvedAt?: string;
+  adminNote?: string;
 }
 
 export interface CopyrightDoc {

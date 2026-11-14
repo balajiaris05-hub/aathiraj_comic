@@ -4,7 +4,44 @@ import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { db } from './src/server/storage.ts';
-import { User, AuthorApplication, Purchase, Comic, Chapter, Episode, ComicPage } from './src/types/comic.ts';
+import {
+  User,
+  AuthorApplication,
+  Purchase,
+  Comic,
+  Chapter,
+  Episode,
+  ComicPage,
+  PaymentTransaction,
+  GstBusinessSettings,
+  CreditNoteRecord,
+} from './src/types/comic.ts';
+import {
+  securityHeadersMiddleware,
+  createRateLimiter,
+  hashPassword,
+  verifyPasswordHash,
+  sanitizeUserForClient,
+  getRazorpayEnvironmentStatus,
+  computeRazorpayOrderSignature,
+  verifyRazorpayPaymentSignature,
+  verifyRazorpayWebhookSignature,
+  resolveAuthenticatedUser,
+} from './src/server/security.ts';
+import {
+  INDIAN_STATES_AND_UTS,
+  getStateByCode,
+  validateIndianGstin,
+  getDefaultGstBusinessSettings,
+  buildSellerSnapshot,
+  calculateInclusiveGstBreakdown,
+  formatGstInvoiceNumber,
+  ensurePurchaseGstFields,
+  validateGstExportData,
+  generateGstr1OfflineJson,
+  generateGstReconciliationCsv,
+  generateTaxInvoicePdfBytes,
+} from './src/utils/gstUtils.ts';
 
 dotenv.config();
 
@@ -12,18 +49,19 @@ async function startServer() {
   const app = express();
   const port = process.env.PORT || 3000;
 
-  // JSON Body Parser with 10mb limit for uploads/pages
+  // Security headers & JSON Body Parser with 15mb limit for comic artwork uploads
+  app.use(securityHeadersMiddleware);
   app.use(express.json({ limit: '15mb' }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
-  const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_AathiraiDemo2026';
-  const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'secret_AathiraiSecretKey2026';
+  const authRateLimiter = createRateLimiter({ maxRequests: 30, windowMs: 15 * 60 * 1000 });
+  const paymentRateLimiter = createRateLimiter({ maxRequests: 40, windowMs: 15 * 60 * 1000 });
 
   // -------------------------------------------------------------
   // SECURE DEDICATED ADMIN 2FA OTP AUTHENTICATION
   // -------------------------------------------------------------
 
-  app.post('/api/admin-auth/request-otp', (req, res) => {
+  app.post('/api/admin-auth/request-otp', authRateLimiter, (req, res) => {
     const { credential, channel = 'email' } = req.body;
     if (!credential) {
       return res.status(400).json({ error: 'Please enter your administrator Gmail or Indian mobile number.' });
@@ -45,8 +83,8 @@ async function startServer() {
     const targetDestination = targetChannel === 'email' ? 'balajiaris05@gmail.com' : '+91 8610950780';
     const maskedDestination = targetChannel === 'email' ? 'b*******05@gmail.com' : '+91 ******0780';
 
-    // Generate secure 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate cryptographically random 6-digit OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
 
     db.mutate(d => {
       d.adminOtp = {
@@ -61,23 +99,25 @@ async function startServer() {
       'ADMIN_OTP_REQUESTED',
       'balajiaris05@gmail.com',
       'admin',
-      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${targetDestination}. Code: ${otp}. Valid for 10 minutes.`,
+      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${maskedDestination}. Valid for 10 minutes.`,
       'admin_auth',
       'usr_admin'
     );
 
+    const hasDeliveryProvider = Boolean(process.env.SMTP_HOST || process.env.SMS_API_KEY);
     return res.json({
       success: true,
-      message: `Security OTP Dispatched! Your 6-digit code is: ${otp}`,
+      message: hasDeliveryProvider
+        ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
+        : `Development Mode: OTP generated for ${maskedDestination} (configure SMTP_HOST / SMS_API_KEY for live delivery).`,
       channel: targetChannel,
       destinationMasked: maskedDestination,
-      mockOtp: otp,
-      otpCode: otp,
+      ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
       expiresInSeconds: 600,
     });
   });
 
-  app.post('/api/admin-auth/verify-otp', (req, res) => {
+  app.post('/api/admin-auth/verify-otp', authRateLimiter, (req, res) => {
     const { credential, otp } = req.body;
     if (!credential || !otp) {
       return res.status(400).json({ error: 'Credential and OTP are required.' });
@@ -99,8 +139,8 @@ async function startServer() {
       return res.status(400).json({ error: 'OTP has expired (valid for 10 minutes) or has not been requested. Please request a new code.' });
     }
 
-    if (otp !== '123456' && activeOtp.code !== otp.trim()) {
-      return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your Gmail or SMS.' });
+    if (activeOtp.code !== String(otp).trim()) {
+      return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your verification dispatch.' });
     }
 
     // Clear one-time OTP
@@ -108,13 +148,13 @@ async function startServer() {
       delete d.adminOtp;
     });
 
-    // Fetch or construct admin user
+    // Fetch or construct admin user from authoritative database
     const adminUser = snapshot.users.find(u => u.role === 'admin' || u.email === 'balajiaris05@gmail.com') || {
       id: 'usr_admin',
       name: 'Balaji Administrator',
       email: 'balajiaris05@gmail.com',
       phone: '+91 8610950780',
-      role: 'admin',
+      role: 'admin' as const,
       isVerified: true,
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
       bio: 'Chief Content Administrator and Publisher at Aathirai_Comic.',
@@ -125,7 +165,7 @@ async function startServer() {
 
     return res.json({
       success: true,
-      user: adminUser,
+      user: sanitizeUserForClient(adminUser as User, true),
       message: 'Admin authentication verified! Console access unlocked.',
     });
   });
@@ -286,14 +326,33 @@ async function startServer() {
       (p: Purchase) => p.razorpayPaymentId === txId && p.userEmail?.toLowerCase() === user.email.toLowerCase()
     );
     if (!alreadyExists) {
-      const taxAmount = Number((amountInr * 0.18).toFixed(2));
-      const baseRevenue = amountInr - taxAmount;
+      const gstSettings = d.gstSettings || getDefaultGstBusinessSettings();
+      const sellerSnap = buildSellerSnapshot(gstSettings);
+      const isInternational = Boolean(user.countryCode && user.countryCode !== '+91');
+      const posCode = isInternational ? '96' : sellerSnap.stateCode || '33';
+      const gstCalc = calculateInclusiveGstBreakdown({
+        totalAmountInr: amountInr,
+        sellerStateCode: sellerSnap.stateCode,
+        placeOfSupplyStateCode: posCode,
+        applicableRatePercent: gstSettings.applicableGstRate ?? 18,
+        applyGst: gstSettings.applyGstToDomesticSales !== false,
+        isInternational,
+        hsnSacCode: sellerSnap.hsnSacCode,
+        hsnSacDescription: sellerSnap.hsnSacDescription,
+      });
+
+      const seq = gstSettings.nextInvoiceSequence || d.purchases.length + 1;
+      const invoiceNumber = formatGstInvoiceNumber(gstSettings.invoicePrefix || 'AAC/2627/', seq);
+      gstSettings.nextInvoiceSequence = seq + 1;
+
+      const baseRevenue = gstCalc.taxableValue;
       const authorEarningsInr = Number((baseRevenue * 0.7).toFixed(2));
       const platformFeeInr = Number((baseRevenue - authorEarningsInr).toFixed(2));
 
       d.purchases.unshift({
         id: 'pur_' + Date.now(),
         userId: user.id,
+        customerName: user.name,
         userEmail: user.email.toLowerCase(),
         userPhone: user.phone,
         userAge: user.age,
@@ -311,7 +370,24 @@ async function startServer() {
         status: 'success',
         createdAt: nowIso,
         receiptNumber: receiptNum,
-        taxAmount,
+        invoiceNumber,
+        taxableValue: gstCalc.taxableValue,
+        taxAmount: gstCalc.taxAmount,
+        taxRate: gstCalc.taxRate,
+        taxType: gstCalc.taxType,
+        cgstRate: gstCalc.cgstRate,
+        cgstAmount: gstCalc.cgstAmount,
+        sgstRate: gstCalc.sgstRate,
+        sgstAmount: gstCalc.sgstAmount,
+        igstRate: gstCalc.igstRate,
+        igstAmount: gstCalc.igstAmount,
+        hsnSacCode: gstCalc.hsnSacCode,
+        hsnSacDescription: gstCalc.hsnSacDescription,
+        placeOfSupplyStateCode: gstCalc.placeOfSupplyStateCode,
+        placeOfSupplyStateName: gstCalc.placeOfSupplyStateName,
+        isInternational,
+        supplyType: gstCalc.supplyType,
+        sellerSnapshot: sellerSnap,
         authorEarningsInr,
         platformFeeInr,
       });
@@ -322,11 +398,59 @@ async function startServer() {
   // REGULAR & READER AUTHENTICATION ROUTES (GMAIL, AGE, UPI & PAID PREMIUM DETAIL)
   // -------------------------------------------------------------
 
-  app.post('/api/auth/register', (req, res) => {
+  const formatGlobalPhone = (rawPhone?: string, countryCode?: string): string => {
+    const trimmedPhone = (rawPhone || '').trim();
+    if (!trimmedPhone) return '';
+    const cleanCode = (countryCode || '').trim();
+    if (trimmedPhone.startsWith('+')) {
+      return trimmedPhone;
+    }
+    const localDigits = trimmedPhone.replace(/\D/g, '');
+    if (!localDigits) return '';
+    if (cleanCode) {
+      const normalizedCode = cleanCode.startsWith('+') ? cleanCode : `+${cleanCode.replace(/\D/g, '')}`;
+      const codeDigits = normalizedCode.replace(/\D/g, '');
+      if (codeDigits && localDigits.startsWith(codeDigits) && localDigits.length > codeDigits.length + 5) {
+        return `+${codeDigits} ${localDigits.slice(codeDigits.length)}`;
+      }
+      return `${normalizedCode} ${localDigits}`;
+    }
+    return trimmedPhone;
+  };
+
+  const getPhoneOtpKey = (rawPhone?: string, countryCode?: string): string => {
+    const formatted = formatGlobalPhone(rawPhone, countryCode);
+    const digits = (formatted || rawPhone || '').replace(/\D/g, '');
+    if (digits.length >= 10) return digits.slice(-10);
+    return digits;
+  };
+
+  const phonesMatch = (storedPhone?: string, inputPhone?: string, inputCountryCode?: string): boolean => {
+    if (!storedPhone || !inputPhone) return false;
+    const storedDigits = storedPhone.replace(/\D/g, '');
+    const formattedInput = formatGlobalPhone(inputPhone, inputCountryCode);
+    const inputRawDigits = inputPhone.replace(/\D/g, '');
+    const inputFormattedDigits = formattedInput.replace(/\D/g, '');
+    if (storedDigits.length < 6 || inputRawDigits.length < 6) return false;
+
+    if (storedDigits === inputRawDigits || storedDigits === inputFormattedDigits) {
+      return true;
+    }
+    // Compare subscriber number tail (up to 10 digits, or min length >= 7)
+    const compareLen = Math.min(10, storedDigits.length, inputRawDigits.length);
+    if (compareLen >= 7 && storedDigits.slice(-compareLen) === inputRawDigits.slice(-compareLen)) {
+      return true;
+    }
+    return false;
+  };
+
+  app.post('/api/auth/register', authRateLimiter, (req, res) => {
     const {
       name,
       email,
       phone,
+      countryCode,
+      countryName,
       age,
       dob,
       password,
@@ -341,12 +465,12 @@ async function startServer() {
       avatar,
     } = req.body;
     const cleanEmail = email?.trim().toLowerCase() || '';
-    const cleanPhone = phone?.trim() || '';
-    const cleanDigits = cleanPhone.replace(/\D/g, '');
+    const formattedPhone = formatGlobalPhone(phone, countryCode);
+    const cleanDigits = formattedPhone.replace(/\D/g, '');
     const parsedAge = age !== undefined && age !== '' ? Number(age) : undefined;
 
-    if (!name || (!cleanEmail && cleanDigits.length < 10)) {
-      return res.status(400).json({ error: 'Full Name, Gmail address, and Mobile Number are required.' });
+    if (!name || (!cleanEmail && cleanDigits.length < 6)) {
+      return res.status(400).json({ error: 'Full Name, Gmail address, and Global Mobile Number are required.' });
     }
 
     if (!password || String(password).length < 4) {
@@ -359,25 +483,30 @@ async function startServer() {
 
     const finalEmail = cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`;
     const nowIso = new Date().toISOString();
+    const hashedPass = hashPassword(String(password));
 
     let registeredUser: User | null = null;
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 999999).toString();
     const otpKey = finalEmail.toLowerCase();
+    const phoneKey = getPhoneOtpKey(phone, countryCode);
 
     db.mutate(d => {
       const existing = d.users.find((u: User) =>
         (cleanEmail && u.email.toLowerCase() === cleanEmail) ||
-        (cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10)))
+        (cleanDigits.length >= 6 && phonesMatch(u.phone, phone, countryCode))
       );
 
       if (existing) {
         if (name?.trim()) existing.name = name.trim();
         if (cleanEmail) existing.email = cleanEmail;
-        if (cleanPhone) existing.phone = cleanPhone;
+        if (formattedPhone) existing.phone = formattedPhone;
+        if (countryCode) existing.countryCode = String(countryCode).trim();
+        if (countryName) existing.countryName = String(countryName).trim();
         if (parsedAge && !isNaN(parsedAge)) existing.age = parsedAge;
         if (dob) existing.dob = String(dob).trim();
         if (avatar) existing.avatar = String(avatar);
-        existing.password = String(password);
+        existing.passwordHash = hashedPass;
+        delete existing.password;
         existing.failedLoginAttempts = 0;
         existing.lockedUntil = null;
         existing.welcomeEmailSent = true;
@@ -393,7 +522,7 @@ async function startServer() {
           id: 'usr_' + Date.now(),
           name: name.trim(),
           email: finalEmail,
-          password: String(password),
+          passwordHash: hashedPass,
           failedLoginAttempts: 0,
           lockedUntil: null,
           welcomeEmailSent: true,
@@ -403,9 +532,14 @@ async function startServer() {
           notifyGmail: typeof notifyGmail === 'boolean' ? notifyGmail : true,
           notifyMobile: typeof notifyMobile === 'boolean' ? notifyMobile : true,
           upiId: upiId?.trim() || undefined,
-          phone: cleanPhone || undefined,
+          phone: formattedPhone || undefined,
+          countryCode: countryCode ? String(countryCode).trim() : '+91',
+          countryName: countryName ? String(countryName).trim() : 'India',
           role: 'reader',
           isVerified: false,
+          bookmarks: [],
+          favorites: [],
+          readingHistory: [],
           avatar:
             avatar ||
             `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name.trim())}`,
@@ -420,14 +554,23 @@ async function startServer() {
       }
 
       d.otps[otpKey] = otp;
-      if (cleanDigits.length >= 10) {
-        d.otps[cleanDigits.slice(-10)] = otp;
+      if (phoneKey.length >= 6) {
+        d.otps[phoneKey] = otp;
       }
     });
 
     if (!registeredUser) {
       return res.status(500).json({ error: 'Could not register reader account.' });
     }
+
+    db.addNotification({
+      userId: (registeredUser as User).id,
+      userEmail: (registeredUser as User).email,
+      title: 'Welcome to Aathirai_Comic!',
+      message: `Hello ${(registeredUser as User).name}, your reader account is registered. Explore Indian comics, bookmark your favorite series, and enjoy smooth reading modes.`,
+      type: 'system',
+      targetId: (registeredUser as User).id,
+    });
 
     const welcomeEmailPayload = {
       to: (registeredUser as User).email,
@@ -447,35 +590,40 @@ async function startServer() {
 
     return res.json({
       success: true,
-      user: registeredUser,
+      user: sanitizeUserForClient(registeredUser as User, true),
       welcomeEmail: welcomeEmailPayload,
       message: `Account created and stored in backend! Welcome email sent to ${finalEmail} ("Welcome to Aathirai_Comic"). Verification OTP dispatched.`,
-      mockOtp: otp,
+      ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 
-  app.post('/api/auth/verify-otp', (req, res) => {
-    const { email, phone, otp, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+  app.post('/api/auth/verify-otp', authRateLimiter, (req, res) => {
+    const { email, phone, countryCode, countryName, otp, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
     const cleanEmail = email?.trim().toLowerCase() || '';
-    const cleanDigits = (phone || email || '').replace(/\D/g, '');
+    const phoneKey = getPhoneOtpKey(phone || email, countryCode);
     const snapshot = db.getSnapshot();
-    const storedOtp = snapshot.otps[cleanEmail] || (cleanDigits.length >= 10 ? snapshot.otps[cleanDigits.slice(-10)] : undefined);
+    const storedOtp = snapshot.otps[cleanEmail] || (phoneKey.length >= 6 ? snapshot.otps[phoneKey] : undefined);
 
-    if (otp !== '123456' && storedOtp && storedOtp !== otp?.trim()) {
-      return res.status(400).json({ error: 'Invalid verification OTP. Please try again.' });
+    if (!otp || (storedOtp && storedOtp !== String(otp).trim())) {
+      return res.status(400).json({ error: 'Invalid verification OTP. Please check the code sent to your email or mobile.' });
     }
 
     let updatedUser: User | null = null;
     db.mutate(d => {
       const u = d.users.find(user =>
         (cleanEmail && user.email.toLowerCase() === cleanEmail) ||
-        (cleanDigits.length >= 10 && user.phone && user.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10)))
+        (phone && phonesMatch(user.phone, phone, countryCode))
       );
       if (u) {
         u.isVerified = true;
         u.failedLoginAttempts = 0;
         u.lockedUntil = null;
         u.lastLoginAt = new Date().toISOString();
+        if (phone?.trim()) {
+          u.phone = formatGlobalPhone(phone, countryCode || u.countryCode);
+        }
+        if (countryCode) u.countryCode = String(countryCode).trim();
+        if (countryName) u.countryName = String(countryName).trim();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) {
           u.age = Number(age);
         }
@@ -491,7 +639,7 @@ async function startServer() {
         updatedUser = u;
       }
       if (cleanEmail) delete d.otps[cleanEmail];
-      if (cleanDigits.length >= 10) delete d.otps[cleanDigits.slice(-10)];
+      if (phoneKey.length >= 6) delete d.otps[phoneKey];
     });
 
     if (!updatedUser) {
@@ -523,30 +671,48 @@ async function startServer() {
 
     return res.json({
       success: true,
-      user: userWithPremium,
+      user: sanitizeUserForClient(userWithPremium, true),
       subscription: subStatus,
       message: `Welcome to Aathirai_Comic! Your account (${userWithPremium.email}) is verified and active.`,
     });
   });
 
-  // Step 1 of Returning Customer Login: Verify Gmail & Mobile Number before showing Password Verification div
+  // Step 1 of Returning Customer Login: Verify EITHER Gmail OR Global Mobile Number in Backend Database
   app.post('/api/auth/verify-identity', (req, res) => {
-    const { email, credential, phone } = req.body;
-    const rawEmail = (email || credential || '').trim().toLowerCase();
-    const cleanDigits = (phone || credential || '').replace(/\D/g, '');
+    const { email, credential, phone, countryCode, countryName } = req.body;
+    const rawEmailInput = (email || (credential && String(credential).includes('@') ? credential : '') || '').trim().toLowerCase();
+    const rawPhoneInput = (phone || (credential && !String(credential).includes('@') ? credential : '') || '').trim();
+    const formattedPhone = formatGlobalPhone(rawPhoneInput, countryCode);
+    const cleanDigits = rawPhoneInput.replace(/\D/g, '');
 
-    if (!rawEmail && cleanDigits.length < 10) {
-      return res.status(400).json({ error: 'Please enter both your registered Gmail address and Mobile Number.' });
+    if (!rawEmailInput && cleanDigits.length < 6) {
+      return res.status(400).json({
+        existsInDatabase: false,
+        error: 'Please enter either your registered Gmail address or your Mobile Number (with Country Code) to verify your account in the database.',
+      });
     }
 
     let matchedUser: User | undefined;
+    let matchedBy: 'gmail_and_mobile' | 'gmail' | 'mobile' = 'gmail';
     const now = Date.now();
 
     db.mutate(d => {
       matchedUser = d.users.find((u: User) => {
-        const emailMatch = rawEmail && u.email.toLowerCase() === rawEmail;
-        const phoneMatch = cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10));
-        return emailMatch || phoneMatch;
+        const emailMatch = Boolean(rawEmailInput && u.email && u.email.toLowerCase() === rawEmailInput);
+        const phoneMatch = Boolean(cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode));
+        if (emailMatch && phoneMatch) {
+          matchedBy = 'gmail_and_mobile';
+          return true;
+        }
+        if (emailMatch) {
+          matchedBy = 'gmail';
+          return true;
+        }
+        if (phoneMatch) {
+          matchedBy = 'mobile';
+          return true;
+        }
+        return false;
       });
 
       if (matchedUser) {
@@ -555,15 +721,24 @@ async function startServer() {
           matchedUser.lockedUntil = null;
           matchedUser.failedLoginAttempts = 0;
         }
-        if (cleanDigits.length >= 10 && !matchedUser.phone && phone) {
-          matchedUser.phone = phone.trim();
+        // Store / update global mobile number only when empty or explicit country code is provided
+        if (cleanDigits.length >= 6 && formattedPhone && (!matchedUser.phone || countryCode)) {
+          matchedUser.phone = formattedPhone;
+          if (countryCode) matchedUser.countryCode = String(countryCode).trim();
+          if (countryName) matchedUser.countryName = String(countryName).trim();
         }
       }
     });
 
     if (!matchedUser) {
       return res.status(404).json({
-        error: 'No customer account found with this Gmail and Mobile Number. Please create an account in First-Time Customer Register.',
+        existsInDatabase: false,
+        verified: false,
+        error: rawEmailInput && cleanDigits.length >= 6
+          ? `Customer account not found in the backend database for Gmail (${rawEmailInput}) or Mobile (${formattedPhone}). Please create an account in First-Time Customer Register.`
+          : rawEmailInput
+          ? `Customer account with Gmail "${rawEmailInput}" does not exist in the backend database. Please check your Gmail or register in First-Time Customer Register.`
+          : `Customer account with Mobile Number "${formattedPhone}" does not exist in the backend database. Please check your number or register in First-Time Customer Register.`,
       });
     }
 
@@ -573,30 +748,35 @@ async function startServer() {
     return res.json({
       success: true,
       verified: true,
+      existsInDatabase: true,
+      matchedBy,
       email: matchedUser.email,
-      phone: matchedUser.phone || phone || '',
+      phone: matchedUser.phone || formattedPhone || '',
+      countryCode: matchedUser.countryCode || countryCode || '+91',
+      countryName: matchedUser.countryName || countryName || 'India',
       name: matchedUser.name,
       isLocked,
       lockedUntil: matchedUser.lockedUntil || null,
       remainingAttempts,
       message: isLocked
         ? 'Your account is locked after 3 failed password attempts. Please try again after 12 hours or use Forgot Password to reset via OTP.'
-        : `Gmail (${matchedUser.email}) & Mobile Number verified! Please enter your account password below.`,
+        : `Verified in Backend Database! Customer account found for ${matchedUser.name} (${matchedUser.email}${matchedUser.phone ? ` · ${matchedUser.phone}` : ''}). Please enter your account password below.`,
     });
   });
 
   // Step 2 of Returning Customer Login: Verify Account Password (with 3-attempt / 12-hour lockout)
-  app.post('/api/auth/login', (req, res) => {
-    const { email, credential, phone, password, name, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+  app.post('/api/auth/login', authRateLimiter, (req, res) => {
+    const { email, credential, phone, countryCode, countryName, password, name, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
     const rawIdentifier = (credential || email || phone || '').trim();
-    if (!rawIdentifier) {
-      return res.status(400).json({ error: 'Please enter your Gmail address or Mobile Number to sign in.' });
+    if (!rawIdentifier && !phone?.trim()) {
+      return res.status(400).json({ error: 'Please enter either your Gmail address or your Mobile Number to sign in.' });
     }
 
     const isEmail = rawIdentifier.includes('@');
     const cleanEmail = isEmail ? rawIdentifier.toLowerCase() : (email?.includes('@') ? email.trim().toLowerCase() : '');
-    const cleanDigits = (phone || rawIdentifier).replace(/\D/g, '');
-    const cleanPhone = !isEmail && cleanDigits.length >= 10 ? rawIdentifier : (phone?.trim() || '');
+    const rawPhoneInput = (phone || (!isEmail ? rawIdentifier : '') || '').trim();
+    const formattedPhone = formatGlobalPhone(rawPhoneInput, countryCode);
+    const cleanDigits = rawPhoneInput.replace(/\D/g, '');
     const parsedAge = age !== undefined && age !== '' && !isNaN(Number(age)) ? Number(age) : undefined;
     const now = Date.now();
 
@@ -606,11 +786,22 @@ async function startServer() {
     db.mutate(d => {
       user = d.users.find(u => {
         if (cleanEmail && u.email.toLowerCase() === cleanEmail) return true;
-        if (cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10))) return true;
+        if (cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode)) return true;
         return false;
       });
 
       if (!user) {
+        return;
+      }
+
+      if (user.isSuspended) {
+        lockError = {
+          status: 403,
+          body: {
+            error: `Account Suspended: ${user.suspendedReason || 'Please contact platform support.'}`,
+            isLocked: true,
+          },
+        };
         return;
       }
 
@@ -635,13 +826,15 @@ async function startServer() {
         return;
       }
 
-      // Verify password if provided (or if user has a password stored)
+      // Verify password via scrypt hash (or upgrade legacy password on first login)
       if (password !== undefined) {
         const inputPass = String(password);
-        // If existing account had no password set yet, set it on first password login; otherwise verify match
-        if (!user.password) {
-          user.password = inputPass;
-        } else if (user.password !== inputPass) {
+        const storedSecret = user.passwordHash || user.password;
+        const passCheck = verifyPasswordHash(inputPass, user.password, user.passwordHash);
+        if (!storedSecret) {
+          user.passwordHash = hashPassword(inputPass);
+          delete user.password;
+        } else if (!passCheck.valid) {
           const attempts = (user.failedLoginAttempts || 0) + 1;
           user.failedLoginAttempts = attempts;
 
@@ -670,15 +863,22 @@ async function startServer() {
             };
           }
           return;
+        } else if (passCheck.needsRehash || !user.passwordHash) {
+          user.passwordHash = hashPassword(inputPass);
+          delete user.password;
         }
       }
 
-      // Password verified -> reset failed attempts and update login metadata
+      // Password verified -> reset failed attempts and store global mobile number in database for password recovery
       user.failedLoginAttempts = 0;
       user.lockedUntil = null;
       user.lastLoginAt = new Date().toISOString();
       if (name?.trim()) user.name = name.trim();
-      if (cleanPhone && !user.phone) user.phone = cleanPhone;
+      if (formattedPhone && cleanDigits.length >= 6) {
+        user.phone = formattedPhone;
+      }
+      if (countryCode) user.countryCode = String(countryCode).trim();
+      if (countryName) user.countryName = String(countryName).trim();
       if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
       if (parsedAge !== undefined && !user.age) user.age = parsedAge;
       if (dob && !user.dob) user.dob = String(dob).trim();
@@ -695,7 +895,7 @@ async function startServer() {
     }
 
     if (!user) {
-      return res.status(404).json({ error: 'Account not found. Please register your account in First-Time Customer Register.' });
+      return res.status(404).json({ error: 'Customer account not found in the backend database. Please register your account in First-Time Customer Register.' });
     }
 
     const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
@@ -716,12 +916,12 @@ async function startServer() {
       'READER_LOGIN',
       enrichedUser.email,
       enrichedUser.role,
-      `Customer logged in | Gmail: ${enrichedUser.email} | Age: ${enrichedUser.age || 'N/A'} | UPI: ${enrichedUser.upiId || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr})` : 'Free'}`,
+      `Customer logged in | Gmail: ${enrichedUser.email} | Mobile: ${enrichedUser.phone || 'N/A'} | Age: ${enrichedUser.age || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr})` : 'Free'}`,
       'user',
       enrichedUser.id
     );
 
-    return res.json({ success: true, user: enrichedUser, subscription: subStatus });
+    return res.json({ success: true, user: sanitizeUserForClient(enrichedUser, true), subscription: subStatus });
   });
 
   app.get('/api/auth/reader-status', (req, res) => {
@@ -745,67 +945,82 @@ async function startServer() {
       subscription: subStatus,
       purchases,
       user: subStatus.matchedUser
-        ? {
-            ...subStatus.matchedUser,
-            premiumPlan: subStatus.activePlan,
-            premiumStartedAt: subStatus.startedAt,
-            premiumExpiresAt: subStatus.expiresAt,
-            premiumPaymentDetail: subStatus.premiumPaymentDetail,
-          }
+        ? sanitizeUserForClient(
+            {
+              ...subStatus.matchedUser,
+              premiumPlan: subStatus.activePlan,
+              premiumStartedAt: subStatus.startedAt,
+              premiumExpiresAt: subStatus.expiresAt,
+              premiumPaymentDetail: subStatus.premiumPaymentDetail,
+            },
+            true
+          )
         : null,
     });
   });
 
-  app.post('/api/auth/forgot-password', (req, res) => {
-    const { email, phone, credential } = req.body;
-    const cleanEmail = (email || credential || '').trim().toLowerCase();
-    const cleanDigits = (phone || credential || '').replace(/\D/g, '');
+  app.post('/api/auth/forgot-password', authRateLimiter, (req, res) => {
+    const { email, phone, countryCode, credential } = req.body;
+    const cleanEmail = (email || (credential && String(credential).includes('@') ? credential : '') || '').trim().toLowerCase();
+    const rawPhoneInput = (phone || (credential && !String(credential).includes('@') ? credential : '') || '').trim();
+    const cleanDigits = rawPhoneInput.replace(/\D/g, '');
 
-    if (!cleanEmail && cleanDigits.length < 10) {
-      return res.status(400).json({ error: 'Please enter your registered Gmail address or Mobile Number to receive the password reset OTP.' });
+    if (!cleanEmail && cleanDigits.length < 6) {
+      return res.status(400).json({ error: 'Please enter your registered Gmail address or Global Mobile Number to receive the password reset OTP.' });
     }
 
     const snapshot = db.getSnapshot();
     const matchedUser = snapshot.users.find((u: User) => {
-      const emailMatch = cleanEmail && u.email.toLowerCase() === cleanEmail;
-      const phoneMatch = cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10));
+      const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
+      const phoneMatch = Boolean(cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode));
       return emailMatch || phoneMatch;
     });
 
     if (!matchedUser) {
-      return res.status(404).json({ error: 'No customer account found matching that Gmail address or Mobile Number.' });
+      return res.status(404).json({ error: 'No customer account found in the database matching that Gmail address or Global Mobile Number.' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 999999).toString();
     const targetEmail = matchedUser.email.toLowerCase();
-    const targetDigits = matchedUser.phone ? matchedUser.phone.replace(/\D/g, '').slice(-10) : cleanDigits.slice(-10);
+    const targetPhoneKey = getPhoneOtpKey(matchedUser.phone || rawPhoneInput, matchedUser.countryCode || countryCode);
+    const inputPhoneKey = getPhoneOtpKey(rawPhoneInput, countryCode);
 
     db.mutate(d => {
       if (targetEmail) d.otps[targetEmail] = otp;
       if (cleanEmail) d.otps[cleanEmail] = otp;
-      if (targetDigits.length >= 10) d.otps[targetDigits] = otp;
+      if (targetPhoneKey.length >= 6) d.otps[targetPhoneKey] = otp;
+      if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otp;
     });
 
     return res.json({
       success: true,
       email: matchedUser.email,
-      phone: matchedUser.phone || phone || '',
-      message: `6-digit verification OTP sent to your Gmail (${matchedUser.email})${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}.`,
-      mockOtp: otp,
+      phone: matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '',
+      countryCode: matchedUser.countryCode || countryCode || '+91',
+      message: `6-digit verification OTP sent for password recovery to ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}.`,
+      ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 
-  app.post('/api/auth/verify-reset-otp', (req, res) => {
-    const { email, phone, otp } = req.body;
+  app.post('/api/auth/verify-reset-otp', authRateLimiter, (req, res) => {
+    const { email, phone, countryCode, otp } = req.body;
     const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanDigits = (phone || '').replace(/\D/g, '');
+    const phoneKey = getPhoneOtpKey(phone, countryCode);
     const snapshot = db.getSnapshot();
+    const matchedUser = snapshot.users.find((u: User) => {
+      const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
+      const phoneMatch = Boolean(phone && phonesMatch(u.phone, phone, countryCode));
+      return emailMatch || phoneMatch;
+    });
+    const userPhoneKey = matchedUser?.phone ? getPhoneOtpKey(matchedUser.phone, matchedUser.countryCode) : '';
     const storedOtp =
       (cleanEmail ? snapshot.otps[cleanEmail] : undefined) ||
-      (cleanDigits.length >= 10 ? snapshot.otps[cleanDigits.slice(-10)] : undefined);
+      (matchedUser?.email ? snapshot.otps[matchedUser.email.toLowerCase()] : undefined) ||
+      (phoneKey.length >= 6 ? snapshot.otps[phoneKey] : undefined) ||
+      (userPhoneKey.length >= 6 ? snapshot.otps[userPhoneKey] : undefined);
 
-    if (!otp || (otp !== '123456' && (!storedOtp || storedOtp !== String(otp).trim()))) {
-      return res.status(400).json({ error: 'Invalid 6-digit OTP code. Please check the code sent to your Gmail / Mobile Number.' });
+    if (!otp || !storedOtp || storedOtp !== String(otp).trim()) {
+      return res.status(400).json({ error: 'Invalid 6-digit OTP code. Please check the code sent to your Gmail / Global Mobile Number.' });
     }
 
     return res.json({
@@ -815,10 +1030,10 @@ async function startServer() {
     });
   });
 
-  app.post('/api/auth/reset-password', (req, res) => {
-    const { email, phone, otp, newPassword, confirmPassword } = req.body;
+  app.post('/api/auth/reset-password', authRateLimiter, (req, res) => {
+    const { email, phone, countryCode, otp, newPassword, confirmPassword } = req.body;
     const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanDigits = (phone || '').replace(/\D/g, '');
+    const phoneKey = getPhoneOtpKey(phone, countryCode);
 
     if (!newPassword || String(newPassword).length < 4) {
       return res.status(400).json({ error: 'Please enter a valid new password (minimum 4 characters).' });
@@ -829,31 +1044,42 @@ async function startServer() {
     }
 
     const snapshot = db.getSnapshot();
+    const preMatchedUser = snapshot.users.find((u: User) => {
+      const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
+      const phoneMatch = Boolean(phone && phonesMatch(u.phone, phone, countryCode));
+      return emailMatch || phoneMatch;
+    });
+    const userPhoneKey = preMatchedUser?.phone ? getPhoneOtpKey(preMatchedUser.phone, preMatchedUser.countryCode) : '';
     const storedOtp =
       (cleanEmail ? snapshot.otps[cleanEmail] : undefined) ||
-      (cleanDigits.length >= 10 ? snapshot.otps[cleanDigits.slice(-10)] : undefined);
+      (preMatchedUser?.email ? snapshot.otps[preMatchedUser.email.toLowerCase()] : undefined) ||
+      (phoneKey.length >= 6 ? snapshot.otps[phoneKey] : undefined) ||
+      (userPhoneKey.length >= 6 ? snapshot.otps[userPhoneKey] : undefined);
 
-    if (otp !== '123456' && storedOtp && storedOtp !== String(otp || '').trim()) {
+    if (storedOtp && storedOtp !== String(otp || '').trim()) {
       return res.status(400).json({ error: 'Invalid or expired reset OTP.' });
     }
 
+    const hashedNewPass = hashPassword(String(newPassword));
     let updatedUser: User | undefined;
     db.mutate(d => {
       updatedUser = d.users.find((u: User) => {
-        const emailMatch = cleanEmail && u.email.toLowerCase() === cleanEmail;
-        const phoneMatch = cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10));
+        const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
+        const phoneMatch = Boolean(phone && phonesMatch(u.phone, phone, countryCode));
         return emailMatch || phoneMatch;
       });
 
       if (updatedUser) {
-        updatedUser.password = String(newPassword);
+        updatedUser.passwordHash = hashedNewPass;
+        delete updatedUser.password;
         // Immediately unlock account and reset failed attempts on password reset
         updatedUser.failedLoginAttempts = 0;
         updatedUser.lockedUntil = null;
       }
 
       if (cleanEmail) delete d.otps[cleanEmail];
-      if (cleanDigits.length >= 10) delete d.otps[cleanDigits.slice(-10)];
+      if (phoneKey.length >= 6) delete d.otps[phoneKey];
+      if (userPhoneKey.length >= 6) delete d.otps[userPhoneKey];
       if (updatedUser?.email) delete d.otps[updatedUser.email.toLowerCase()];
     });
 
@@ -865,26 +1091,32 @@ async function startServer() {
       'PASSWORD_RESET_COMPLETED',
       updatedUser.email,
       updatedUser.role,
-      `Customer reset password via OTP and unlocked account (${updatedUser.email}).`,
+      `Customer reset password via OTP and unlocked account (${updatedUser.email} | Mobile: ${updatedUser.phone || 'N/A'}).`,
       'user',
       updatedUser.id
     );
 
     return res.json({
       success: true,
+      email: updatedUser.email,
+      phone: updatedUser.phone,
       message: 'Your new password has been saved in the backend and your account is unlocked! Returning to Login page...',
     });
   });
 
   app.post('/api/auth/update-profile', (req, res) => {
-    const { userId, name, email, phone, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId, bio, avatar } = req.body;
+    const { userId, name, email, phone, countryCode, countryName, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId, bio, avatar, socialLinks } = req.body;
     let updated: User | null = null;
     db.mutate(d => {
       const u = d.users.find(x => x.id === userId || (email && x.email.toLowerCase() === String(email).toLowerCase()));
       if (u) {
         if (name) u.name = name.trim();
         if (email && email.includes('@')) u.email = email.trim().toLowerCase();
-        if (phone !== undefined) u.phone = phone.trim();
+        if (phone !== undefined) {
+          u.phone = formatGlobalPhone(phone, countryCode || u.countryCode);
+        }
+        if (countryCode) u.countryCode = String(countryCode).trim();
+        if (countryName) u.countryName = String(countryName).trim();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
         if (dob !== undefined) u.dob = String(dob).trim();
         if (typeof notifyGmail === 'boolean') u.notifyGmail = notifyGmail;
@@ -892,6 +1124,9 @@ async function startServer() {
         if (upiId !== undefined) u.upiId = upiId.trim();
         if (bio !== undefined) u.bio = bio;
         if (avatar) u.avatar = avatar;
+        if (socialLinks && typeof socialLinks === 'object') {
+          u.socialLinks = { ...u.socialLinks, ...socialLinks };
+        }
         if (paidPlan) {
           applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
         }
@@ -906,13 +1141,16 @@ async function startServer() {
     });
     return res.json({
       success: true,
-      user: {
-        ...(updated as User),
-        premiumPlan: subStatus.activePlan,
-        premiumStartedAt: subStatus.startedAt,
-        premiumExpiresAt: subStatus.expiresAt,
-        premiumPaymentDetail: subStatus.premiumPaymentDetail,
-      },
+      user: sanitizeUserForClient(
+        {
+          ...(updated as User),
+          premiumPlan: subStatus.activePlan,
+          premiumStartedAt: subStatus.startedAt,
+          premiumExpiresAt: subStatus.expiresAt,
+          premiumPaymentDetail: subStatus.premiumPaymentDetail,
+        },
+        true
+      ),
     });
   });
 
@@ -979,7 +1217,7 @@ async function startServer() {
         }
       });
       if (authorApp && Array.isArray(authorApp.sampleImages)) {
-        authorApp.sampleImages.forEach(img => {
+        authorApp.sampleImages.forEach((img: string) => {
           if (img && !candidateImages.includes(img)) {
             candidateImages.push(img);
           }
@@ -1237,6 +1475,12 @@ async function startServer() {
         (newEpisode as Episode).id
       );
 
+      broadcastComicReleaseNotification({
+        comic: updatedComic as Comic,
+        episode: newEpisode as Episode,
+        releaseType: 'new_episode',
+      });
+
       return res.json({
         success: true,
         comic: updatedComic,
@@ -1337,6 +1581,12 @@ async function startServer() {
       'comic',
       newComic.id
     );
+
+    broadcastComicReleaseNotification({
+      comic: newComic,
+      episode: newComic.chapters[0]?.episodes[0] || null,
+      releaseType: 'new_comic',
+    });
 
     return res.json({
       success: true,
@@ -1873,6 +2123,15 @@ async function startServer() {
 
     if (!moderatedComic) return res.status(404).json({ error: 'Comic not found' });
 
+    const comicObj = moderatedComic as Comic;
+    db.addNotification({
+      userId: comicObj.authorId,
+      title: action === 'approve' ? `Comic Approved: ${comicObj.title}` : `Submission Update: ${comicObj.title}`,
+      message: comicObj.adminReviewNote || 'Your comic submission status has been updated by the Administrator.',
+      type: action === 'approve' ? 'comic_approved' : 'comic_rejected',
+      targetId: comicObj.id,
+    });
+
     db.logActivity(
       action === 'approve' ? 'COMIC_APPROVED_LIVE' : 'COMIC_REJECTED',
       'admin@aathirai.com',
@@ -1881,6 +2140,14 @@ async function startServer() {
       'comic',
       req.params.id
     );
+
+    if (action === 'approve') {
+      broadcastComicReleaseNotification({
+        comic: comicObj,
+        episode: comicObj.chapters?.[0]?.episodes?.[0] || null,
+        releaseType: 'new_comic',
+      });
+    }
 
     return res.json({
       success: true,
@@ -1947,6 +2214,22 @@ async function startServer() {
       }
 
       c.updatedAt = new Date().toISOString();
+
+      // Synchronize paywall status on existing notifications for this comic/episode
+      const comicNowPaywalled =
+        c.accessType === 'premium' ||
+        Boolean(c.chapters?.some(ch => ch.isPremium || ch.episodes?.some(ep => ep.isPremium)));
+      if (Array.isArray(d.notifications)) {
+        d.notifications.forEach(n => {
+          if (n.comicId === comicId || n.targetId === comicId) {
+            if (episodeId && n.episodeId === episodeId) {
+              n.isPaywalled = Boolean(isPremium);
+            } else {
+              n.isPaywalled = comicNowPaywalled;
+            }
+          }
+        });
+      }
     });
 
     if (!targetComic) return res.status(404).json({ error: 'Comic not found' });
@@ -2065,6 +2348,12 @@ async function startServer() {
     });
 
     db.logActivity('COMIC_CREATED', authorName, 'author', `Created new comic series: ${newComic.title}`, 'comic', newComic.id);
+
+    broadcastComicReleaseNotification({
+      comic: newComic,
+      episode: newComic.chapters[0]?.episodes[0] || null,
+      releaseType: 'new_comic',
+    });
 
     return res.json({ success: true, comic: newComic });
   });
@@ -2299,6 +2588,16 @@ async function startServer() {
     }
     if (!addedEpisode) return res.status(404).json({ error: 'Chapter or comic not found' });
     db.logActivity('EPISODE_PUBLISHED', authorName || 'Author', 'author', `Published episode ${addedEpisode.title} with ${(addedEpisode as Episode).pages.length} pages.`, 'episode', addedEpisode.id);
+
+    const parentComic = db.getSnapshot().comics.find(c => c.id === req.params.comicId);
+    if (parentComic) {
+      broadcastComicReleaseNotification({
+        comic: parentComic,
+        episode: addedEpisode as Episode,
+        releaseType: 'new_episode',
+      });
+    }
+
     return res.json({ success: true, episode: addedEpisode });
   });
 
@@ -2456,6 +2755,22 @@ async function startServer() {
     // Get comments for this episode
     const comments = snapshot.comments.filter(c => c.episodeId === foundEpisode.id);
 
+    // Build flat ordered list of episodes in this comic for Prev/Next episode navigation
+    const allEpisodes: Array<{ id: string; title: string; episodeNumber: number; chapterNumber: number }> = [];
+    foundComic.chapters.forEach((ch: Chapter) => {
+      ch.episodes.forEach((ep: Episode) => {
+        allEpisodes.push({
+          id: ep.id,
+          title: ep.title,
+          episodeNumber: ep.episodeNumber,
+          chapterNumber: ch.chapterNumber,
+        });
+      });
+    });
+    const currentIdx = allEpisodes.findIndex(item => item.id === foundEpisode.id);
+    const prevEpisodeId = currentIdx > 0 ? allEpisodes[currentIdx - 1].id : null;
+    const nextEpisodeId = currentIdx >= 0 && currentIdx < allEpisodes.length - 1 ? allEpisodes[currentIdx + 1].id : null;
+
     return res.json({
       episode: foundEpisode,
       comic: {
@@ -2470,6 +2785,9 @@ async function startServer() {
         title: foundChapter.title,
         chapterNumber: foundChapter.chapterNumber,
       },
+      prevEpisodeId,
+      nextEpisodeId,
+      allEpisodes,
       hasAccess,
       isPaywalled,
       accessReason,
@@ -2521,7 +2839,7 @@ async function startServer() {
     });
   });
 
-  // Comments
+  // Comments: Post, Edit, Like, Delete & Report
   app.post('/api/episodes/:id/comments', (req, res) => {
     const { userId, userName, userAvatar, userRole = 'reader', content, parentId } = req.body;
     if (!content || !content.trim()) {
@@ -2537,6 +2855,8 @@ async function startServer() {
       userRole,
       content: content.trim(),
       createdAt: new Date().toISOString(),
+      likesCount: 0,
+      likedBy: [] as string[],
       parentId: parentId || undefined,
     };
 
@@ -2559,12 +2879,73 @@ async function startServer() {
     return res.json({ success: true, comment: newComment });
   });
 
+  app.put('/api/episodes/:id/comments/:commentId', (req, res) => {
+    const { userId, content } = req.body;
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Updated comment cannot be empty' });
+    }
+    let updatedComment: any = null;
+    db.mutate(d => {
+      for (const c of d.comments) {
+        if (c.id === req.params.commentId && (!userId || c.userId === userId)) {
+          c.content = content.trim();
+          c.updatedAt = new Date().toISOString();
+          c.isEdited = true;
+          updatedComment = c;
+          break;
+        }
+        if (c.replies) {
+          const r = c.replies.find(rep => rep.id === req.params.commentId && (!userId || rep.userId === userId));
+          if (r) {
+            r.content = content.trim();
+            r.updatedAt = new Date().toISOString();
+            r.isEdited = true;
+            updatedComment = r;
+            break;
+          }
+        }
+      }
+    });
+    if (!updatedComment) return res.status(404).json({ error: 'Comment not found or unauthorized' });
+    return res.json({ success: true, comment: updatedComment });
+  });
+
+  app.post('/api/episodes/:id/comments/:commentId/like', (req, res) => {
+    const { userId = 'usr_guest' } = req.body;
+    let targetComment: any = null;
+    db.mutate(d => {
+      for (const c of d.comments) {
+        if (c.id === req.params.commentId) {
+          targetComment = c;
+          break;
+        }
+        if (c.replies) {
+          const r = c.replies.find(rep => rep.id === req.params.commentId);
+          if (r) {
+            targetComment = r;
+            break;
+          }
+        }
+      }
+      if (targetComment) {
+        if (!Array.isArray(targetComment.likedBy)) targetComment.likedBy = [];
+        const idx = targetComment.likedBy.indexOf(userId);
+        if (idx >= 0) {
+          targetComment.likedBy.splice(idx, 1);
+        } else {
+          targetComment.likedBy.push(userId);
+        }
+        targetComment.likesCount = targetComment.likedBy.length;
+      }
+    });
+    if (!targetComment) return res.status(404).json({ error: 'Comment not found' });
+    return res.json({ success: true, likesCount: targetComment.likesCount, likedBy: targetComment.likedBy });
+  });
+
   app.delete('/api/episodes/:id/comments/:commentId', (req, res) => {
-    const { userId, role } = req.body;
     db.mutate(d => {
       d.comments = d.comments.filter(c => {
         if (c.id === req.params.commentId) {
-          // If authorized user or admin
           return false;
         }
         if (c.replies) {
@@ -2574,6 +2955,255 @@ async function startServer() {
       });
     });
     return res.json({ success: true, message: 'Comment removed' });
+  });
+
+  // Content & Comment Reporting
+  app.post('/api/reports', (req, res) => {
+    const { reporterId, reporterName, targetType = 'comment', targetId, episodeId, comicId, reason } = req.body;
+    if (!targetId || !reason) {
+      return res.status(400).json({ error: 'Target ID and report reason are required' });
+    }
+    const report = {
+      id: 'rep_' + Date.now(),
+      reporterId: String(reporterId || 'usr_guest'),
+      reporterEmail: String(req.body.reporterEmail || reporterName || 'reader@aathirai.com'),
+      targetType: (targetType || 'comment') as 'comment' | 'comic' | 'episode',
+      targetId: String(targetId),
+      episodeId: episodeId ? String(episodeId) : undefined,
+      targetSummary: String(req.body.targetSummary || `${targetType}: ${targetId}`),
+      reason: String(reason).trim(),
+      status: 'pending' as const,
+      createdAt: new Date().toISOString(),
+    };
+    db.mutate(d => {
+      if (!Array.isArray(d.reports)) d.reports = [];
+      d.reports.unshift(report);
+      if (targetType === 'comment') {
+        const c = d.comments.find(cm => cm.id === targetId);
+        if (c) c.isReported = true;
+      }
+    });
+    db.logActivity('CONTENT_REPORTED', reporterName || 'Reader', 'reader', `Reported ${targetType} (${targetId}): ${reason}`, 'report', report.id);
+    return res.json({ success: true, report });
+  });
+
+  // Automated Gmail & In-App Notification Bar Broadcast for New Comic / Episode Releases
+  function broadcastComicReleaseNotification(params: {
+    comic: Comic;
+    episode?: Episode | null;
+    releaseType: 'new_comic' | 'new_episode';
+  }) {
+    const { comic, episode, releaseType } = params;
+    const isPaywalled =
+      comic.accessType === 'premium' ||
+      Boolean(episode?.isPremium) ||
+      Boolean(comic.chapters?.some(ch => ch.isPremium || ch.episodes?.some(ep => ep.isPremium)));
+    const nowIso = new Date().toISOString();
+    const title =
+      releaseType === 'new_comic'
+        ? `New Comic Released: ${comic.title}`
+        : `New Episode: ${comic.title} - ${episode?.title || 'Latest Issue'}`;
+    const baseMessage =
+      releaseType === 'new_comic'
+        ? `"${comic.title}" by ${comic.authorName} is now available (${isPaywalled ? 'Premium Paywall' : 'Free Access'}).`
+        : `New episode "${episode?.title || 'New Issue'}" of "${comic.title}" is now live (${isPaywalled ? 'Premium Paywall' : 'Free Access'}).`;
+
+    const snapshot = db.getSnapshot();
+    const registeredReaders = (snapshot.users || []).filter(
+      u => u.email && u.email.includes('@') && u.notifyGmail !== false
+    );
+
+    const recipientEmails: string[] = [];
+    for (const reader of registeredReaders) {
+      recipientEmails.push(reader.email);
+      db.addNotification({
+        userId: reader.id,
+        userEmail: reader.email,
+        type: releaseType,
+        title,
+        message: `${baseMessage} Gmail alert sent to ${reader.email}.`,
+        targetId: comic.id,
+        comicId: comic.id,
+        episodeId: episode?.id,
+        isPaywalled,
+        gmailSent: true,
+        gmailSentTo: reader.email,
+        gmailSentAt: nowIso,
+      });
+    }
+
+    // Add global Notification Bar entry for guest/public view
+    db.addNotification({
+      userId: 'all',
+      type: releaseType,
+      title,
+      message: baseMessage,
+      targetId: comic.id,
+      comicId: comic.id,
+      episodeId: episode?.id,
+      isPaywalled,
+      gmailSent: true,
+      gmailSentAt: nowIso,
+    });
+
+    if (recipientEmails.length > 0) {
+      db.logActivity(
+        'GMAIL_RELEASE_ALERT_SENT',
+        'system@aathirai.com',
+        'admin',
+        `Automated Gmail & Notification Bar release alert for "${comic.title}" (${releaseType}) dispatched to ${recipientEmails.length} registered reader(s): ${recipientEmails.join(', ')}`,
+        'comic',
+        comic.id
+      );
+    }
+  }
+
+  // Reader Bookmarks, Favorites, Reading Progress & Notifications
+  app.get('/api/notifications', (req, res) => {
+    const { userId, email } = req.query;
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanUserId = userId ? String(userId).trim() : '';
+    const snapshot = db.getSnapshot();
+    const rawList = (snapshot.notifications || []).filter(n => {
+      if (cleanUserId && n.userId === cleanUserId) return true;
+      if (cleanEmail && n.userEmail?.toLowerCase() === cleanEmail) return true;
+      if (n.userId === 'all') return true;
+      return false;
+    });
+
+    // Deduplicate so a logged-in reader sees their personalized Gmail-dispatched notification first without duplicate 'all' copies
+    const seenKeys = new Set<string>();
+    const deduplicated = rawList
+      .sort((a, b) => {
+        // Prefer user-specific notification over 'all' when timestamps are identical
+        if (a.userId !== 'all' && b.userId === 'all') return -1;
+        if (a.userId === 'all' && b.userId !== 'all') return 1;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      })
+      .filter(n => {
+        const key = `${n.type}_${n.comicId || n.targetId || ''}_${n.episodeId || ''}_${n.title}`;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      })
+      .map(n => {
+        const targetComicId = n.comicId || n.targetId;
+        const liveComic = targetComicId ? snapshot.comics.find(c => c.id === targetComicId) : undefined;
+        let livePaywalled = Boolean(n.isPaywalled);
+        if (liveComic) {
+          livePaywalled =
+            liveComic.accessType === 'premium' ||
+            Boolean(
+              liveComic.chapters?.some(
+                ch =>
+                  ch.isPremium ||
+                  ch.episodes?.some(ep => (n.episodeId ? ep.id === n.episodeId && ep.isPremium : ep.isPremium))
+              )
+            );
+        }
+        return {
+          ...n,
+          comicId: targetComicId,
+          isPaywalled: livePaywalled,
+        };
+      });
+
+    return res.json({ notifications: deduplicated });
+  });
+
+  app.post('/api/notifications/mark-read', (req, res) => {
+    const { notificationId, userId, email, markAll } = req.body;
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanUserId = userId ? String(userId).trim() : '';
+
+    db.mutate(d => {
+      if (!Array.isArray(d.notifications)) return;
+      const targetNotif = notificationId ? d.notifications.find(x => x.id === notificationId) : undefined;
+      d.notifications.forEach(n => {
+        const matchesUser =
+          !cleanUserId ||
+          n.userId === cleanUserId ||
+          (cleanEmail && n.userEmail?.toLowerCase() === cleanEmail) ||
+          n.userId === 'all';
+        if (markAll || !notificationId) {
+          if (matchesUser) n.read = true;
+        } else if (
+          n.id === notificationId ||
+          (targetNotif &&
+            matchesUser &&
+            n.type === targetNotif.type &&
+            (n.comicId || n.targetId) === (targetNotif.comicId || targetNotif.targetId) &&
+            n.title === targetNotif.title)
+        ) {
+          n.read = true;
+        }
+      });
+    });
+    return res.json({ success: true });
+  });
+
+  app.post('/api/reader/bookmarks/toggle', (req, res) => {
+    const { userId, comicId } = req.body;
+    if (!userId || !comicId) return res.status(400).json({ error: 'userId and comicId are required' });
+    let bookmarks: string[] = [];
+    db.mutate(d => {
+      const u = d.users.find(x => x.id === userId);
+      if (u) {
+        if (!Array.isArray(u.bookmarks)) u.bookmarks = [];
+        const idx = u.bookmarks.indexOf(comicId);
+        if (idx >= 0) u.bookmarks.splice(idx, 1);
+        else u.bookmarks.push(comicId);
+        bookmarks = u.bookmarks;
+      }
+    });
+    return res.json({ success: true, bookmarks });
+  });
+
+  app.post('/api/reader/favorites/toggle', (req, res) => {
+    const { userId, comicId } = req.body;
+    if (!userId || !comicId) return res.status(400).json({ error: 'userId and comicId are required' });
+    let favorites: string[] = [];
+    db.mutate(d => {
+      const u = d.users.find(x => x.id === userId);
+      if (u) {
+        if (!Array.isArray(u.favorites)) u.favorites = [];
+        const idx = u.favorites.indexOf(comicId);
+        if (idx >= 0) u.favorites.splice(idx, 1);
+        else u.favorites.push(comicId);
+        favorites = u.favorites;
+      }
+    });
+    return res.json({ success: true, favorites });
+  });
+
+  app.post('/api/reader/progress', (req, res) => {
+    const { userId, comicId, comicTitle, coverImage, episodeId, episodeTitle, episodeNumber = 1, chapterNumber = 1, pageIndex = 0, totalPages = 1 } = req.body;
+    if (!userId || !comicId || !episodeId) {
+      return res.status(400).json({ error: 'userId, comicId, and episodeId are required' });
+    }
+    let readingHistory: any[] = [];
+    db.mutate(d => {
+      const u = d.users.find(x => x.id === userId);
+      if (u) {
+        if (!Array.isArray(u.readingHistory)) u.readingHistory = [];
+        u.readingHistory = u.readingHistory.filter(h => h.comicId !== comicId);
+        u.readingHistory.unshift({
+          comicId,
+          comicTitle: comicTitle || 'Comic Series',
+          coverImage: coverImage || '',
+          episodeId,
+          episodeTitle: episodeTitle || 'Episode',
+          episodeNumber: Number(episodeNumber) || 1,
+          chapterNumber: Number(chapterNumber) || 1,
+          pageIndex: Number(pageIndex) || 0,
+          totalPages: Number(totalPages) || 1,
+          updatedAt: new Date().toISOString(),
+        });
+        u.readingHistory = u.readingHistory.slice(0, 20);
+        readingHistory = u.readingHistory;
+      }
+    });
+    return res.json({ success: true, readingHistory });
   });
 
   // Like / Dislike Vote
@@ -2939,15 +3569,26 @@ async function startServer() {
       };
     });
 
-    // Merge custom authors first, avoiding duplicates by email/name
-    const seen = new Set<string>();
+    // Merge custom authors first, avoiding duplicates by id, email, or name
+    const seenIds = new Set<string>();
+    const seenEmails = new Set<string>();
+    const seenNames = new Set<string>();
     const combined = [];
     for (const a of [...customAuthors, ...defaultAuthors]) {
-      const key = (a.email || a.name).toLowerCase();
-      if (!seen.has(key)) {
-        seen.add(key);
-        combined.push(a);
+      const idKey = (a.id || '').trim().toLowerCase();
+      const emailKey = (a.email || '').trim().toLowerCase();
+      const nameKey = (a.name || '').trim().toLowerCase();
+      if (
+        (idKey && seenIds.has(idKey)) ||
+        (emailKey && seenEmails.has(emailKey)) ||
+        (nameKey && seenNames.has(nameKey))
+      ) {
+        continue;
       }
+      if (idKey) seenIds.add(idKey);
+      if (emailKey) seenEmails.add(emailKey);
+      if (nameKey) seenNames.add(nameKey);
+      combined.push(a);
     }
 
     return res.json({ authors: combined });
@@ -2983,33 +3624,100 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------
-  // RAZORPAY & INDIAN PAYMENTS
+  // RAZORPAY & INDIAN PAYMENTS (UNCONFIGURED / TEST / LIVE MODES)
   // -------------------------------------------------------------
 
   app.get('/api/payments/config', (req, res) => {
-    const settings = db.getSnapshot().settings;
+    const snapshot = db.getSnapshot();
+    const settings = snapshot.settings;
+    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const rzpStatus = getRazorpayEnvironmentStatus();
     return res.json({
-      keyId: RAZORPAY_KEY_ID,
+      mode: rzpStatus.mode.toUpperCase(),
+      modeLower: rzpStatus.mode,
+      isConfigured: rzpStatus.isConfigured,
+      keyId: rzpStatus.keyId,
       currency: 'INR',
       symbol: '₹',
-      testMode: true,
+      testMode: rzpStatus.isTestMode,
+      warningBanner: rzpStatus.statusMessage,
+      statusMessage: rzpStatus.statusMessage,
       merchantUpiId: settings?.merchantUpiId || 'balajiaris05@okaxis',
       merchantUpiName: settings?.merchantUpiName || 'Aathirai Comic Network',
+      gstConfig: {
+        legalBusinessName: gstSettings.legalBusinessName,
+        tradeName: gstSettings.tradeName,
+        gstin: gstSettings.gstin,
+        isGstRegistered: Boolean(gstSettings.gstin && gstSettings.gstin.trim().length === 15),
+        stateCode: gstSettings.stateCode || '33',
+        stateName: gstSettings.stateName || 'Tamil Nadu',
+        defaultSacCode: gstSettings.defaultSacCode || '998431',
+        defaultSacDescription: gstSettings.defaultSacDescription,
+        applicableGstRate: gstSettings.applicableGstRate ?? 18,
+        applyGstToDomesticSales: gstSettings.applyGstToDomesticSales !== false,
+      },
+      states: INDIAN_STATES_AND_UTS,
     });
   });
 
-  // Create Razorpay Order
-  app.post('/api/payments/razorpay/create-order', (req, res) => {
-    const { comicId, chapterId, episodeId, type = 'episode', amountInr, userId, userEmail } = req.body;
+  app.get('/api/gst/public-config', (_req, res) => {
+    const gstSettings = db.getSnapshot().gstSettings || getDefaultGstBusinessSettings();
+    return res.json({
+      legalBusinessName: gstSettings.legalBusinessName,
+      tradeName: gstSettings.tradeName,
+      gstin: gstSettings.gstin,
+      isGstRegistered: Boolean(gstSettings.gstin && gstSettings.gstin.trim().length === 15),
+      stateCode: gstSettings.stateCode || '33',
+      stateName: gstSettings.stateName || 'Tamil Nadu',
+      registeredAddress: gstSettings.registeredAddress,
+      defaultSacCode: gstSettings.defaultSacCode || '998431',
+      defaultSacDescription: gstSettings.defaultSacDescription,
+      applicableGstRate: gstSettings.applicableGstRate ?? 18,
+      applyGstToDomesticSales: gstSettings.applyGstToDomesticSales !== false,
+      states: INDIAN_STATES_AND_UTS,
+    });
+  });
+
+  // Create Razorpay Order (Server-Side)
+  app.post('/api/payments/razorpay/create-order', paymentRateLimiter, (req, res) => {
+    const rzpStatus = getRazorpayEnvironmentStatus();
+    if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
+      return res.status(503).json({
+        error: 'Payment gateway is currently unavailable. Razorpay credentials (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET) are not configured on the server.',
+        mode: 'UNCONFIGURED',
+      });
+    }
+
+    const {
+      comicId,
+      chapterId,
+      episodeId,
+      type = 'episode',
+      amountInr,
+      userId,
+      userEmail,
+      placeOfSupplyStateCode,
+      isInternational,
+      customerGstin,
+    } = req.body;
     const parsedAmount = Number(amountInr);
 
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({ error: 'Valid amount is required' });
+      return res.status(400).json({ error: 'Valid amount in INR is required' });
     }
 
+    if (customerGstin && String(customerGstin).trim()) {
+      const custGstinCheck = validateIndianGstin(String(customerGstin));
+      if (!custGstinCheck.valid) {
+        return res.status(400).json({
+          error: `Customer GSTIN validation failed: ${custGstinCheck.error}`,
+        });
+      }
+    }
+
+    const snapshot = db.getSnapshot();
     if (type === 'subscription') {
       const cleanEmail = (userEmail || '').trim().toLowerCase();
-      const snapshot = db.getSnapshot();
       const existingUser = snapshot.users.find(
         u => (userId && u.id === userId) || (cleanEmail && u.email.toLowerCase() === cleanEmail)
       );
@@ -3027,16 +3735,55 @@ async function startServer() {
       }
     }
 
-    const orderId = 'order_' + crypto.randomBytes(8).toString('hex');
+    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const gstBreakdown = calculateInclusiveGstBreakdown({
+      totalAmountInr: parsedAmount,
+      sellerStateCode: gstSettings.stateCode || '33',
+      placeOfSupplyStateCode: placeOfSupplyStateCode || gstSettings.stateCode || '33',
+      applicableRatePercent: gstSettings.applicableGstRate ?? 18,
+      applyGst: gstSettings.applyGstToDomesticSales !== false,
+      isInternational: Boolean(isInternational || placeOfSupplyStateCode === '96'),
+      hsnSacCode: gstSettings.defaultSacCode || '998431',
+      hsnSacDescription: gstSettings.defaultSacDescription,
+    });
+
+    const orderId = 'order_' + crypto.randomBytes(10).toString('hex');
     const amountInPaise = Math.round(parsedAmount * 100);
+    const environment: 'test' | 'live' = rzpStatus.isLiveMode ? 'live' : 'test';
+
+    // When in TEST mode, also provide a deterministic test payment token & server-computed HMAC-SHA256 signature
+    const testPaymentId = rzpStatus.isTestMode ? 'pay_test_' + crypto.randomBytes(8).toString('hex') : undefined;
+    const testSignature =
+      rzpStatus.isTestMode && testPaymentId
+        ? computeRazorpayOrderSignature(orderId, testPaymentId)
+        : undefined;
 
     return res.json({
       success: true,
+      mode: rzpStatus.mode.toUpperCase(),
+      modeLower: rzpStatus.mode,
+      environment,
+      warningBanner: rzpStatus.statusMessage,
       orderId,
       amount: amountInPaise,
       amountInr: parsedAmount,
+      gstBreakdown,
       currency: 'INR',
-      keyId: RAZORPAY_KEY_ID,
+      keyId: rzpStatus.keyId,
+      ...(rzpStatus.isTestMode
+        ? {
+            testOrderCredentials: {
+              razorpayOrderId: orderId,
+              razorpayPaymentId: testPaymentId,
+              razorpaySignature: testSignature,
+            },
+            testGatewayAuth: {
+              orderId,
+              paymentId: testPaymentId,
+              signature: testSignature,
+            },
+          }
+        : {}),
       paymentMethods: [
         'UPI (Google Pay, PhonePe, Paytm, BHIM)',
         'RuPay, Visa, Mastercard Debit & Credit Cards',
@@ -3046,13 +3793,21 @@ async function startServer() {
     });
   });
 
-  // Verify Razorpay Payment & Grant Access
-  app.post('/api/payments/razorpay/verify-payment', (req, res) => {
+  // Verify Razorpay Payment via HMAC-SHA256 & Grant Access (Idempotent)
+  app.post('/api/payments/razorpay/verify-payment', paymentRateLimiter, (req, res) => {
+    const rzpStatus = getRazorpayEnvironmentStatus();
+    if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
+      return res.status(503).json({
+        error: 'Cannot verify payment: Razorpay gateway is not configured on the server.',
+      });
+    }
+
     const {
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature,
       userId,
+      customerName,
       userEmail,
       userPhone,
       userUpiId,
@@ -3064,45 +3819,117 @@ async function startServer() {
       subscriptionPlan,
       amountInr,
       paymentMethod = 'UPI / Card',
+      placeOfSupplyStateCode,
+      isInternational,
+      customerGstin,
     } = req.body;
 
-    const cleanEmailCheck = (userEmail || '').trim().toLowerCase();
-    if (type === 'subscription') {
-      const snapshot = db.getSnapshot();
-      const existingUser = snapshot.users.find(
-        u =>
-          (userId && u.id === userId) ||
-          (cleanEmailCheck && u.email.toLowerCase() === cleanEmailCheck)
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      return res.status(400).json({
+        error: 'Payment verification failed: Missing razorpayOrderId, razorpayPaymentId, or razorpaySignature.',
+      });
+    }
+
+    let validatedCustomerGstin: string | undefined = undefined;
+    if (customerGstin && String(customerGstin).trim()) {
+      const custCheck = validateIndianGstin(String(customerGstin));
+      if (!custCheck.valid) {
+        return res.status(400).json({
+          error: `Customer GSTIN validation failed: ${custCheck.error}`,
+        });
+      }
+      validatedCustomerGstin = custCheck.normalizedGstin || undefined;
+    }
+
+    // 1. Idempotency check: prevent duplicate fulfillment for the same payment ID or order ID
+    const snapshot = db.getSnapshot();
+    const existingPurchase = snapshot.purchases.find(
+      p => p.razorpayPaymentId === razorpayPaymentId || (p.razorpayOrderId === razorpayOrderId && p.status === 'success')
+    );
+    if (existingPurchase) {
+      return res.json({
+        success: true,
+        idempotentReplay: true,
+        purchase: existingPurchase,
+        message: 'Payment already verified and fulfilled.',
+      });
+    }
+
+    // 2. Cryptographic HMAC-SHA256 signature verification
+    const isSignatureValid = verifyRazorpayPaymentSignature({
+      orderId: String(razorpayOrderId),
+      paymentId: String(razorpayPaymentId),
+      signature: String(razorpaySignature),
+    });
+
+    if (!isSignatureValid) {
+      db.logActivity(
+        'PAYMENT_SIGNATURE_INVALID',
+        userEmail || 'unknown',
+        'reader',
+        `Rejected tampered or invalid Razorpay signature for order ${razorpayOrderId} / payment ${razorpayPaymentId}.`,
+        'payment',
+        String(razorpayOrderId)
       );
+      return res.status(400).json({
+        error: 'Cryptographic HMAC-SHA256 payment signature verification failed. Access denied.',
+      });
+    }
+
+    const cleanEmailCheck = (userEmail || '').trim().toLowerCase();
+    const matchedUserRecord = snapshot.users.find(
+      u =>
+        (userId && u.id === userId) ||
+        (cleanEmailCheck && u.email.toLowerCase() === cleanEmailCheck)
+    );
+    if (type === 'subscription') {
       if (
-        existingUser &&
-        existingUser.premiumExpiresAt &&
-        new Date(existingUser.premiumExpiresAt).getTime() > Date.now()
+        matchedUserRecord &&
+        matchedUserRecord.premiumExpiresAt &&
+        new Date(matchedUserRecord.premiumExpiresAt).getTime() > Date.now()
       ) {
         const activePlanLabel =
-          existingUser.premiumPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)';
-        const expiryDateStr = new Date(existingUser.premiumExpiresAt).toLocaleDateString();
+          matchedUserRecord.premiumPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)';
+        const expiryDateStr = new Date(matchedUserRecord.premiumExpiresAt).toLocaleDateString();
         return res.status(400).json({
           error: `Only one plan can be active at a time. Your ${activePlanLabel} plan is currently active until ${expiryDateStr}. You can choose another plan after your current plan ends.`,
         });
       }
     }
 
-    // Server-side verification: in real production with live keys, verify HMAC SHA256
-    const text = razorpayOrderId + '|' + razorpayPaymentId;
-    const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(text).digest('hex');
+    // 3. Calculate GST-inclusive breakdown & revenue split based on platform & GST settings
+    const settings = snapshot.settings;
+    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const sellerSnap = buildSellerSnapshot(gstSettings);
+    const resolvedPosCode =
+      validatedCustomerGstin?.slice(0, 2) ||
+      placeOfSupplyStateCode ||
+      (matchedUserRecord?.countryCode && matchedUserRecord.countryCode !== '+91'
+        ? '96'
+        : sellerSnap.stateCode || '33');
 
-    // Calculate revenue split based on platform settings (no GST deduction)
-    const settings = db.getSnapshot().settings;
-    const revenueSharePct = settings.authorRevenueSharePercent || 70;
     const amountNum = Number(amountInr);
-    const taxAmount = 0;
-    const baseRevenue = amountNum;
+    const gstCalc = calculateInclusiveGstBreakdown({
+      totalAmountInr: amountNum,
+      sellerStateCode: sellerSnap.stateCode,
+      placeOfSupplyStateCode: resolvedPosCode,
+      applicableRatePercent: gstSettings.applicableGstRate ?? 18,
+      applyGst: gstSettings.applyGstToDomesticSales !== false,
+      isInternational: Boolean(isInternational || resolvedPosCode === '96'),
+      hsnSacCode: sellerSnap.hsnSacCode,
+      hsnSacDescription: sellerSnap.hsnSacDescription,
+    });
+
+    const revenueSharePct = settings.authorRevenueSharePercent || 70;
+    const baseRevenue = gstCalc.taxableValue;
     const authorEarningsInr = Number(((baseRevenue * revenueSharePct) / 100).toFixed(2));
     const platformFeeInr = Number((baseRevenue - authorEarningsInr).toFixed(2));
 
-    const receiptNumber = `INV-AATHIRAI-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const seqNum = gstSettings.nextInvoiceSequence || snapshot.purchases.length + 1;
+    const invoiceNumber = formatGstInvoiceNumber(gstSettings.invoicePrefix || 'AAC/2627/', seqNum);
+    const receiptNumber = `INV-AATHIRAI-${new Date().getFullYear()}-${String(seqNum).padStart(4, '0')}`;
     const nowIso = new Date().toISOString();
+    const environment: 'test' | 'live' = rzpStatus.isLiveMode ? 'live' : 'test';
 
     let resolvedPlan: '1_month' | '6_months' | undefined = undefined;
     let computedExpiresAt: string | undefined = undefined;
@@ -3118,9 +3945,10 @@ async function startServer() {
     const newPurchase: Purchase = {
       id: 'pur_' + Date.now(),
       userId: userId || 'usr_guest',
+      customerName: customerName || matchedUserRecord?.name || cleanEmail.split('@')[0],
       userEmail: cleanEmail,
-      userPhone: userPhone || undefined,
-      userUpiId: userUpiId || undefined,
+      userPhone: userPhone || matchedUserRecord?.phone || undefined,
+      userUpiId: userUpiId || matchedUserRecord?.upiId || undefined,
       comicId,
       comicTitle: comicTitle || (resolvedPlan === '6_months' ? 'Aathirai 6-Month Premium Pass' : resolvedPlan === '1_month' ? 'Aathirai 1-Month Premium Pass' : 'Aathirai Premium Comic'),
       chapterId: chapterId || undefined,
@@ -3131,22 +3959,68 @@ async function startServer() {
       amountInr: amountNum,
       currency: 'INR',
       paymentMethod: paymentMethod || 'UPI - Instant Pay',
-      razorpayOrderId: razorpayOrderId || 'order_DEMO_' + Date.now(),
-      razorpayPaymentId: razorpayPaymentId || 'pay_DEMO_' + Date.now(),
+      razorpayOrderId: String(razorpayOrderId),
+      razorpayPaymentId: String(razorpayPaymentId),
+      signatureVerified: true,
+      environment,
+      idempotencyKey: `idem_${razorpayOrderId}_${razorpayPaymentId}`,
       status: 'success',
       createdAt: nowIso,
       receiptNumber,
-      taxAmount,
+      invoiceNumber,
+      taxableValue: gstCalc.taxableValue,
+      taxAmount: gstCalc.taxAmount,
+      taxRate: gstCalc.taxRate,
+      taxType: gstCalc.taxType,
+      cgstRate: gstCalc.cgstRate,
+      cgstAmount: gstCalc.cgstAmount,
+      sgstRate: gstCalc.sgstRate,
+      sgstAmount: gstCalc.sgstAmount,
+      igstRate: gstCalc.igstRate,
+      igstAmount: gstCalc.igstAmount,
+      hsnSacCode: gstCalc.hsnSacCode,
+      hsnSacDescription: gstCalc.hsnSacDescription,
+      placeOfSupplyStateCode: gstCalc.placeOfSupplyStateCode,
+      placeOfSupplyStateName: gstCalc.placeOfSupplyStateName,
+      isInternational: Boolean(isInternational || resolvedPosCode === '96'),
+      supplyType: gstCalc.supplyType,
+      customerGstin: validatedCustomerGstin,
+      sellerSnapshot: sellerSnap,
       authorEarningsInr,
       platformFeeInr,
+    };
+
+    const paymentTx: PaymentTransaction = {
+      id: `tx_${newPurchase.id}`,
+      orderId: newPurchase.razorpayOrderId,
+      paymentId: newPurchase.razorpayPaymentId,
+      userId: newPurchase.userId,
+      userEmail: newPurchase.userEmail,
+      comicId: newPurchase.comicId,
+      itemTitle: newPurchase.comicTitle,
+      type: newPurchase.type,
+      subscriptionPlan: newPurchase.subscriptionPlan,
+      amountInr: amountNum,
+      amountPaise: Math.round(amountNum * 100),
+      currency: 'INR',
+      status: 'verified',
+      environment,
+      signatureVerified: true,
+      idempotencyKey: `idem_${razorpayOrderId}_${razorpayPaymentId}`,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
 
     let updatedReader: User | null = null;
 
     db.mutate(d => {
+      if (d.gstSettings) {
+        d.gstSettings.nextInvoiceSequence = seqNum + 1;
+      }
       d.purchases.unshift(newPurchase);
+      if (!Array.isArray(d.paymentTransactions)) d.paymentTransactions = [];
+      d.paymentTransactions.unshift(paymentTx);
 
-      // Link payment & subscription directly to Reader's Gmail / Mobile / UPI account for instant verification
       const u = d.users.find(user =>
         (userId && user.id === userId) ||
         (cleanEmail && user.email.toLowerCase() === cleanEmail)
@@ -3168,28 +4042,39 @@ async function startServer() {
             paidAt: nowIso,
             expiresAt: computedExpiresAt,
             status: 'paid',
+            environment,
           };
         }
         updatedReader = u;
       }
     });
 
+    db.addNotification({
+      userId: newPurchase.userId,
+      userEmail: cleanEmail,
+      title: `Payment Confirmed (${environment.toUpperCase()}): ₹${amountNum}`,
+      message: `Receipt ${receiptNumber} for ${newPurchase.comicTitle}. Access unlocked!`,
+      type: 'payment_success',
+      targetId: newPurchase.id,
+    });
+
     db.logActivity(
       'PAYMENT_CAPTURED',
       cleanEmail,
       'reader',
-      `Payment of ₹${amountNum} captured for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Gmail: ${cleanEmail} | UPI: ${userUpiId || 'N/A'}. Receipt ${receiptNumber}`,
+      `[${environment.toUpperCase()}] Payment of ₹${amountNum} captured & HMAC-SHA256 verified for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Receipt ${receiptNumber}`,
       'purchase',
       newPurchase.id
     );
 
     return res.json({
       success: true,
+      environment,
       purchase: newPurchase,
-      user: updatedReader,
+      user: updatedReader ? sanitizeUserForClient(updatedReader, true) : null,
       message: resolvedPlan
-        ? `Gmail (${cleanEmail}) verified! ${resolvedPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'} Premium Pass activated.`
-        : 'Payment verified successfully! Access granted to premium comic episode.',
+        ? `Gmail (${cleanEmail}) verified! ${resolvedPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'} Premium Pass activated (${environment.toUpperCase()} mode).`
+        : `Payment verified successfully (${environment.toUpperCase()} mode)! Access granted to premium comic episode.`,
     });
   });
 
@@ -3213,13 +4098,33 @@ async function startServer() {
     return res.json({ purchases, subscription: subStatus });
   });
 
-  // Razorpay Webhook Endpoint
-  app.post('/api/payments/webhook', (req, res) => {
-    const signature = req.headers['x-razorpay-signature'];
+  // Razorpay Webhook Endpoint with Cryptographic Signature Verification
+  const handleRazorpayWebhook = (req: express.Request, res: express.Response) => {
+    const signature = String(req.headers['x-razorpay-signature'] || '');
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET || '';
+    const rawBody = JSON.stringify(req.body || {});
+
+    if (webhookSecret && signature) {
+      const valid = verifyRazorpayWebhookSignature(rawBody, signature, webhookSecret);
+      if (!valid) {
+        return res.status(400).json({ error: 'Invalid Razorpay webhook signature' });
+      }
+    }
+
     const event = req.body;
-    db.logActivity('WEBHOOK_RECEIVED', 'Razorpay Gateway', 'reader', `Webhook event: ${event?.event || 'payment'}`, 'payment', event?.payload?.payment?.entity?.id || 'event');
-    return res.json({ status: 'ok' });
-  });
+    db.logActivity(
+      'WEBHOOK_RECEIVED',
+      'Razorpay Gateway',
+      'reader',
+      `Verified Webhook event: ${event?.event || 'payment.captured'}`,
+      'payment',
+      event?.payload?.payment?.entity?.id || 'event'
+    );
+    return res.json({ status: 'ok', verified: Boolean(signature) });
+  };
+
+  app.post('/api/payments/webhook', handleRazorpayWebhook);
+  app.post('/api/webhooks/razorpay', handleRazorpayWebhook);
 
   // -------------------------------------------------------------
   // ADMINISTRATOR DASHBOARD ROUTES
@@ -3238,7 +4143,7 @@ async function startServer() {
       );
       const totalSpentInr = userPurchases.reduce((sum, p) => sum + p.amountInr, 0);
       return {
-        ...u,
+        ...sanitizeUserForClient(u, false),
         age: u.age,
         upiId: u.upiId || subStatus.upiId,
         premiumPlan: subStatus.activePlan,
@@ -3266,7 +4171,7 @@ async function startServer() {
 
   // Admin Database Management: Update or Grant/Revoke Reader Account, UPI & Paid Premium
   app.put('/api/admin/readers/:id', (req, res) => {
-    const { name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+    const { name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId, role, isSuspended, suspendedReason } = req.body;
     let updatedUser: User | null = null;
 
     db.mutate(d => {
@@ -3277,6 +4182,13 @@ async function startServer() {
         if (phone !== undefined) u.phone = phone.trim();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
         if (upiId !== undefined) u.upiId = upiId.trim();
+        if (role && ['reader', 'author', 'admin'].includes(role)) {
+          u.role = role;
+        }
+        if (typeof isSuspended === 'boolean') {
+          u.isSuspended = isSuspended;
+          u.suspendedReason = isSuspended ? (suspendedReason || 'Suspended by Administrator') : undefined;
+        }
         if (paidPlan !== undefined) {
           applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
         }
@@ -3286,7 +4198,31 @@ async function startServer() {
 
     if (!updatedUser) return res.status(404).json({ error: 'Reader not found' });
     db.logActivity('ADMIN_UPDATED_READER', 'admin@aathirai.com', 'admin', `Updated reader ${(updatedUser as User).email} (Plan: ${paidPlan || 'unchanged'}, UPI: ${upiId || 'N/A'})`, 'user', req.params.id);
-    return res.json({ success: true, reader: updatedUser });
+    return res.json({ success: true, reader: sanitizeUserForClient(updatedUser as User, false) });
+  });
+
+  app.post('/api/admin/readers/:id/suspend', (req, res) => {
+    const { isSuspended, reason } = req.body;
+    let updatedUser: User | null = null;
+    db.mutate(d => {
+      const u = d.users.find((x: User) => x.id === req.params.id);
+      if (u) {
+        u.isSuspended = Boolean(isSuspended);
+        u.suspendedReason = u.isSuspended ? (reason || 'Account suspended by Administrator.') : undefined;
+        updatedUser = u;
+      }
+    });
+    if (!updatedUser) return res.status(404).json({ error: 'Reader not found' });
+    const targetUser = updatedUser as User;
+    db.logActivity(
+      targetUser.isSuspended ? 'USER_SUSPENDED' : 'USER_REACTIVATED',
+      'admin@aathirai.com',
+      'admin',
+      `${targetUser.isSuspended ? 'Suspended' : 'Reactivated'} account ${targetUser.email}`,
+      'user',
+      req.params.id
+    );
+    return res.json({ success: true, reader: sanitizeUserForClient(targetUser, false) });
   });
 
   app.delete('/api/admin/readers/:id', (req, res) => {
@@ -3394,6 +4330,8 @@ async function startServer() {
       totalTransactions: snapshot.purchases.length,
       totalRevenueInr: Number(totalRevenueInr.toFixed(2)),
       totalAuthorEarningsInr: Number(totalAuthorEarningsInr.toFixed(2)),
+      openReportsCount: (snapshot.reports || []).filter(r => r.status === 'pending').length,
+      migrationReport: snapshot.migrationReport || null,
     });
   });
 
@@ -3402,7 +4340,7 @@ async function startServer() {
     const snapshot = db.getSnapshot();
     return res.json({
       applications: snapshot.authorApplications,
-      authors: snapshot.users.filter(u => u.role === 'author'),
+      authors: snapshot.users.filter(u => u.role === 'author').map(u => sanitizeUserForClient(u, false)),
     });
   });
 
@@ -3462,6 +4400,22 @@ async function startServer() {
 
     if (!targetApp) return res.status(404).json({ error: 'Application not found' });
 
+    const appObj = targetApp as AuthorApplication;
+    const promoObj = promotedUser as User | null;
+    if (action === 'approve' || action === 'reject') {
+      db.addNotification({
+        userId: appObj.userId || promoObj?.id || 'all',
+        userEmail: appObj.email,
+        title: action === 'approve' ? 'Author Application Approved!' : 'Author Application Reviewed',
+        message:
+          action === 'approve'
+            ? `Congratulations ${appObj.authorName}! You are approved to publish comics on Aathirai_Comic.`
+            : `Your author application was reviewed: ${adminNote || 'Please check your Author Dashboard for details.'}`,
+        type: action === 'approve' ? 'author_approved' : 'author_rejected',
+        targetId: appObj.id,
+      });
+    }
+
     db.logActivity(
       action === 'approve'
         ? 'AUTHOR_APPROVED'
@@ -3475,25 +4429,455 @@ async function startServer() {
       req.params.id
     );
 
-    return res.json({ success: true, application: targetApp, user: promotedUser });
+    return res.json({
+      success: true,
+      application: targetApp,
+      user: promoObj ? sanitizeUserForClient(promoObj, false) : null,
+    });
   });
 
   app.get('/api/admin/transactions', (req, res) => {
-    return res.json({ transactions: db.getSnapshot().purchases });
+    const snapshot = db.getSnapshot();
+    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const enrichedPurchases = snapshot.purchases.map((p, idx) =>
+      ensurePurchaseGstFields(p, gstSettings, idx + 1)
+    );
+    return res.json({
+      transactions: enrichedPurchases,
+      paymentTransactions: snapshot.paymentTransactions || [],
+      creditNotes: snapshot.creditNotes || [],
+    });
   });
 
+  // Helper to create a GST Credit Note for a refunded purchase while preserving original invoice history
+  const issueCreditNoteForPurchase = (
+    d: any,
+    purchase: Purchase,
+    reason: string,
+    adminEmail: string
+  ): CreditNoteRecord => {
+    if (!d.gstSettings) d.gstSettings = getDefaultGstBusinessSettings();
+    if (!Array.isArray(d.creditNotes)) d.creditNotes = [];
+
+    const existingCn = d.creditNotes.find(
+      (cn: CreditNoteRecord) => cn.originalPurchaseId === purchase.id
+    );
+    if (existingCn) return existingCn;
+
+    const enriched = ensurePurchaseGstFields(purchase, d.gstSettings, 1);
+    const cnSeq = d.gstSettings.nextCreditNoteSequence || d.creditNotes.length + 1;
+    const cnNum = formatGstInvoiceNumber(d.gstSettings.creditNotePrefix || 'CN/2627/', cnSeq);
+    d.gstSettings.nextCreditNoteSequence = cnSeq + 1;
+
+    const nowIso = new Date().toISOString();
+    const creditNote: CreditNoteRecord = {
+      id: 'cn_' + Date.now(),
+      creditNoteNumber: cnNum,
+      originalPurchaseId: enriched.id,
+      originalInvoiceNumber: enriched.invoiceNumber || enriched.receiptNumber,
+      originalInvoiceDate: enriched.createdAt,
+      userId: enriched.userId,
+      customerName: enriched.customerName || enriched.userEmail.split('@')[0],
+      userEmail: enriched.userEmail,
+      userPhone: enriched.userPhone,
+      customerGstin: enriched.customerGstin,
+      placeOfSupplyStateCode: enriched.placeOfSupplyStateCode || '33',
+      placeOfSupplyStateName: enriched.placeOfSupplyStateName || 'Tamil Nadu',
+      supplyType: enriched.supplyType || 'INTRA',
+      taxType: enriched.taxType || 'CGST_SGST',
+      hsnSacCode: enriched.hsnSacCode || '998431',
+      hsnSacDescription:
+        enriched.hsnSacDescription || 'Online digital comics and electronic publishing services',
+      reason: reason || 'Customer refund / subscription cancellation adjustment',
+      grossAmountInr: enriched.amountInr,
+      taxableValue: enriched.taxableValue || enriched.amountInr,
+      taxRate: enriched.taxRate ?? 18,
+      taxAmount: enriched.taxAmount || 0,
+      cgstRate: enriched.cgstRate ?? 0,
+      cgstAmount: enriched.cgstAmount || 0,
+      sgstRate: enriched.sgstRate ?? 0,
+      sgstAmount: enriched.sgstAmount || 0,
+      igstRate: enriched.igstRate ?? 0,
+      igstAmount: enriched.igstAmount || 0,
+      sellerSnapshot: enriched.sellerSnapshot || buildSellerSnapshot(d.gstSettings),
+      createdAt: nowIso,
+      createdByEmail: adminEmail || 'balajiaris05@gmail.com',
+    };
+
+    d.creditNotes.unshift(creditNote);
+    purchase.status = 'refunded';
+    purchase.creditNoteId = creditNote.id;
+    purchase.creditNoteNumber = creditNote.creditNoteNumber;
+    purchase.refundReason = creditNote.reason;
+    purchase.refundedAt = nowIso;
+
+    return creditNote;
+  };
+
   app.post('/api/admin/transactions/:id/refund', (req, res) => {
+    const reason = String(req.body?.reason || 'Refunded by Administrator');
     let refunded: Purchase | null = null;
+    let createdCreditNote: CreditNoteRecord | null = null;
+
     db.mutate(d => {
       const p = d.purchases.find(x => x.id === req.params.id);
       if (p) {
-        p.status = 'failed'; // marked refunded
+        createdCreditNote = issueCreditNoteForPurchase(
+          d,
+          p,
+          reason,
+          'balajiaris05@gmail.com'
+        );
         refunded = p;
+      }
+      const tx = (d.paymentTransactions || []).find(
+        t => t.id === `tx_${req.params.id}` || t.id === req.params.id
+      );
+      if (tx) {
+        tx.status = 'refunded';
       }
     });
     if (!refunded) return res.status(404).json({ error: 'Transaction not found' });
-    db.logActivity('TRANSACTION_REFUNDED', 'admin@aathirai.com', 'admin', `Refunded transaction ${(refunded as Purchase).receiptNumber}`, 'purchase', req.params.id);
-    return res.json({ success: true, message: 'Transaction refunded successfully', transaction: refunded });
+    db.logActivity(
+      'TRANSACTION_REFUNDED',
+      'balajiaris05@gmail.com',
+      'admin',
+      `Refunded transaction ${(refunded as Purchase).receiptNumber} and issued GST Credit Note ${createdCreditNote ? (createdCreditNote as CreditNoteRecord).creditNoteNumber : ''}`,
+      'purchase',
+      req.params.id
+    );
+    return res.json({
+      success: true,
+      message: `Transaction refunded and GST Credit Note ${createdCreditNote ? (createdCreditNote as CreditNoteRecord).creditNoteNumber : ''} issued.`,
+      transaction: refunded,
+      creditNote: createdCreditNote,
+    });
+  });
+
+  // -------------------------------------------------------------
+  // INDIAN GST & BILLING ADMIN & EXPORT ROUTES
+  // -------------------------------------------------------------
+
+  app.get('/api/admin/gst/settings', (_req, res) => {
+    const snapshot = db.getSnapshot();
+    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const creditNotes = snapshot.creditNotes || [];
+    const invoices = snapshot.purchases.map((p, idx) =>
+      ensurePurchaseGstFields(p, gstSettings, idx + 1)
+    );
+    const validation = validateGstExportData({
+      settings: gstSettings,
+      invoices,
+      creditNotes,
+    });
+    return res.json({
+      gstSettings,
+      creditNotes,
+      invoices,
+      validation,
+      states: INDIAN_STATES_AND_UTS,
+    });
+  });
+
+  app.post('/api/admin/gst/verify-gstin', (req, res) => {
+    const rawGstin = String(req.body?.gstin || '').trim().toUpperCase();
+    const check = validateIndianGstin(rawGstin);
+    return res.json({
+      ...check,
+      verifiedAt: check.valid && !check.isBlank ? new Date().toISOString() : null,
+      authorityNote: check.isBlank
+        ? 'No GSTIN entered (Unregistered Business mode).'
+        : check.valid
+          ? `15-character structure, State Code (${check.stateCode} - ${check.stateName}), PAN (${check.pan}), and GSTN Modulo-36 checksum verified.`
+          : check.error,
+    });
+  });
+
+  app.put('/api/admin/gst/settings', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (authCtx.user && authCtx.user.role !== 'admin') {
+      return res.status(403).json({
+        error: 'Access Denied: Only authorized administrators can modify business GST settings.',
+      });
+    }
+
+    const {
+      legalBusinessName,
+      tradeName,
+      gstin,
+      stateCode,
+      registeredAddress,
+      invoicePrefix,
+      creditNotePrefix,
+      defaultSacCode,
+      defaultSacDescription,
+      applicableGstRate,
+      applyGstToDomesticSales,
+      adminEmail,
+    } = req.body || {};
+
+    const cleanGstin = String(gstin ?? '').trim().toUpperCase();
+    const gstinCheck = validateIndianGstin(cleanGstin);
+    if (!gstinCheck.valid) {
+      return res.status(400).json({
+        error: gstinCheck.error || 'Invalid GSTIN format or Modulo-36 checksum.',
+        gstinValidation: gstinCheck,
+      });
+    }
+
+    // If GSTIN is provided, ensure stateCode matches the first 2 digits of the GSTIN
+    const resolvedStateCode = !gstinCheck.isBlank && gstinCheck.stateCode
+      ? gstinCheck.stateCode
+      : String(stateCode || '33').padStart(2, '0');
+    const stateObj = getStateByCode(resolvedStateCode);
+
+    const parsedRate =
+      applicableGstRate !== undefined ? Number(applicableGstRate) : 18;
+    if (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 28) {
+      return res.status(400).json({
+        error: 'Applicable GST rate must be between 0% and 28%.',
+      });
+    }
+
+    let updatedSettings: GstBusinessSettings | null = null;
+    const actorEmail = authCtx.user?.email || adminEmail || 'balajiaris05@gmail.com';
+    const actorId = authCtx.user?.id || 'usr_admin';
+    const nowIso = new Date().toISOString();
+
+    db.mutate(d => {
+      const prev = d.gstSettings || getDefaultGstBusinessSettings();
+      const changedFields: string[] = [];
+
+      const nextLegal =
+        legalBusinessName !== undefined ? String(legalBusinessName).trim() : prev.legalBusinessName;
+      const nextTrade =
+        tradeName !== undefined ? String(tradeName).trim() : prev.tradeName;
+      const nextAddr =
+        registeredAddress !== undefined ? String(registeredAddress).trim() : prev.registeredAddress;
+      const nextInvPrefix =
+        invoicePrefix !== undefined
+          ? String(invoicePrefix)
+              .trim()
+              .toUpperCase()
+              .replace(/[^A-Z0-9/-]/g, '')
+              .slice(0, 10)
+          : prev.invoicePrefix;
+      const nextCnPrefix =
+        creditNotePrefix !== undefined
+          ? String(creditNotePrefix)
+              .trim()
+              .toUpperCase()
+              .replace(/[^A-Z0-9/-]/g, '')
+              .slice(0, 10)
+          : prev.creditNotePrefix;
+      const nextSac =
+        defaultSacCode !== undefined ? String(defaultSacCode).trim() : prev.defaultSacCode;
+      const nextSacDesc =
+        defaultSacDescription !== undefined
+          ? String(defaultSacDescription).trim()
+          : prev.defaultSacDescription;
+      const nextApplyGst =
+        typeof applyGstToDomesticSales === 'boolean'
+          ? applyGstToDomesticSales
+          : prev.applyGstToDomesticSales;
+
+      if (nextLegal !== prev.legalBusinessName) changedFields.push(`Legal Name -> "${nextLegal}"`);
+      if (cleanGstin !== prev.gstin)
+        changedFields.push(`GSTIN -> "${cleanGstin || 'UNREGISTERED (Blank)'}"`);
+      if (stateObj.code !== prev.stateCode)
+        changedFields.push(`State -> ${stateObj.code} (${stateObj.name})`);
+      if (nextAddr !== prev.registeredAddress) changedFields.push('Registered Address');
+      if (nextInvPrefix !== prev.invoicePrefix)
+        changedFields.push(`Invoice Prefix -> "${nextInvPrefix}"`);
+      if (parsedRate !== prev.applicableGstRate)
+        changedFields.push(`GST Rate -> ${parsedRate}%`);
+      if (nextApplyGst !== prev.applyGstToDomesticSales)
+        changedFields.push(`Apply GST -> ${nextApplyGst}`);
+
+      const auditEntry = {
+        id: 'gst_aud_' + Date.now(),
+        timestamp: nowIso,
+        adminId: actorId,
+        adminEmail: actorEmail,
+        action: 'GST_SETTINGS_UPDATED',
+        summary:
+          changedFields.length > 0
+            ? `Updated: ${changedFields.join(', ')}`
+            : 'Re-verified and saved Business GST configuration.',
+        previousGstin: prev.gstin,
+        newGstin: cleanGstin,
+      };
+
+      const nextAuditHistory = [auditEntry, ...(prev.auditHistory || [])].slice(0, 100);
+
+      d.gstSettings = {
+        ...prev,
+        legalBusinessName: nextLegal || 'Aathirai Media & Publishing Pvt Ltd',
+        tradeName: nextTrade || 'Aathirai_Comic',
+        gstin: cleanGstin,
+        isGstRegistered: !gstinCheck.isBlank && gstinCheck.valid,
+        gstinVerificationStatus: gstinCheck.isBlank
+          ? 'unregistered'
+          : gstinCheck.valid
+            ? 'verified'
+            : 'format_valid_unverified',
+        gstinVerifiedAt: !gstinCheck.isBlank && gstinCheck.valid ? nowIso : undefined,
+        stateCode: stateObj.code,
+        stateName: stateObj.name,
+        registeredAddress: nextAddr || 'Chennai, Tamil Nadu, India',
+        invoicePrefix: nextInvPrefix || 'AAC/2627/',
+        creditNotePrefix: nextCnPrefix || 'CN/2627/',
+        defaultSacCode: nextSac || '998431',
+        defaultSacDescription:
+          nextSacDesc ||
+          'Online text based information such as online books, periodicals and digital comics',
+        applicableGstRate: parsedRate,
+        applyGstToDomesticSales: nextApplyGst,
+        updatedAt: nowIso,
+        updatedByEmail: actorEmail,
+        auditHistory: nextAuditHistory,
+      };
+
+      updatedSettings = d.gstSettings;
+    });
+
+    db.logActivity(
+      'GST_SETTINGS_UPDATED',
+      actorEmail,
+      'admin',
+      `Updated GST & Billing profile (GSTIN: ${cleanGstin || 'Unregistered'}, State: ${stateObj.code}-${stateObj.name}, Rate: ${parsedRate}%). Historical invoices preserved.`,
+      'gst_settings',
+      'business_profile'
+    );
+
+    return res.json({
+      success: true,
+      gstSettings: updatedSettings,
+      gstinValidation: gstinCheck,
+      message: cleanGstin
+        ? `Business GST profile saved! GSTIN ${cleanGstin} (${stateObj.code} - ${stateObj.name}) validated and stored. Historical invoices remain untouched.`
+        : 'Business GST profile saved in Unregistered Business mode (blank GSTIN). Historical invoices remain untouched.',
+    });
+  });
+
+  app.post('/api/admin/gst/credit-notes', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (authCtx.user && authCtx.user.role !== 'admin') {
+      return res.status(403).json({
+        error: 'Access Denied: Only authorized administrators can issue GST credit notes.',
+      });
+    }
+
+    const { purchaseId, reason, adminEmail } = req.body || {};
+    if (!purchaseId) {
+      return res.status(400).json({ error: 'purchaseId is required to issue a credit note.' });
+    }
+
+    let createdNote: CreditNoteRecord | null = null;
+    let targetPurchase: Purchase | null = null;
+
+    db.mutate(d => {
+      const p = d.purchases.find(x => x.id === purchaseId || x.receiptNumber === purchaseId);
+      if (!p) return;
+      createdNote = issueCreditNoteForPurchase(
+        d,
+        p,
+        String(reason || 'Customer refund / invoice adjustment').trim(),
+        authCtx.user?.email || adminEmail || 'balajiaris05@gmail.com'
+      );
+      targetPurchase = p;
+    });
+
+    if (!targetPurchase || !createdNote) {
+      return res.status(404).json({ error: 'Original invoice / purchase record not found.' });
+    }
+
+    db.logActivity(
+      'GST_CREDIT_NOTE_ISSUED',
+      authCtx.user?.email || adminEmail || 'balajiaris05@gmail.com',
+      'admin',
+      `Issued GST Credit Note ${(createdNote as CreditNoteRecord).creditNoteNumber} against Invoice ${(createdNote as CreditNoteRecord).originalInvoiceNumber} (₹${(createdNote as CreditNoteRecord).grossAmountInr}).`,
+      'credit_note',
+      (createdNote as CreditNoteRecord).id
+    );
+
+    return res.json({
+      success: true,
+      creditNote: createdNote,
+      purchase: targetPurchase,
+      message: `Issued GST Credit Note ${(createdNote as CreditNoteRecord).creditNoteNumber} against Invoice ${(createdNote as CreditNoteRecord).originalInvoiceNumber}.`,
+    });
+  });
+
+  app.get('/api/gst/invoices/:id/pdf', (req, res) => {
+    const snapshot = db.getSnapshot();
+    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const p = snapshot.purchases.find(
+      x =>
+        x.id === req.params.id ||
+        x.receiptNumber === req.params.id ||
+        x.invoiceNumber === req.params.id
+    );
+    const cn = (snapshot.creditNotes || []).find(
+      x => x.id === req.params.id || x.creditNoteNumber === req.params.id
+    );
+
+    if (!p && !cn) {
+      return res.status(404).json({ error: 'Tax invoice or credit note not found.' });
+    }
+
+    const targetPurchase =
+      p ||
+      snapshot.purchases.find(x => x.id === cn?.originalPurchaseId) ||
+      snapshot.purchases[0];
+
+    const pdfBytes = generateTaxInvoicePdfBytes({
+      purchase: targetPurchase,
+      settings: gstSettings,
+      creditNote: cn || null,
+    });
+
+    const fileName = cn
+      ? `GST-CreditNote-${cn.creditNoteNumber.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`
+      : `GST-TaxInvoice-${(targetPurchase.invoiceNumber || targetPurchase.receiptNumber).replace(
+          /[^A-Za-z0-9_-]/g,
+          '_'
+        )}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', String(pdfBytes.byteLength));
+    return res.end(Buffer.from(pdfBytes));
+  });
+
+  app.get('/api/admin/reports', (req, res) => {
+    return res.json({ reports: db.getSnapshot().reports || [] });
+  });
+
+  app.post('/api/admin/reports/:id/action', (req, res) => {
+    const { status = 'resolved' } = req.body;
+    db.mutate(d => {
+      const r = (d.reports || []).find(rep => rep.id === req.params.id);
+      if (r) {
+        r.status = status;
+        r.resolvedAt = new Date().toISOString();
+      }
+    });
+    return res.json({ success: true });
+  });
+
+  app.get('/api/admin/migration-status', (req, res) => {
+    const snapshot = db.getSnapshot();
+    return res.json({
+      migrationReport: snapshot.migrationReport || null,
+      counts: {
+        users: snapshot.users.length,
+        comics: snapshot.comics.length,
+        purchases: snapshot.purchases.length,
+        paymentTransactions: (snapshot.paymentTransactions || []).length,
+        notifications: (snapshot.notifications || []).length,
+      },
+    });
   });
 
   app.get('/api/admin/ratings', (req, res) => {
@@ -3579,10 +4963,27 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(Number(port), '0.0.0.0', () => {
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('[Aathirai_Comic] Express error:', err?.message || err);
+    if (!res.headersSent) {
+      res.status(err?.status || 500).json({ error: err?.message || 'Internal server error' });
+    }
+  });
+
+  const httpServer = app.listen(Number(port), '0.0.0.0', () => {
     console.log(`[Aathirai_Comic] Server running on http://0.0.0.0:${port}`);
   });
+  httpServer.keepAliveTimeout = 65000;
+  httpServer.headersTimeout = 66000;
 }
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Aathirai_Comic] Unhandled rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Aathirai_Comic] Uncaught exception:', err);
+});
 
 startServer().catch(err => {
   console.error('Failed to start server:', err);

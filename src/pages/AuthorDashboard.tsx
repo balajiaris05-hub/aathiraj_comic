@@ -60,6 +60,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [newAccess, setNewAccess] = useState<'free' | 'premium'>('free');
   const [newFullPrice, setNewFullPrice] = useState(99);
   const [newEpPrice, setNewEpPrice] = useState(10);
+  const [newAuthorComments, setNewAuthorComments] = useState('');
   const [isSubmittingComic, setIsSubmittingComic] = useState(false);
 
   // New Chapter Form State
@@ -497,6 +498,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           attachedFileName: coverPage?.fileName || 'Attached Comic Pages',
           attachedFileSize: `${newComicAttachedPages.length} files`,
           attachedFileType: 'IMAGE_ARCHIVE',
+          authorComments: newAuthorComments.trim() || newDesc.trim(),
           pages: newComicAttachedPages.map(p => ({
             pageNumber: p.pageNumber,
             imageUrl: p.dataUrl,
@@ -515,6 +517,13 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
             body: JSON.stringify({
               comicId: data.comic.id,
               attachedFileName: coverPage?.fileName,
+              attachedFileSize: `${newComicAttachedPages.length} files`,
+              authorComments: newAuthorComments.trim() || newDesc.trim(),
+              pages: newComicAttachedPages.map(p => ({
+                pageNumber: p.pageNumber,
+                imageUrl: p.dataUrl,
+                caption: p.caption,
+              })),
             }),
           });
           setSubmissionFeedback(`"${data.comic.title}" was created and submitted with ${newComicAttachedPages.length} attached pages to Admin for approval! Once approved, it will be automatically published on the website.`);
@@ -527,6 +536,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         setActiveTab('comics');
         setNewTitle('');
         setNewDesc('');
+        setNewAuthorComments('');
         setNewComicAttachedPages([]);
         setSelectedCoverPageId(null);
       } else {
@@ -1247,6 +1257,54 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
       </div>
       )}
 
+      {/* ADMIN APPROVAL & REJECTION STATUS BANNERS FOR AUTHOR */}
+      {authorComics.some(c => c.moderationStatus === 'approved') && (
+        <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>Admin Approved — You Have Permission to Upload &amp; Publish Comics of Your Own</span>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              {authorComics.find(c => c.moderationStatus === 'approved' && c.adminReviewNote)?.adminReviewNote ||
+                'The Platform Administrator has approved your creator account and comic submission. You can upload new comics, chapters, and episodes anytime.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab('new-comic')}
+            className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shrink-0 cursor-pointer"
+          >
+            Upload Your Own Comic
+          </button>
+        </div>
+      )}
+
+      {authorComics.filter(c => c.moderationStatus === 'rejected').map(rejComic => (
+        <div
+          key={`rej-banner-${rejComic.id}`}
+          className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div className="space-y-1">
+            <div className="text-xs font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>Comic Approval Queue Rejected by Admin: &ldquo;{rejComic.title}&rdquo;</span>
+            </div>
+            <p className="text-xs text-slate-700 dark:text-slate-200 font-semibold">
+              Why Admin Rejected: {rejComic.adminReviewNote || 'Please review your attached pages and submit an updated version for approval.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleSubmitComicForReview(rejComic.id)}
+            disabled={isSubmittingForApproval}
+            className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs shrink-0 cursor-pointer"
+          >
+            Re-Submit for Approval
+          </button>
+        </div>
+      ))}
+
       {/* KPI STATS ROW */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -1368,6 +1426,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                         <span className="text-[9px] font-bold text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
                           Live
                         </span>
+                      ) : c.moderationStatus === 'rejected' ? (
+                        <span className="text-[9px] font-bold text-rose-500 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded">
+                          Rejected by Admin
+                        </span>
                       ) : (
                         <span className="text-[9px] font-bold text-slate-400 bg-slate-500/10 border border-slate-500/20 px-1.5 py-0.5 rounded">
                           Draft
@@ -1424,7 +1486,12 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       ) : selectedComic.moderationStatus === 'approved' ? (
                         <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-1">
                           <CheckCircle2 className="w-3 h-3" />
-                          <span>Live Published</span>
+                          <span>Live Published (Approved by Admin)</span>
+                        </span>
+                      ) : selectedComic.moderationStatus === 'rejected' ? (
+                        <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" />
+                          <span>Rejected by Admin</span>
                         </span>
                       ) : (
                         <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-slate-500/10 text-slate-400 border border-slate-500/20 flex items-center gap-1">
@@ -1474,6 +1541,28 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                     <span>
                       <strong>Submission in Admin Queue:</strong> This comic has been submitted to the platform administrator. Once approved, it will be automatically uploaded and visible live to readers!
                     </span>
+                  </div>
+                )}
+
+                {selectedComic.moderationStatus === 'rejected' && (
+                  <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-600 dark:text-rose-400 space-y-2">
+                    <div className="font-extrabold uppercase tracking-wider flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>Admin Rejection Comment (Why Your Comic Was Rejected from the Queue):</span>
+                    </div>
+                    <p className="text-slate-800 dark:text-slate-200 font-semibold bg-white/80 dark:bg-slate-950/80 p-3 rounded-lg border border-rose-500/20">
+                      {selectedComic.adminReviewNote || 'Rejected by Admin. Please update your comic artwork or description and re-submit for approval.'}
+                    </p>
+                  </div>
+                )}
+
+                {selectedComic.moderationStatus === 'approved' && (
+                  <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-500" />
+                    <div>
+                      <strong>Approved by Admin to Upload &amp; Publish Comics:</strong>{' '}
+                      {selectedComic.adminReviewNote || 'Your comic has been approved by the Administrator and is published live! You can upload new chapters and episodes of your own.'}
+                    </div>
                   </div>
                 )}
 
@@ -2302,6 +2391,19 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               placeholder="Tell readers about your comic world, conflicts, and main characters..."
               value={newDesc}
               onChange={(e) => setNewDesc(e.target.value)}
+              className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+              Author Comments &amp; Notes for Admin Review (Shown in Admin Comic Approval Queue)
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Add any notes or comments about your attached comic pages for the Administrator to review..."
+              value={newAuthorComments}
+              onChange={(e) => setNewAuthorComments(e.target.value)}
               className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
             />
           </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Episode, Comic, Chapter, Comment } from '../types/comic';
+import { Episode, Comment } from '../types/comic';
 import { useAuth } from '../context/AuthContext';
 import {
   X,
@@ -15,13 +15,16 @@ import {
   Star,
   MessageSquare,
   Lock,
-  IndianRupee,
-  Eye,
   Sliders,
   Send,
   Trash2,
   CornerDownRight,
-  BookOpen
+  BookOpen,
+  Edit3,
+  Flag,
+  Heart,
+  Bookmark,
+  Columns2,
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from './RazorpayCheckoutModal';
 
@@ -38,11 +41,29 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   onSelectEpisode,
   openAuthModal,
 }) => {
-  const { user, role, refreshUser } = useAuth();
+  const {
+    user,
+    actualDbRole,
+    refreshUser,
+    getAuthHeaders,
+    toggleBookmark,
+    toggleFavorite,
+    saveReadingProgress,
+  } = useAuth();
+
   const [data, setData] = useState<{
     episode: Episode;
-    comic: { id: string; title: string; authorName: string; accessType: string; coverImage: string };
+    comic: {
+      id: string;
+      title: string;
+      authorName: string;
+      accessType: string;
+      coverImage: string;
+    };
     chapter: { id: string; title: string; chapterNumber: number };
+    prevEpisodeId?: string | null;
+    nextEpisodeId?: string | null;
+    allEpisodes?: { id: string; episodeNumber: number; title: string; chapterNumber: number }[];
     hasAccess: boolean;
     isPaywalled?: boolean;
     accessReason?: string;
@@ -61,12 +82,15 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   } | null>(null);
 
   const [loading, setLoading] = useState(true);
-  const [readingMode, setReadingMode] = useState<'vertical' | 'page'>('vertical');
+  const [readingMode, setReadingMode] = useState<'vertical' | 'page' | 'single' | 'double'>('vertical');
   const [fitMode, setFitMode] = useState<'width' | 'screen'>('width');
   const [zoomLevel, setZoomLevel] = useState(100);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHud, setShowHud] = useState(true);
+
+  // Touch swipe state
+  const touchStartX = useRef<number | null>(null);
 
   // Interaction states
   const [likesCount, setLikesCount] = useState(0);
@@ -82,6 +106,9 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   const [newComment, setNewComment] = useState('');
   const [replyParentId, setReplyParentId] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [reportFeedback, setReportFeedback] = useState<string | null>(null);
 
   // Payment checkout modal state (1 Month ₹49 or 6 Months ₹249)
   const [checkoutPlan, setCheckoutPlan] = useState<{
@@ -98,12 +125,13 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
   const readerContainerRef = useRef<HTMLDivElement>(null);
 
-  // Fetch episode data & verify Gmail payment status every time
   const fetchEpisode = async () => {
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/episodes/${episodeId}?userId=${encodeURIComponent(user?.id || '')}&email=${encodeURIComponent(user?.email || '')}&phone=${encodeURIComponent(user?.phone || '')}`
+        `/api/episodes/${episodeId}?userId=${encodeURIComponent(user?.id || '')}&email=${encodeURIComponent(
+          user?.email || ''
+        )}&phone=${encodeURIComponent(user?.phone || '')}`
       );
       const json = await res.json();
       if (res.ok) {
@@ -115,7 +143,14 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         setAvgRating(json.episode.averageRating || 5.0);
         setTotalRatings(json.episode.totalRatings || 0);
         setComments(json.comments || []);
-        setCurrentPageIndex(0);
+
+        // Restore saved reading progress if available
+        const savedProgress = user?.readingHistory?.find((h) => h.episodeId === episodeId);
+        const restoredPage =
+          savedProgress && savedProgress.pageIndex < (json.episode.pages?.length || 1)
+            ? savedProgress.pageIndex
+            : 0;
+        setCurrentPageIndex(restoredPage);
       }
     } catch (e) {
       console.error(e);
@@ -128,19 +163,57 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     fetchEpisode();
   }, [episodeId, user?.id, user?.email, user?.premiumPlan]);
 
+  // Preload next 2 pages & save reading progress
+  useEffect(() => {
+    if (!data || !data.hasAccess) return;
+    const pages = data.episode.pages || [];
+
+    // Preload next 2 page images
+    [currentPageIndex + 1, currentPageIndex + 2].forEach((idx) => {
+      if (pages[idx]?.imageUrl) {
+        const img = new Image();
+        img.src = pages[idx].imageUrl;
+      }
+    });
+
+    if (user) {
+      saveReadingProgress({
+        episodeId: data.episode.id,
+        comicId: data.comic.id,
+        comicTitle: data.comic.title,
+        episodeTitle: data.episode.title,
+        episodeNumber: data.episode.episodeNumber,
+        chapterNumber: data.chapter.chapterNumber,
+        coverImage: data.comic.coverImage,
+        pageIndex: currentPageIndex,
+        totalPages: pages.length || 1,
+      });
+    }
+  }, [currentPageIndex, data?.episode?.id, data?.hasAccess]);
+
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const pagesLen = data?.episode?.pages?.length || 0;
+      const step = readingMode === 'double' ? 2 : 1;
 
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-        if (readingMode === 'page' && data && currentPageIndex < data.episode.pages.length - 1) {
-          setCurrentPageIndex(prev => prev + 1);
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+        if (readingMode !== 'vertical' && currentPageIndex < pagesLen - step) {
+          e.preventDefault();
+          setCurrentPageIndex((prev) => Math.min(pagesLen - 1, prev + step));
         }
       } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-        if (readingMode === 'page' && currentPageIndex > 0) {
-          setCurrentPageIndex(prev => prev - 1);
+        if (readingMode !== 'vertical' && currentPageIndex > 0) {
+          e.preventDefault();
+          setCurrentPageIndex((prev) => Math.max(0, prev - step));
         }
+      } else if (e.key === '+' || e.key === '=') {
+        setZoomLevel((prev) => Math.min(prev + 15, 200));
+      } else if (e.key === '-') {
+        setZoomLevel((prev) => Math.max(prev - 15, 60));
+      } else if (e.key === '0') {
+        setZoomLevel(100);
       } else if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
       } else if (e.key === 'Escape') {
@@ -150,7 +223,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
           onClose();
         }
       } else if (e.key === 'h' || e.key === 'H') {
-        setShowHud(prev => !prev);
+        setShowHud((prev) => !prev);
       }
     };
 
@@ -168,9 +241,29 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     }
   };
 
+  // Touch swipe handlers for mobile page navigation
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0]?.clientX ?? null;
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null || readingMode === 'vertical' || !data) return;
+    const endX = e.changedTouches[0]?.clientX ?? touchStartX.current;
+    const deltaX = endX - touchStartX.current;
+    const step = readingMode === 'double' ? 2 : 1;
+    const pagesLen = data.episode.pages?.length || 0;
+
+    if (deltaX < -50 && currentPageIndex < pagesLen - step) {
+      setCurrentPageIndex((prev) => Math.min(pagesLen - 1, prev + step));
+    } else if (deltaX > 50 && currentPageIndex > 0) {
+      setCurrentPageIndex((prev) => Math.max(0, prev - step));
+    }
+    touchStartX.current = null;
+  };
+
   // Zoom handlers
-  const zoomIn = () => setZoomLevel(prev => Math.min(prev + 15, 200));
-  const zoomOut = () => setZoomLevel(prev => Math.max(prev - 15, 60));
+  const zoomIn = () => setZoomLevel((prev) => Math.min(prev + 15, 200));
+  const zoomOut = () => setZoomLevel((prev) => Math.max(prev - 15, 60));
   const resetZoom = () => setZoomLevel(100);
 
   // Voting
@@ -180,9 +273,10 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       return;
     }
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/episodes/${episodeId}/vote`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ userId: user.id, type }),
       });
       const resData = await res.json();
@@ -203,9 +297,10 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       return;
     }
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/episodes/${episodeId}/rate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ userId: user.id, stars }),
       });
       const resData = await res.json();
@@ -231,9 +326,10 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     if (!contentToPost.trim()) return;
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/episodes/${episodeId}/comments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId: user.id,
           userName: user.name,
@@ -247,8 +343,8 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       const resData = await res.json();
       if (res.ok && resData.comment) {
         if (parentId) {
-          setComments(prev =>
-            prev.map(c => {
+          setComments((prev) =>
+            prev.map((c) => {
               if (c.id === parentId) {
                 return { ...c, replies: [...(c.replies || []), resData.comment] };
               }
@@ -258,9 +354,101 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
           setReplyParentId(null);
           setReplyContent('');
         } else {
-          setComments(prev => [resData.comment, ...prev]);
+          setComments((prev) => [resData.comment, ...prev]);
           setNewComment('');
         }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Edit Own Comment
+  const handleSaveEditComment = async (commentId: string) => {
+    if (!user || !editingContent.trim()) return;
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`/api/episodes/${episodeId}/comments/${commentId}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          userId: user.id,
+          content: editingContent.trim(),
+        }),
+      });
+      if (res.ok) {
+        setComments((prev) =>
+          prev.map((c) => {
+            if (c.id === commentId) {
+              return { ...c, content: editingContent.trim(), isEdited: true };
+            }
+            if (c.replies) {
+              return {
+                ...c,
+                replies: c.replies.map((r) =>
+                  r.id === commentId ? { ...r, content: editingContent.trim(), isEdited: true } : r
+                ),
+              };
+            }
+            return c;
+          })
+        );
+        setEditingCommentId(null);
+        setEditingContent('');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Like Comment
+  const handleLikeComment = async (commentId: string) => {
+    if (!user) {
+      openAuthModal();
+      return;
+    }
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`/api/episodes/${episodeId}/comments/${commentId}/like`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const resData = await res.json();
+      if (res.ok && resData.comment) {
+        setComments((prev) =>
+          prev.map((c) => (c.id === commentId ? { ...c, ...resData.comment } : c))
+        );
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Report Comment
+  const handleReportComment = async (comment: Comment) => {
+    if (!user) {
+      openAuthModal();
+      return;
+    }
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/reports', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          reporterId: user.id,
+          reporterEmail: user.email,
+          targetType: 'comment',
+          targetId: comment.id,
+          episodeId,
+          targetSummary: `${comment.userName}: "${comment.content.slice(0, 80)}"`,
+          reason: 'Reported by reader for moderation review',
+        }),
+      });
+      if (res.ok) {
+        setReportFeedback('Comment reported to Administrator moderation queue.');
+        setTimeout(() => setReportFeedback(null), 3500);
       }
     } catch (err) {
       console.error(err);
@@ -270,18 +458,19 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   // Delete Comment
   const handleDeleteComment = async (commentId: string) => {
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/episodes/${episodeId}/comments/${commentId}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user?.id, role }),
+        headers,
+        body: JSON.stringify({ userId: user?.id, role: actualDbRole }),
       });
       if (res.ok) {
-        setComments(prev =>
+        setComments((prev) =>
           prev
-            .filter(c => c.id !== commentId)
-            .map(c => ({
+            .filter((c) => c.id !== commentId)
+            .map((c) => ({
               ...c,
-              replies: c.replies ? c.replies.filter(r => r.id !== commentId) : [],
+              replies: c.replies ? c.replies.filter((r) => r.id !== commentId) : [],
             }))
         );
       }
@@ -301,49 +490,65 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     );
   }
 
-  const { episode, comic, chapter, hasAccess } = data;
+  const { episode, comic, chapter, hasAccess, prevEpisodeId, nextEpisodeId, allEpisodes } = data;
   const pages = episode.pages || [];
+  const isBookmarked = Boolean(user?.bookmarks?.includes(comic.id));
+  const isFavorited = Boolean(user?.favorites?.includes(comic.id));
 
   return (
     <div
       ref={readerContainerRef}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
       className="fixed inset-0 z-50 bg-slate-950 text-slate-100 flex flex-col overflow-hidden select-none"
     >
       {/* TOP HUD / CONTROLS BAR */}
       <div
-        className={`transition-all duration-300 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 py-2.5 flex items-center justify-between gap-4 ${
+        className={`transition-all duration-300 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-3 sm:px-4 py-2.5 flex items-center justify-between gap-2 sm:gap-4 ${
           showHud ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0 pointer-events-none'
         }`}
       >
-        {/* Left: Info */}
-        <div className="flex items-center gap-3 min-w-0">
+        {/* Left: Back + Info + Episode Selector */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
             title="Exit Reader (ESC)"
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
 
           <div className="min-w-0">
-            <h2 className="text-xs sm:text-sm font-bold text-white truncate font-heading">
-              {comic.title}
-            </h2>
+            <h2 className="text-xs sm:text-sm font-bold text-white truncate font-heading">{comic.title}</h2>
             <div className="flex items-center gap-1.5 text-[11px] text-slate-400 truncate">
               <span>Ch. {chapter.chapterNumber}</span>
               <span aria-hidden="true">·</span>
-              <span className="font-semibold text-rose-400 truncate">Ep {episode.episodeNumber}: {episode.title}</span>
-              <span aria-hidden="true" className="hidden sm:inline">·</span>
-              <span className="hidden sm:inline">By {comic.authorName}</span>
+              <span className="font-semibold text-rose-400 truncate">
+                Ep {episode.episodeNumber}: {episode.title}
+              </span>
             </div>
           </div>
+
+          {allEpisodes && allEpisodes.length > 1 && (
+            <select
+              value={episode.id}
+              onChange={(e) => onSelectEpisode(e.target.value)}
+              className="hidden sm:block ml-2 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-rose-500"
+            >
+              {allEpisodes.map((ep) => (
+                <option key={ep.id} value={ep.id}>
+                  Ch.{ep.chapterNumber} Ep.{ep.episodeNumber} — {ep.title}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
-        {/* Center: Reading Mode & View Controls */}
-        <div className="hidden md:flex items-center gap-2 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+        {/* Center: 4 Reading Modes & Fit Toggle */}
+        <div className="hidden lg:flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
           <button
             onClick={() => setReadingMode('vertical')}
-            className={`px-2.5 py-1 rounded font-medium transition-colors ${
+            className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
               readingMode === 'vertical' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -352,48 +557,93 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
           <button
             onClick={() => setReadingMode('page')}
-            className={`px-2.5 py-1 rounded font-medium transition-colors ${
+            className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
               readingMode === 'page' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Page-by-Page
+            Manga Page
+          </button>
+
+          <button
+            onClick={() => setReadingMode('single')}
+            className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+              readingMode === 'single' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Single Fit
+          </button>
+
+          <button
+            onClick={() => setReadingMode('double')}
+            className={`px-2.5 py-1 rounded font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+              readingMode === 'double' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Columns2 className="w-3.5 h-3.5" />
+            <span>Double Spread</span>
           </button>
 
           <div className="w-[1px] h-4 bg-slate-800 mx-1" />
 
-          {/* Fit Toggle */}
           <button
             onClick={() => setFitMode(fitMode === 'width' ? 'screen' : 'width')}
-            className="px-2 py-1 text-[11px] text-slate-300 hover:text-white"
+            className="px-2 py-1 text-[11px] text-slate-300 hover:text-white cursor-pointer"
           >
-            {fitMode === 'width' ? 'Fit to Width' : 'Fit to Screen'}
+            {fitMode === 'width' ? 'Fit Width' : 'Fit Screen'}
           </button>
         </div>
 
-        {/* Right: Zoom & Fullscreen */}
+        {/* Right: Bookmark, Favorite, Zoom & Fullscreen */}
         <div className="flex items-center gap-1.5 shrink-0">
+          {user && (
+            <>
+              <button
+                type="button"
+                onClick={() => toggleBookmark(comic.id)}
+                title={isBookmarked ? 'Remove Bookmark' : 'Bookmark Series'}
+                className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                  isBookmarked
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-amber-400' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleFavorite(comic.id)}
+                title={isFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
+                className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                  isFavorited
+                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                <Heart className={`w-4 h-4 ${isFavorited ? 'fill-rose-400' : ''}`} />
+              </button>
+            </>
+          )}
+
           <div className="flex items-center bg-slate-950 rounded-lg border border-slate-800 p-0.5">
             <button
               onClick={zoomOut}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-              title="Zoom Out"
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors cursor-pointer"
+              title="Zoom Out (-)"
             >
               <ZoomOut className="w-4 h-4" />
             </button>
-            <span className="text-[11px] font-mono px-1.5 text-slate-300 tabular-nums">
-              {zoomLevel}%
-            </span>
+            <span className="text-[11px] font-mono px-1.5 text-slate-300 tabular-nums">{zoomLevel}%</span>
             <button
               onClick={zoomIn}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-              title="Zoom In"
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors cursor-pointer"
+              title="Zoom In (+)"
             >
               <ZoomIn className="w-4 h-4" />
             </button>
             <button
               onClick={resetZoom}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-              title="Reset Zoom"
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors cursor-pointer"
+              title="Reset Zoom (0)"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
@@ -401,7 +651,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
           <button
             onClick={toggleFullscreen}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
             title="Fullscreen Mode (F)"
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
@@ -409,18 +659,39 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors"
-            title="Close"
+            className="p-2 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+            title="Close (ESC)"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
       </div>
 
+      {/* MOBILE READING MODE SWITCHER BAR */}
+      <div className="lg:hidden flex items-center justify-between gap-1 px-3 py-1.5 bg-slate-900/90 border-b border-slate-800 text-[11px]">
+        <div className="flex items-center gap-1">
+          {(['vertical', 'page', 'single', 'double'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setReadingMode(m)}
+              className={`px-2 py-0.5 rounded font-bold capitalize cursor-pointer ${
+                readingMode === m ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <span className="font-mono text-slate-400">
+          Pg {currentPageIndex + 1}/{pages.length}
+        </span>
+      </div>
+
       {/* FLOATING HUD TOGGLE BUTTON (distraction-free mode) */}
       <button
-        onClick={() => setShowHud(prev => !prev)}
-        className="fixed bottom-4 right-4 z-40 p-2.5 rounded-full bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-slate-300 shadow-xl backdrop-blur-md transition-all"
+        onClick={() => setShowHud((prev) => !prev)}
+        className="fixed bottom-4 right-4 z-40 p-2.5 rounded-full bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-slate-300 shadow-xl backdrop-blur-md transition-all cursor-pointer"
         title="Toggle Distraction-free View (H)"
       >
         <Sliders className="w-4 h-4" />
@@ -428,7 +699,6 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
       {/* MAIN READING CANVAS VIEWPORT */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center relative">
-        
         {/* PREMIUM LOCK OVERLAY (If user does not have access) */}
         {!hasAccess ? (
           <div className="w-full max-w-xl mx-auto my-auto p-8 text-center space-y-6 bg-slate-900/95 border border-slate-800 rounded-3xl shadow-2xl backdrop-blur-md mt-12 mb-12">
@@ -444,11 +714,12 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 {comic.title} · Ep {episode.episodeNumber}: {episode.title}
               </h3>
               <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                Every time you open a paywalled comic, we verify if your connected Gmail account has an active <strong className="text-amber-400">1 Month (₹49)</strong> or <strong className="text-amber-400">6 Months (₹249)</strong> Premium Pass.
+                Every time you open a paywalled comic, we verify if your connected Gmail account has an active{' '}
+                <strong className="text-amber-400">1 Month (₹49)</strong> or{' '}
+                <strong className="text-amber-400">6 Months (₹249)</strong> Premium Pass.
               </p>
             </div>
 
-            {/* Real-time Gmail Verification Status Box */}
             <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs flex flex-col sm:flex-row items-center justify-between gap-2">
               <div className="text-left">
                 <span className="text-[10px] uppercase font-bold text-slate-500 block">
@@ -472,7 +743,6 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               </div>
             </div>
 
-            {/* Pricing Options: ONLY 1 Month (₹49) & 6 Months (₹249) */}
             {!user ? (
               <div className="space-y-3">
                 <button
@@ -491,8 +761,12 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 <div className="p-4 rounded-2xl bg-slate-950 border border-rose-500/40 space-y-3 flex flex-col justify-between">
                   <div>
                     <span className="text-[10px] uppercase font-bold text-rose-400 block">1 Month Premium</span>
-                    <div className="text-2xl font-black text-white font-mono mt-0.5">₹49 <span className="text-xs font-normal text-slate-400">/ 30 days</span></div>
-                    <p className="text-[11px] text-slate-400 mt-1">Unlocks all paywalled comics for 1 month on {user.email}.</p>
+                    <div className="text-2xl font-black text-white font-mono mt-0.5">
+                      ₹49 <span className="text-xs font-normal text-slate-400">/ 30 days</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Unlocks all paywalled comics for 1 month on {user.email}.
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -514,10 +788,16 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   <div>
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] uppercase font-bold text-amber-400">6 Months Premium</span>
-                      <span className="text-[9px] font-bold bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded">Best Value</span>
+                      <span className="text-[9px] font-bold bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded">
+                        Best Value
+                      </span>
                     </div>
-                    <div className="text-2xl font-black text-white font-mono mt-0.5">₹249 <span className="text-xs font-normal text-slate-300">/ 180 days</span></div>
-                    <p className="text-[11px] text-slate-300 mt-1">Unlocks all paywalled comics for 6 months on {user.email}.</p>
+                    <div className="text-2xl font-black text-white font-mono mt-0.5">
+                      ₹249 <span className="text-xs font-normal text-slate-300">/ 180 days</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 mt-1">
+                      Unlocks all paywalled comics for 6 months on {user.email}.
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -536,27 +816,28 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 </div>
               </div>
             )}
-
-            <div className="pt-4 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-center gap-4">
-              <span>Gmail Linked</span>
-              <span>·</span>
-              <span>UPI / RuPay / Cards</span>
-              <span>·</span>
-              <span>Verified Every Load</span>
-            </div>
           </div>
         ) : (
           /* COMIC PAGES CONTENT */
           <div
             className="w-full flex flex-col items-center py-6 px-2 transition-all duration-200"
             style={{
-              maxWidth: fitMode === 'width' ? `${Math.min(zoomLevel * 8, 1200)}px` : `${Math.min(zoomLevel * 6, 800)}px`,
+              maxWidth:
+                readingMode === 'double'
+                  ? `${Math.min(zoomLevel * 14, 1500)}px`
+                  : fitMode === 'width'
+                    ? `${Math.min(zoomLevel * 8, 1200)}px`
+                    : `${Math.min(zoomLevel * 6, 800)}px`,
             }}
           >
             {data.isPaywalled && data.verification?.verifiedGmail && (
               <div className="w-full mb-4 px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold flex items-center justify-between">
                 <span>
-                  ✓ Gmail Payment Verified ({data.verification.verifiedGmail}) · {data.verification.activePlan === '6_months' ? '6 Months Pass (₹249)' : '1 Month Pass (₹49)'} Unlocked
+                  ✓ Gmail Payment Verified ({data.verification.verifiedGmail}) ·{' '}
+                  {data.verification.activePlan === '6_months'
+                    ? '6 Months Pass (₹249)'
+                    : '1 Month Pass (₹49)'}{' '}
+                  Unlocked
                 </span>
                 {data.verification.expiresAt && (
                   <span className="text-[11px] font-mono text-emerald-300">
@@ -565,8 +846,9 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 )}
               </div>
             )}
+
             {readingMode === 'vertical' ? (
-              /* VERTICAL WEBTOON MODE */
+              /* 1. VERTICAL WEBTOON MODE */
               <div className="w-full space-y-4">
                 {pages.map((p, idx) => (
                   <div
@@ -576,6 +858,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                     <img
                       src={p.imageUrl}
                       alt={`Page ${p.pageNumber || idx + 1}`}
+                      loading="lazy"
                       className="w-full h-auto block select-none pointer-events-none"
                     />
                     {p.caption && (
@@ -586,25 +869,72 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   </div>
                 ))}
               </div>
+            ) : readingMode === 'double' ? (
+              /* 4. DOUBLE-PAGE SPREAD MODE */
+              <div className="w-full flex flex-col items-center space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full">
+                  {[pages[currentPageIndex], pages[currentPageIndex + 1]].map(
+                    (pg, idx) =>
+                      pg && (
+                        <div
+                          key={pg.id || idx}
+                          className="rounded-xl overflow-hidden shadow-2xl border border-slate-800 bg-slate-900"
+                        >
+                          <img
+                            src={pg.imageUrl}
+                            alt={`Page ${currentPageIndex + idx + 1}`}
+                            className="w-full h-auto block select-none pointer-events-none"
+                          />
+                        </div>
+                      )
+                  )}
+                </div>
+
+                {/* Double-Page Navigation Controls */}
+                <div className="flex items-center justify-between w-full max-w-md pt-2 px-4">
+                  <button
+                    onClick={() => setCurrentPageIndex((prev) => Math.max(0, prev - 2))}
+                    disabled={currentPageIndex === 0}
+                    className="py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous Spread</span>
+                  </button>
+
+                  <span className="text-xs font-mono font-bold text-slate-400">
+                    Pages {currentPageIndex + 1}–{Math.min(pages.length, currentPageIndex + 2)} of {pages.length}
+                  </span>
+
+                  <button
+                    onClick={() => setCurrentPageIndex((prev) => Math.min(pages.length - 1, prev + 2))}
+                    disabled={currentPageIndex + 2 >= pages.length}
+                    className="py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span>Next Spread</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
             ) : (
-              /* PAGE BY PAGE MODE */
+              /* 2 & 3. PAGE BY PAGE MANGA / SINGLE PAGE FIT MODE */
               <div className="w-full flex flex-col items-center space-y-4">
                 {pages[currentPageIndex] && (
-                  <div className="w-full rounded-xl overflow-hidden shadow-2xl border border-slate-800 bg-slate-900">
+                  <div className="w-full rounded-xl overflow-hidden shadow-2xl border border-slate-800 bg-slate-900 flex justify-center">
                     <img
                       src={pages[currentPageIndex].imageUrl}
                       alt={`Page ${currentPageIndex + 1}`}
-                      className="w-full h-auto block select-none pointer-events-none"
+                      className={`${
+                        readingMode === 'single' ? 'max-h-[80vh] w-auto object-contain' : 'w-full h-auto'
+                      } block select-none pointer-events-none`}
                     />
                   </div>
                 )}
 
-                {/* Page Navigation Controls */}
                 <div className="flex items-center justify-between w-full max-w-md pt-2 px-4">
                   <button
-                    onClick={() => setCurrentPageIndex(prev => Math.max(0, prev - 1))}
+                    onClick={() => setCurrentPageIndex((prev) => Math.max(0, prev - 1))}
                     disabled={currentPageIndex === 0}
-                    className="py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                    className="py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <ChevronLeft className="w-4 h-4" />
                     <span>Previous Page</span>
@@ -615,9 +945,9 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   </span>
 
                   <button
-                    onClick={() => setCurrentPageIndex(prev => Math.min(pages.length - 1, prev + 1))}
+                    onClick={() => setCurrentPageIndex((prev) => Math.min(pages.length - 1, prev + 1))}
                     disabled={currentPageIndex >= pages.length - 1}
-                    className="py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                    className="py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <span>Next Page</span>
                     <ChevronRight className="w-4 h-4" />
@@ -626,27 +956,45 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               </div>
             )}
 
-            {/* END OF EPISODE / NEXT EPISODE NAVIGATION */}
+            {/* END OF EPISODE / PREV & NEXT EPISODE NAVIGATION */}
             <div className="w-full max-w-xl mx-auto my-12 p-6 rounded-2xl bg-slate-900 border border-slate-800 text-center space-y-4">
               <div className="flex items-center justify-center gap-2 text-rose-500 font-bold text-xs uppercase tracking-wider">
                 <BookOpen className="w-4 h-4" />
                 <span>You Finished Reading Episode {episode.episodeNumber}</span>
               </div>
-              <h4 className="text-base font-bold text-white">
-                {episode.title}
-              </h4>
+              <h4 className="text-base font-bold text-white">{episode.title}</h4>
               <p className="text-xs text-slate-400">
                 Support the author by leaving a rating or comment below!
               </p>
+
+              <div className="flex items-center justify-center gap-3 pt-2">
+                {prevEpisodeId && (
+                  <button
+                    type="button"
+                    onClick={() => onSelectEpisode(prevEpisodeId)}
+                    className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous Episode</span>
+                  </button>
+                )}
+                {nextEpisodeId && (
+                  <button
+                    type="button"
+                    onClick={() => onSelectEpisode(nextEpisodeId)}
+                    className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Next Episode</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* INTERACTION SECTION: RATINGS, LIKES, DISLIKES, COMMENTS */}
-            <div className="w-full max-w-3xl mx-auto px-4 pb-20 space-y-8">
-              
+            <div className="w-full max-w-3xl mx-auto px-4 pb-20 space-y-8 select-text">
               {/* Engagement Bar: Likes, Dislikes & 5-Star Rating */}
               <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
-                
-                {/* 5-Star Rating Widget */}
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs font-bold text-slate-300">Rate this Episode:</span>
@@ -686,7 +1034,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleVote('like')}
-                    className={`flex items-center gap-1.5 py-2 px-3.5 rounded-xl border text-xs font-bold transition-all ${
+                    className={`flex items-center gap-1.5 py-2 px-3.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                       userVote === 'like'
                         ? 'bg-rose-600/20 border-rose-500 text-rose-400'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
@@ -698,7 +1046,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
                   <button
                     onClick={() => handleVote('dislike')}
-                    className={`flex items-center gap-1.5 py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                    className={`flex items-center gap-1.5 py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                       userVote === 'dislike'
                         ? 'bg-slate-800 border-slate-600 text-slate-300'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
@@ -720,11 +1068,19 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   <span className="text-xs text-slate-500">Moderated by Administrator</span>
                 </div>
 
+                {reportFeedback && (
+                  <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-bold">
+                    {reportFeedback}
+                  </div>
+                )}
+
                 {/* Comment Input */}
                 <form onSubmit={(e) => handlePostComment(e)} className="space-y-2">
                   <textarea
                     rows={3}
-                    placeholder={user ? "Write your comment about this episode..." : "Log in to post a comment"}
+                    placeholder={
+                      user ? 'Write your comment about this episode...' : 'Log in to post a comment'
+                    }
                     value={newComment}
                     onChange={(e) => setNewComment(e.target.value)}
                     disabled={!user}
@@ -737,7 +1093,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                     <button
                       type="submit"
                       disabled={!user || !newComment.trim()}
-                      className="py-2 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                      className="py-2 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
                     >
                       <Send className="w-3.5 h-3.5" />
                       <span>Post Comment</span>
@@ -768,14 +1124,17 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                               <div className="flex items-center gap-1.5">
                                 <span className="text-xs font-bold text-white">{comment.userName}</span>
                                 {comment.userRole === 'author' && (
-                                  <span className="px-1.5 py-0.2 rounded text-[9px] bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30">
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30">
                                     Author
                                   </span>
                                 )}
                                 {comment.userRole === 'admin' && (
-                                  <span className="px-1.5 py-0.2 rounded text-[9px] bg-amber-500/20 text-amber-400 font-bold border border-amber-500/30">
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] bg-amber-500/20 text-amber-400 font-bold border border-amber-500/30">
                                     Admin
                                   </span>
+                                )}
+                                {comment.isEdited && (
+                                  <span className="text-[10px] text-slate-500 italic">(edited)</span>
                                 )}
                               </div>
                               <span className="text-[10px] text-slate-500">
@@ -784,34 +1143,95 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                             </div>
                           </div>
 
-                          {/* Delete affordance for owner or admin */}
-                          {(user?.id === comment.userId || role === 'admin') && (
-                            <button
-                              onClick={() => handleDeleteComment(comment.id)}
-                              className="text-slate-500 hover:text-rose-400 p-1 rounded"
-                              title="Delete comment"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          {/* Edit / Report / Delete affordances */}
+                          <div className="flex items-center gap-1.5">
+                            {user?.id === comment.userId && (
+                              <button
+                                onClick={() => {
+                                  setEditingCommentId(comment.id);
+                                  setEditingContent(comment.content);
+                                }}
+                                className="text-slate-500 hover:text-sky-400 p-1 rounded cursor-pointer"
+                                title="Edit your comment"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {user && user.id !== comment.userId && (
+                              <button
+                                onClick={() => handleReportComment(comment)}
+                                className="text-slate-500 hover:text-amber-400 p-1 rounded cursor-pointer"
+                                title="Report comment"
+                              >
+                                <Flag className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {(user?.id === comment.userId || actualDbRole === 'admin') && (
+                              <button
+                                onClick={() => handleDeleteComment(comment.id)}
+                                className="text-slate-500 hover:text-rose-400 p-1 rounded cursor-pointer"
+                                title="Delete comment"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </div>
 
-                        <p className="text-xs text-slate-300 leading-relaxed pl-9">
-                          {comment.content}
-                        </p>
+                        {editingCommentId === comment.id ? (
+                          <div className="pl-9 space-y-2">
+                            <input
+                              type="text"
+                              value={editingContent}
+                              onChange={(e) => setEditingContent(e.target.value)}
+                              className="w-full px-3 py-1.5 text-xs rounded-lg bg-slate-950 border border-slate-700 text-white"
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setEditingCommentId(null)}
+                                className="px-2 py-1 text-[11px] text-slate-400"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSaveEditComment(comment.id)}
+                                className="px-3 py-1 text-[11px] font-bold bg-rose-600 text-white rounded-md"
+                              >
+                                Save Edit
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-300 leading-relaxed pl-9">{comment.content}</p>
+                        )}
 
-                        {/* Reply trigger */}
-                        <div className="pl-9 flex items-center gap-3">
+                        {/* Like & Reply triggers */}
+                        <div className="pl-9 flex items-center gap-4">
                           <button
-                            onClick={() => setReplyParentId(replyParentId === comment.id ? null : comment.id)}
-                            className="text-[11px] font-semibold text-rose-400 hover:underline flex items-center gap-1"
+                            onClick={() => handleLikeComment(comment.id)}
+                            className={`text-[11px] font-semibold flex items-center gap-1 cursor-pointer ${
+                              comment.likedBy?.includes(user?.id || '')
+                                ? 'text-rose-400'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <ThumbsUp className="w-3 h-3" />
+                            <span>{comment.likesCount || 0}</span>
+                          </button>
+
+                          <button
+                            onClick={() =>
+                              setReplyParentId(replyParentId === comment.id ? null : comment.id)
+                            }
+                            className="text-[11px] font-semibold text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
                           >
                             <CornerDownRight className="w-3 h-3" />
                             <span>Reply</span>
                           </button>
                         </div>
 
-                        {/* Reply box if active */}
                         {replyParentId === comment.id && (
                           <form
                             onSubmit={(e) => handlePostComment(e, comment.id)}
@@ -849,9 +1269,13 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                               <div key={reply.id} className="p-2.5 rounded-lg bg-slate-950/80 space-y-1">
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-1.5">
-                                    <span className="text-[11px] font-bold text-white">{reply.userName}</span>
+                                    <span className="text-[11px] font-bold text-white">
+                                      {reply.userName}
+                                    </span>
                                     {reply.userRole === 'author' && (
-                                      <span className="text-[9px] text-emerald-400 font-bold">(Author)</span>
+                                      <span className="text-[9px] text-emerald-400 font-bold">
+                                        (Author)
+                                      </span>
                                     )}
                                   </div>
                                   <span className="text-[9px] text-slate-500">
