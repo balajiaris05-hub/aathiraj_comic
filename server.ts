@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -5,6 +6,14 @@ import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { db } from './src/server/storage.ts';
+import {
+  getSmtpConfigSummary,
+  verifySmtpConnection,
+  sendEmail,
+  sendAdminOtpEmail,
+  sendReaderWelcomeAndOtpEmail,
+  sendPasswordResetOtpEmail,
+} from './src/server/mailer.ts';
 import {
   User,
   AuthorApplication,
@@ -100,7 +109,7 @@ async function startServer() {
   // SECURE DEDICATED ADMIN 2FA OTP AUTHENTICATION
   // -------------------------------------------------------------
 
-  app.post('/api/admin-auth/request-otp', authRateLimiter, (req, res) => {
+  app.post('/api/admin-auth/request-otp', authRateLimiter, async (req, res) => {
     const { credential, channel = 'email' } = req.body;
     if (!credential) {
       return res.status(400).json({ error: 'Please enter your administrator Gmail or Indian mobile number.' });
@@ -134,21 +143,33 @@ async function startServer() {
       };
     });
 
+    let emailResult: { sent: boolean; configured: boolean; messageId?: string; error?: string } = {
+      sent: false,
+      configured: getSmtpConfigSummary().configured,
+    };
+    if (targetChannel === 'email') {
+      emailResult = await sendAdminOtpEmail(targetDestination, otp);
+    }
+
     db.logActivity(
       'ADMIN_OTP_REQUESTED',
       'balajiaris05@gmail.com',
       'admin',
-      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${maskedDestination}. Valid for 10 minutes.`,
+      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${maskedDestination} (SMTP Sent: ${emailResult.sent}). Valid for 10 minutes.`,
       'admin_auth',
       'usr_admin'
     );
 
-    const hasDeliveryProvider = Boolean(process.env.SMTP_HOST || process.env.SMS_API_KEY);
+    const hasDeliveryProvider = Boolean(emailResult.sent || process.env.SMS_API_KEY);
     return res.json({
       success: true,
-      message: hasDeliveryProvider
-        ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
-        : `Development Mode: OTP generated for ${maskedDestination} (configure SMTP_HOST / SMS_API_KEY for live delivery).`,
+      emailDelivered: emailResult.sent,
+      smtpConfigured: emailResult.configured,
+      message: emailResult.sent
+        ? `Security OTP emailed via SMTP to ${maskedDestination}. Valid for 10 minutes.`
+        : hasDeliveryProvider
+          ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
+          : `Development Mode: OTP generated for ${maskedDestination} (${emailResult.error || 'configure SMTP_HOST / SMS_API_KEY for live delivery'}).`,
       channel: targetChannel,
       destinationMasked: maskedDestination,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
@@ -206,6 +227,58 @@ async function startServer() {
       success: true,
       user: sanitizeUserForClient(adminUser as User, true),
       message: 'Admin authentication verified! Console access unlocked.',
+    });
+  });
+
+  app.get('/api/admin/smtp-status', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    if (authCtx.role !== 'admin') {
+      return res.status(403).json({ error: 'Administrator permission required.' });
+    }
+    return res.json({ success: true, smtp: getSmtpConfigSummary() });
+  });
+
+  app.post('/api/admin/smtp-test', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    if (authCtx.role !== 'admin') {
+      return res.status(403).json({ error: 'Administrator permission required.' });
+    }
+
+    const verification = await verifySmtpConnection();
+    if (!verification.ok) {
+      return res.status(verification.configured ? 502 : 400).json({
+        success: false,
+        ...verification,
+      });
+    }
+
+    const { sendTestEmail, to } = req.body || {};
+    if (sendTestEmail) {
+      const recipient = (typeof to === 'string' && to.includes('@') ? to.trim() : verification.summary.user);
+      const sendResult = await sendEmail({
+        to: recipient,
+        subject: 'Aathirai_Comic SMTP Connection Test',
+        text: 'Your Aathirai_Comic SMTP server configuration is verified and working.',
+        html: '<p>Your <strong>Aathirai_Comic</strong> SMTP server configuration is verified and working.</p>',
+      });
+      return res.json({
+        success: sendResult.sent,
+        verified: true,
+        ...verification,
+        emailResult: sendResult,
+      });
+    }
+
+    return res.json({
+      success: true,
+      verified: true,
+      ...verification,
     });
   });
 
@@ -951,6 +1024,12 @@ async function startServer() {
       finalUser.id
     );
 
+    const emailDelivery = await sendReaderWelcomeAndOtpEmail({
+      to: finalUser.email,
+      name: finalUser.name,
+      otp,
+    });
+
     mirrorWritesInBackground(
       'auth_register',
       buildUserWriteItems(finalUser),
@@ -960,11 +1039,15 @@ async function startServer() {
     return res.json({
       success: true,
       storedInBackend: true,
+      emailDelivered: emailDelivery.sent,
+      smtpConfigured: emailDelivery.configured,
       user: sanitizeUserForClient(finalUser, false),
       subscription: reconciled.subStatus,
       razorpayVerified: reconciled.razorpayVerified,
       welcomeEmail: welcomeEmailPayload,
-      message: `Account created and stored securely in backend! Welcome email sent to ${cleanEmail} ("Welcome to Aathirai_Comic"). Verification OTP dispatched.`,
+      message: emailDelivery.sent
+        ? `Account created and stored securely in backend! Welcome & 6-digit OTP email sent to ${cleanEmail} via SMTP.`
+        : `Account created and stored securely in backend! Welcome email recorded for ${cleanEmail} ("Welcome to Aathirai_Comic").`,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
@@ -1503,7 +1586,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/auth/forgot-password', authRateLimiter, (req, res) => {
+  app.post('/api/auth/forgot-password', authRateLimiter, async (req, res) => {
     const { email, phone, countryCode, credential } = req.body;
     const cleanEmail = (email || (credential && String(credential).includes('@') ? credential : '') || '').trim().toLowerCase();
     const rawPhoneInput = (phone || (credential && !String(credential).includes('@') ? credential : '') || '').trim();
@@ -1537,12 +1620,22 @@ async function startServer() {
       if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otpEntry;
     });
 
+    const emailDelivery = await sendPasswordResetOtpEmail({
+      to: matchedUser.email,
+      name: matchedUser.name,
+      otp,
+    });
+
     return res.json({
       success: true,
+      emailDelivered: emailDelivery.sent,
+      smtpConfigured: emailDelivery.configured,
       email: matchedUser.email,
       phone: matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '',
       countryCode: matchedUser.countryCode || countryCode || '+91',
-      message: `6-digit verification OTP sent for password recovery to ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
+      message: emailDelivery.sent
+        ? `6-digit verification OTP sent via SMTP to ${matchedUser.email}${matchedUser.phone ? ` (linked Mobile ${matchedUser.phone})` : ''}. Valid for 10 minutes.`
+        : `6-digit verification OTP generated for password recovery for ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });

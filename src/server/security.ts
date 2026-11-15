@@ -2,9 +2,14 @@ import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { User, UserRole } from '../types/comic';
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ||
-  crypto.createHash('sha256').update('aathirai-comic-session-secret-key-v2').digest('hex');
+const FALLBACK_SESSION_SECRET = crypto
+  .createHash('sha256')
+  .update('aathirai-comic-session-secret-key-v2')
+  .digest('hex');
+
+function getSessionSecret(): string {
+  return process.env.SESSION_SECRET?.trim() || FALLBACK_SESSION_SECRET;
+}
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours automatic session expiration
 
@@ -69,7 +74,7 @@ export function createSessionToken(user: Pick<User, 'id' | 'email'>): string {
   };
   const base64Payload = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
   const signature = crypto
-    .createHmac('sha256', SESSION_SECRET)
+    .createHmac('sha256', getSessionSecret())
     .update(base64Payload)
     .digest('base64url');
   return `${base64Payload}.${signature}`;
@@ -86,7 +91,7 @@ export function verifySessionToken(token?: string): SessionTokenPayload | null {
   if (!base64Payload || !providedSig) return null;
 
   const expectedSig = crypto
-    .createHmac('sha256', SESSION_SECRET)
+    .createHmac('sha256', getSessionSecret())
     .update(base64Payload)
     .digest('base64url');
 
