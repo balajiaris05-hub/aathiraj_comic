@@ -3,39 +3,86 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Aathirai_Comic</title>
-    <meta name="description" content="Online comic publishing platform with reader and author ecosystems, chapter/episode hierarchies, interactive manga reader, and INR Razorpay payments." />
-    <meta name="keywords" content="Aathirai Comic, Indian comics, manga reader, webtoons India, Tamil comics, action manga, digital comic publishing" />
-    <meta name="robots" content="index, follow" />
+    <title>Aathirai_Comic – Tamil Comics, Indian Comics &amp; Webtoons</title>
+    <meta
+      name="description"
+      content="Read Tamil comics, Indian comics, webtoons, and manga on Aathirai_Comic. Explore action, mythology, fantasy, and general comics free or premium."
+    />
+    <meta
+      name="keywords"
+      content="Tamil comic, Tamil comics, Aathirai comic, Aathirai_Comic, Indian comic, Indian comics, general comic, comic book, read Tamil comics online, Tamil manga, Indian webtoons, Indian graphic novels, mythology comics, action comics, fantasy comics, sci-fi comics, romance comics, slice of life comics, horror comics, digital comic publishing"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="language" content="English, Tamil" />
     <link rel="canonical" href="https://aathiraicomic.app/" />
-    <meta property="og:title" content="Aathirai_Comic" />
-    <meta property="og:description" content="Online comic publishing platform with reader and author ecosystems, chapter/episode hierarchies, interactive manga reader, and INR Razorpay payments." />
+    <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
+    <meta property="og:title" content="Aathirai_Comic – Tamil Comics, Indian Comics &amp; Webtoons" />
+    <meta
+      property="og:description"
+      content="Read Tamil comics, Indian comics, webtoons, and manga on Aathirai_Comic. Explore action, mythology, fantasy, and general comics free or premium."
+    />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Aathirai_Comic" />
+    <meta property="og:locale" content="en_IN" />
+    <meta property="og:locale:alternate" content="ta_IN" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Aathirai_Comic" />
-    <meta name="twitter:description" content="Online comic publishing platform with reader and author ecosystems, chapter/episode hierarchies, interactive manga reader, and INR Razorpay payments." />
+    <meta name="twitter:title" content="Aathirai_Comic – Tamil Comics, Indian Comics &amp; Webtoons" />
+    <meta
+      name="twitter:description"
+      content="Read Tamil comics, Indian comics, webtoons, and manga on Aathirai_Comic. Explore action, mythology, fantasy, and general comics free or premium."
+    />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@graph": [
           {
             "@type": "Organization",
+            "@id": "https://aathiraicomic.app/#organization",
             "name": "Aathirai_Comic",
+            "alternateName": ["Aathirai Comic", "Aathirai Tamil Comics", "Aathirai Indian Comics"],
             "legalName": "Aathirai Media & Publishing Pvt Ltd",
             "url": "https://aathiraicomic.app/",
-            "description": "Indian digital comic and manga publishing platform supporting independent creators and multi-mode webtoon readers."
+            "email": "aathiraicomic@gmail.com",
+            "description": "Tamil comic, Indian comic, and general comic book publishing network for digital readers and independent comic creators."
           },
           {
             "@type": "WebSite",
+            "@id": "https://aathiraicomic.app/#website",
             "name": "Aathirai_Comic",
+            "alternateName": "Aathirai Comic",
             "url": "https://aathiraicomic.app/",
-            "inLanguage": "en-IN",
+            "inLanguage": ["en-IN", "ta-IN"],
+            "keywords": "Tamil comic, Aathirai comic, Indian comic, general comic, comic book, webtoon, manga",
+            "publisher": {
+              "@id": "https://aathiraicomic.app/#organization"
+            },
             "potentialAction": {
               "@type": "SearchAction",
-              "target": "https://aathiraicomic.app/?q={search_term_string}",
+              "target": "https://aathiraicomic.app/books?q={search_term_string}",
               "query-input": "required name=search_term_string"
             }
+          },
+          {
+            "@type": "CollectionPage",
+            "@id": "https://aathiraicomic.app/books#catalog",
+            "name": "Aathirai_Comic Books – Tamil Comics, Indian Comics & General Comic Series",
+            "url": "https://aathiraicomic.app/books",
+            "description": "Browse all Tamil comics, Indian comics, general comic books, action, fantasy, mythology, sci-fi, cyberpunk, romance, horror, and slice-of-life stories.",
+            "inLanguage": ["en-IN", "ta-IN"],
+            "about": [
+              "Tamil Comic",
+              "Indian Comic",
+              "Aathirai Comic",
+              "General Comic",
+              "Action",
+              "Fantasy",
+              "Mythology",
+              "Sci-Fi",
+              "Cyberpunk",
+              "Romance",
+              "Slice of Life",
+              "Horror"
+            ]
           }
         ]
       }
@@ -50,4 +97,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

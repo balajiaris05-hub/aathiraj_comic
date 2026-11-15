@@ -117,11 +117,8 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
 
   const totalEpisodes = comic.chapters.reduce((sum, ch) => sum + ch.episodes.length, 0);
   const firstEpisode = comic.chapters[0]?.episodes[0];
-  const isCreatorOrAdmin = Boolean(user && (user.role === 'admin' || user.id === comic.authorId));
-  const isUnlockedForReader =
-    comic.accessType === 'free' ||
-    isCreatorOrAdmin ||
-    (paywallChecked ? gmailAccessVerified : Boolean(user && hasActivePremium));
+  const hasPaidAccess = Boolean(paywallChecked && gmailAccessVerified);
+  const isUnlockedForReader = comic.accessType === 'free' || hasPaidAccess;
   const isFirstEpPaywalled = Boolean(
     comic.accessType === 'premium' || comic.chapters[0]?.isPremium || firstEpisode?.isPremium
   );
@@ -290,7 +287,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                 disabled={verifyingEpisodeId === firstEpisode.id}
                 className="py-3 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-70 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
               >
-                {!isFirstEpPaywalled || isUnlockedForReader ? (
+                {!isFirstEpPaywalled || hasPaidAccess ? (
                   <Play className="w-4 h-4 fill-white" />
                 ) : (
                   <Lock className="w-4 h-4" />
@@ -300,7 +297,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                     ? 'Verifying Access...'
                     : !isFirstEpPaywalled
                     ? 'Read Episode 1 Free'
-                    : isUnlockedForReader
+                    : hasPaidAccess
                     ? 'Read Now (Unlocked)'
                     : 'Read (Premium Required)'}
                 </span>
@@ -435,7 +432,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                           Chapter {chapter.chapterNumber}: {chapter.title}
                         </h3>
                         {chapter.isPremium ? (
-                          isUnlockedForReader ? (
+                          hasPaidAccess ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-1">
                               <CheckCircle2 className="w-2.5 h-2.5" />
                               <span>Gmail Verified · Unlocked</span>
@@ -503,7 +500,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                                   Ep {episode.episodeNumber}: {episode.title}
                                 </h4>
                                 {isEpPaywalled ? (
-                                  isUnlockedForReader ? (
+                                  hasPaidAccess ? (
                                     <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-0.5 shrink-0">
                                       <CheckCircle2 className="w-2.5 h-2.5" />
                                       <span>UNLOCKED</span>
@@ -537,7 +534,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                               disabled={isVerifyingEp}
                               className="py-1.5 px-3.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-70 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
                             >
-                              {!isEpPaywalled || isUnlockedForReader ? (
+                              {!isEpPaywalled || hasPaidAccess ? (
                                 <Play className="w-3 h-3 fill-white" />
                               ) : (
                                 <Lock className="w-3 h-3" />

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Comic } from '../types/comic';
 import { ComicCard } from '../components/ComicCard';
+import { matchesComicSearchQuery } from '../utils/seo';
 import {
   Search,
   ArrowUpDown,
@@ -16,31 +17,53 @@ import {
 interface BooksPageProps {
   comics: Comic[];
   onSelectComic: (comic: Comic) => void;
+  initialSearch?: string;
+  initialGenre?: string;
+  onFilterChange?: (search: string, genre: string) => void;
 }
 
 const ITEMS_PER_PAGE = 8;
+const DEFAULT_GENRES = ['Action', 'Fantasy', 'Mythology', 'Sci-Fi', 'Cyberpunk', 'Romance', 'Slice of Life', 'Horror'];
 
-export const BooksPage: React.FC<BooksPageProps> = ({ comics, onSelectComic }) => {
-  const [search, setSearch] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState('All');
+export const BooksPage: React.FC<BooksPageProps> = ({
+  comics,
+  onSelectComic,
+  initialSearch = '',
+  initialGenre = 'All',
+  onFilterChange,
+}) => {
+  const [search, setSearch] = useState(initialSearch);
+  const [selectedGenre, setSelectedGenre] = useState(initialGenre || 'All');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Ongoing' | 'Completed'>('All');
   const [accessFilter, setAccessFilter] = useState<'all' | 'free' | 'premium'>('all');
   const [sortBy, setSortBy] = useState<'latest' | 'oldest' | 'rating' | 'popular'>('popular');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [currentPage, setCurrentPage] = useState(1);
 
-  const genres = ['All', 'Action', 'Fantasy', 'Mythology', 'Sci-Fi', 'Cyberpunk', 'Romance', 'Slice of Life'];
+  useEffect(() => {
+    setSearch(initialSearch);
+    setSelectedGenre(initialGenre || 'All');
+    setCurrentPage(1);
+  }, [initialSearch, initialGenre]);
+
+  useEffect(() => {
+    if (onFilterChange) {
+      onFilterChange(search, selectedGenre);
+    }
+  }, [search, selectedGenre]);
+
+  const genres = useMemo(() => {
+    const dynamic = comics.flatMap((c) => c.genre || []).filter(Boolean);
+    return ['All', ...Array.from(new Set([...DEFAULT_GENRES, ...dynamic]))];
+  }, [comics]);
 
   // Filter & Sort
   const filtered = comics
     .filter((c) => {
-      const q = search.trim().toLowerCase();
-      const matchSearch =
-        !q ||
-        c.title.toLowerCase().includes(q) ||
-        c.authorName.toLowerCase().includes(q) ||
-        c.description.toLowerCase().includes(q);
-      const matchGenre = selectedGenre === 'All' || c.genre.includes(selectedGenre);
+      const matchSearch = matchesComicSearchQuery(c, search);
+      const matchGenre =
+        selectedGenre === 'All' ||
+        c.genre.some((g) => g.toLowerCase() === selectedGenre.toLowerCase());
       const matchStatus = statusFilter === 'All' || c.status === statusFilter;
       const matchAccess =
         accessFilter === 'all' ||
@@ -66,11 +89,11 @@ export const BooksPage: React.FC<BooksPageProps> = ({ comics, onSelectComic }) =
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white font-heading">
-            All Published Comic Books &amp; Series
+            Tamil Comics, Indian Comics &amp; All Book Series
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Explore {comics.length} serialized stories, high-octane sagas, and gentle slice-of-life manga from top
-            creators.
+            Explore {comics.length} Tamil comics, Indian comics, Aathirai originals, and general comic series across
+            action, mythology, fantasy, and slice-of-life.
           </p>
         </div>
 
@@ -111,7 +134,7 @@ export const BooksPage: React.FC<BooksPageProps> = ({ comics, onSelectComic }) =
             <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
             <input
               type="text"
-              placeholder="Search comics by title, author, or keyword..."
+              placeholder="Search Tamil comics, Indian comics, titles, categories, or authors..."
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -226,20 +249,24 @@ export const BooksPage: React.FC<BooksPageProps> = ({ comics, onSelectComic }) =
       {paginatedComics.length === 0 ? (
         <div className="p-12 text-center rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            No comic books match your search or filter criteria.
+            {comics.length === 0
+              ? 'No comic books have been published yet.'
+              : 'No comic books match your search or filter criteria.'}
           </p>
-          <button
-            onClick={() => {
-              setSearch('');
-              setSelectedGenre('All');
-              setStatusFilter('All');
-              setAccessFilter('all');
-              setCurrentPage(1);
-            }}
-            className="px-4 py-2 text-xs font-bold bg-rose-600 text-white rounded-lg hover:bg-rose-500 cursor-pointer"
-          >
-            Clear All Filters
-          </button>
+          {comics.length > 0 && (
+            <button
+              onClick={() => {
+                setSearch('');
+                setSelectedGenre('All');
+                setStatusFilter('All');
+                setAccessFilter('all');
+                setCurrentPage(1);
+              }}
+              className="px-4 py-2 text-xs font-bold bg-rose-600 text-white rounded-lg hover:bg-rose-500 cursor-pointer"
+            >
+              Clear All Filters
+            </button>
+          )}
         </div>
       ) : viewMode === 'grid' ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6">

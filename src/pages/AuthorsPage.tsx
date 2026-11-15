@@ -47,48 +47,14 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
   const [photoMessage, setPhotoMessage] = useState<string | null>(null);
   const [selectedAuthorModal, setSelectedAuthorModal] = useState<AuthorListItem | null>(null);
 
-  const defaultAuthors: AuthorListItem[] = [
-    {
-      id: 'usr_rajesh',
-      name: 'Rajesh Singh',
-      role: 'Graphic Novelist & Manga Illustrator',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80',
-      bio: 'Leading creator behind Virasen and Neo Madras 2099. Pioneering Indian mythic science fiction and cyberpunk webtoons.',
-      followers: '28.4K',
-      totalReads: '87.3K',
-      socialLinks: {
-        website: 'https://rajeshsinghcomics.in',
-        artstation: 'https://artstation.com/rajeshsingh',
-      },
-    },
-    {
-      id: 'usr_ananya',
-      name: 'Ananya Sundaram',
-      role: 'Mythological Fantasy Writer & Inker',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
-      bio: 'Creator of Curse of Mahishur. Drawing inspiration from Sangam architecture and Dravidian temple guardian lore.',
-      followers: '14.2K',
-      totalReads: '28.4K',
-    },
-    {
-      id: 'usr_luna',
-      name: 'Luna & Sky',
-      role: 'Slice-of-Life Webtoon Duo',
-      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=200&h=200&q=80',
-      bio: 'Artistic partnership creating gentle, heartwarming watercolor webtoons set in the misty Nilgiri hills.',
-      followers: '32.1K',
-      totalReads: '52.1K',
-    },
-  ];
-
-  const [authorsList, setAuthorsList] = useState<AuthorListItem[]>(defaultAuthors);
+  const [authorsList, setAuthorsList] = useState<AuthorListItem[]>([]);
 
   const fetchAuthors = async () => {
     try {
       const res = await fetch('/api/authors');
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.authors) && data.authors.length > 0) {
+        if (Array.isArray(data.authors)) {
           const seen = new Set<string>();
           const uniqueAuthors = data.authors.filter((a: AuthorListItem) => {
             const k = `${(a.id || '').toLowerCase()}_${(a.name || '').toLowerCase()}`;
@@ -100,7 +66,7 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
         }
       }
     } catch {
-      // Keep default authors on transient error
+      // Keep current list on transient error
     }
   };
 
@@ -207,6 +173,27 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
       )}
 
       {/* Authors Grid */}
+      {authorsList.length === 0 ? (
+        <div className="p-12 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-4">
+          <PenTool className="w-8 h-8 text-rose-500 mx-auto" />
+          <div className="space-y-1">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+              No Featured Authors Yet
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+              Approved comic creators and studios will appear here once applications are approved or comics are published.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCurrentTab('become_author')}
+            className="py-2.5 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer"
+          >
+            <PenTool className="w-3.5 h-3.5" />
+            <span>Apply to Publish</span>
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         {authorsList.map((author, idx) => {
           const authorComics = getAuthorComics(author);
@@ -219,7 +206,7 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
               ? (
                   authorComics.reduce((sum, c) => sum + c.averageRating, 0) / authorComics.length
                 ).toFixed(1)
-              : '4.9';
+              : '—';
 
           return (
             <div
@@ -272,7 +259,7 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
                   </span>
                   <span>·</span>
                   <span>
-                    <strong>{totalEpisodes || 2}</strong> Episodes
+                    <strong>{totalEpisodes}</strong> Episodes
                   </span>
                   <span>·</span>
                   <span className="text-amber-500 font-bold">★ {avgRating}</span>
@@ -322,6 +309,7 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
           );
         })}
       </div>
+      )}
 
       {/* PUBLIC AUTHOR PROFILE MODAL (Zero Private PII Exposed) */}
       {selectedAuthorModal && (
@@ -366,18 +354,18 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
               const avg =
                 pubComics.length > 0
                   ? (pubComics.reduce((s, c) => s + c.averageRating, 0) / pubComics.length).toFixed(1)
-                  : '4.9';
+                  : '—';
               return (
                 <div className="grid grid-cols-3 gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-center">
                   <div>
                     <div className="text-lg font-black text-slate-900 dark:text-white font-mono">
-                      {pubComics.length || 1}
+                      {pubComics.length}
                     </div>
                     <div className="text-[10px] uppercase font-bold text-slate-500">Published Series</div>
                   </div>
                   <div>
                     <div className="text-lg font-black text-slate-900 dark:text-white font-mono">
-                      {epCount || 4}
+                      {epCount}
                     </div>
                     <div className="text-[10px] uppercase font-bold text-slate-500">Total Episodes</div>
                   </div>

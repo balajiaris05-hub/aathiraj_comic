@@ -171,6 +171,81 @@ export function sanitizeUserForClient(user: User, includeSessionToken = false): 
 }
 
 /**
+ * Strictly validate calendar Date of Birth (DD/MM/YYYY or YYYY-MM-DD)
+ * Rejects impossible dates (e.g. 31/02/2000, future dates, < 5 yrs, > 115 yrs)
+ * and computes authoritative server-side age.
+ */
+export function validateAndNormalizeDob(rawDob?: unknown): {
+  valid: boolean;
+  dob?: string;
+  age?: number;
+  error?: string;
+} {
+  if (typeof rawDob !== 'string' || !rawDob.trim()) {
+    return { valid: false, error: 'Date of Birth (DD/MM/YYYY) is required.' };
+  }
+  const trimmed = rawDob.trim();
+  let day = 0;
+  let month = 0;
+  let year = 0;
+
+  const dmyMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const ymdMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+
+  if (dmyMatch) {
+    day = parseInt(dmyMatch[1], 10);
+    month = parseInt(dmyMatch[2], 10);
+    year = parseInt(dmyMatch[3], 10);
+  } else if (ymdMatch) {
+    year = parseInt(ymdMatch[1], 10);
+    month = parseInt(ymdMatch[2], 10);
+    day = parseInt(ymdMatch[3], 10);
+  } else {
+    return { valid: false, error: 'Invalid Date of Birth format. Please select Date, Month, and Year (DD/MM/YYYY).' };
+  }
+
+  const currentYear = new Date().getFullYear();
+  if (year < 1910 || year > currentYear) {
+    return { valid: false, error: `Birth year must be between 1910 and ${currentYear}.` };
+  }
+  if (month < 1 || month > 12) {
+    return { valid: false, error: 'Birth month must be between 01 and 12.' };
+  }
+
+  // Exact calendar check (catches Feb 30/31, non-leap Feb 29, Apr 31, etc.)
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    Number.isNaN(probe.getTime()) ||
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return {
+      valid: false,
+      error: `Invalid calendar date (${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}). Please check the day for that month.`,
+    };
+  }
+
+  const today = new Date();
+  const dobLocal = new Date(year, month - 1, day);
+  if (dobLocal.getTime() > today.getTime()) {
+    return { valid: false, error: 'Date of Birth cannot be in the future.' };
+  }
+
+  let age = today.getFullYear() - year;
+  const monthDiff = today.getMonth() - (month - 1);
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < day)) {
+    age--;
+  }
+  if (age < 5 || age > 115) {
+    return { valid: false, error: 'Customer age must be between 5 and 115 years.' };
+  }
+
+  const normalizedDob = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+  return { valid: true, dob: normalizedDob, age };
+}
+
+/**
  * Strip private PII before returning a public profile (e.g., for Author directory or comment cards)
  */
 export function sanitizePublicAuthorProfile(user: Partial<User>) {

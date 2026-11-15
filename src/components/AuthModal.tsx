@@ -53,7 +53,7 @@ function calculateAgeFromDob(day: string, month: string, year: string): number {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFullReaderPage }) => {
-  const { login } = useAuth();
+  const { login, getAuthHeaders } = useAuth();
   const [mode, setMode] = useState<AuthMode>('login');
   const [credential, setCredential] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -117,9 +117,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setError(null);
     setSuccessMsg(null);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/verify-identity', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: isEmailInput ? cleanInput : '',
           credential: cleanInput,
@@ -210,9 +211,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setError(null);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/register', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           name: name.trim(),
           email: email.trim(),
@@ -249,9 +251,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setError(null);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: email.trim(),
           phone: phone.trim(),

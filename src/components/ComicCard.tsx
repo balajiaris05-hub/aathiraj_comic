@@ -1,6 +1,6 @@
 import React from 'react';
 import { Comic } from '../types/comic';
-import { Star, BookOpen, Sparkles, IndianRupee } from 'lucide-react';
+import { Star, BookOpen, Lock } from 'lucide-react';
 
 interface ComicCardProps {
   comic: Comic;
@@ -28,8 +28,9 @@ export const ComicCard: React.FC<ComicCardProps> = ({ comic, onClick }) => {
         {/* Access Price / Free Overlay */}
         <div className="absolute top-2.5 right-2.5">
           {comic.accessType === 'premium' ? (
-            <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500 text-slate-950 shadow-sm flex items-center gap-0.5">
-              <span>₹{comic.fullPriceInr || 99}</span>
+            <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500 text-slate-950 shadow-sm flex items-center gap-1">
+              <Lock className="w-3 h-3" />
+              <span>PREMIUM</span>
             </span>
           ) : (
             <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-600 text-white shadow-sm">

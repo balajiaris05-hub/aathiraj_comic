@@ -431,7 +431,7 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
                   required
                   value={authorName}
                   onChange={(e) => setAuthorName(e.target.value)}
-                  placeholder="e.g. Ananya Sundaram"
+                  placeholder="e.g. Your Name or Studio Name"
                   className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                 />
               </div>

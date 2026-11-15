@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Comic, Episode, Chapter } from '../types/comic';
+import { upsertComicAndEpisodesInFirestore } from '../services/firestoreBackend';
 import {
   PenTool,
   Plus,
@@ -47,7 +48,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   onOpenEpisode,
   setCurrentTab,
 }) => {
-  const { user } = useAuth();
+  const { user, getAuthHeaders } = useAuth();
   const [activeTab, setActiveTab] = useState<'comics' | 'new-comic' | 'episodes' | 'earnings'>('comics');
   const [authorComics, setAuthorComics] = useState<Comic[]>([]);
   const [selectedComic, setSelectedComic] = useState<Comic | null>(null);
@@ -58,8 +59,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [newGenre, setNewGenre] = useState('Fantasy');
   const [newCover, setNewCover] = useState('/src/assets/images/comic_cover_blade_1794269871791.jpg');
   const [newAccess, setNewAccess] = useState<'free' | 'premium'>('free');
-  const [newFullPrice, setNewFullPrice] = useState(99);
-  const [newEpPrice, setNewEpPrice] = useState(10);
   const [newAuthorComments, setNewAuthorComments] = useState('');
   const [isSubmittingComic, setIsSubmittingComic] = useState(false);
 
@@ -211,9 +210,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     totalViews: number;
     recentTransactions: any[];
   }>({
-    totalEarningsInr: 2840.0,
-    purchasesCount: 14,
-    totalViews: 87350,
+    totalEarningsInr: 0,
+    purchasesCount: 0,
+    totalViews: 0,
     recentTransactions: [],
   });
 
@@ -228,8 +227,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
       if (user?.id && c.authorId === user.id) return true;
       if (user?.name && c.authorName?.toLowerCase() === user.name?.toLowerCase()) return true;
       if (user?.email && c.authorId === user.email) return true;
-      // Demo author persona
-      if ((user?.id === 'usr_rajesh' || user?.name === 'Rajesh Singh') && (c.authorId === 'usr_rajesh' || c.authorName === 'Rajesh Singh')) return true;
       return false;
     });
 
@@ -292,14 +289,18 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setIsSubmittingForApproval(true);
     setSubmissionFeedback(null);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/author/comics/submit-for-review', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ comicId }),
       });
       const data = await res.json();
       setIsSubmittingForApproval(false);
       if (res.ok) {
+        if (data.comic) {
+          await upsertComicAndEpisodesInFirestore(data.comic).catch(() => null);
+        }
         setSubmissionFeedback(`"${data.comic?.title || 'Your comic'}" has been submitted to the Administrator for approval! Once approved, it will be automatically published live on the website.`);
         onRefreshComics();
         if (data.comic) setSelectedComic(data.comic);
@@ -349,8 +350,8 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           episodeId,
           targetType: type,
           reason: `Author requested ${type} removal (Awaiting Admin approval)`,
-          authorId: user?.id || 'usr_rajesh',
-          authorName: user?.name || 'Rajesh Singh',
+          authorId: user?.id || '',
+          authorName: user?.name || 'Creator',
         }),
       });
       if (res.ok) {
@@ -380,8 +381,8 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           episodeId: target.episodeId,
           targetType: target.type,
           reason: deleteRequestReason.trim() || `Author requested ${target.type} removal (Awaiting Admin approval)`,
-          authorId: user?.id || 'usr_rajesh',
-          authorName: user?.name || 'Rajesh Singh',
+          authorId: user?.id || '',
+          authorName: user?.name || 'Creator',
         }),
       });
       const data = await res.json();
@@ -472,7 +473,8 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const handleCreateComic = async (e: React.FormEvent) => {
     e.preventDefault();
     if (newComicAttachedPages.length === 0) {
-      alert('Please attach at least one comic page / image file.');
+      setSubmissionFeedback('Please attach at least one comic page / image file.');
+      setTimeout(() => setSubmissionFeedback(null), 5000);
       return;
     }
     setIsSubmittingComic(true);
@@ -481,20 +483,21 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     const coverImageUrl = coverPage?.dataUrl || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/comics', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: newTitle,
-          authorId: user?.id || 'usr_rajesh',
-          authorName: user?.name || 'Rajesh Singh',
+          authorId: user?.id || '',
+          authorName: user?.name || 'Creator',
           genre: [newGenre],
           coverImage: coverImageUrl,
           description: newDesc,
           accessType: newAccess,
-          fullPriceInr: newAccess === 'premium' ? newFullPrice : 0,
+          fullPriceInr: newAccess === 'premium' ? 99 : 0,
           chapterPriceInr: newAccess === 'premium' ? 30 : 0,
-          episodePriceInr: newAccess === 'premium' ? newEpPrice : 0,
+          episodePriceInr: newAccess === 'premium' ? 10 : 0,
           attachedFileName: coverPage?.fileName || 'Attached Comic Pages',
           attachedFileSize: `${newComicAttachedPages.length} files`,
           attachedFileType: 'IMAGE_ARCHIVE',
@@ -510,10 +513,11 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
       const data = await res.json();
 
       if (res.ok && data.comic) {
+        let finalComic = data.comic;
         if (submitForApprovalOnCreate) {
-          await fetch('/api/author/comics/submit-for-review', {
+          const revRes = await fetch('/api/author/comics/submit-for-review', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               comicId: data.comic.id,
               attachedFileName: coverPage?.fileName,
@@ -526,13 +530,18 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               })),
             }),
           });
-          setSubmissionFeedback(`"${data.comic.title}" was created and submitted with ${newComicAttachedPages.length} attached pages to Admin for approval! Once approved, it will be automatically published on the website.`);
+          const revData = await revRes.json().catch(() => ({}));
+          if (revRes.ok && revData.comic) {
+            finalComic = revData.comic;
+          }
+          setSubmissionFeedback(`"${finalComic.title}" was created and submitted with ${newComicAttachedPages.length} attached pages to Admin for approval! Once approved, it will be automatically published on the website.`);
           setTimeout(() => setSubmissionFeedback(null), 8000);
         }
 
+        await upsertComicAndEpisodesInFirestore(finalComic).catch(() => null);
         setIsSubmittingComic(false);
         onRefreshComics();
-        setSelectedComic(data.comic);
+        setSelectedComic(finalComic);
         setActiveTab('comics');
         setNewTitle('');
         setNewDesc('');
@@ -541,7 +550,8 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         setSelectedCoverPageId(null);
       } else {
         setIsSubmittingComic(false);
-        alert(data.error || 'Failed to create comic.');
+        setSubmissionFeedback(data.error || 'Failed to create comic.');
+        setTimeout(() => setSubmissionFeedback(null), 6000);
       }
     } catch (err) {
       setIsSubmittingComic(false);
@@ -629,9 +639,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setComicEditError(null);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/comics/${selectedComic.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: editTitle.trim(),
           description: editDesc.trim(),
@@ -648,6 +659,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
       setIsSavingComicEdit(false);
 
       if (res.ok) {
+        if (data.comic) {
+          await upsertComicAndEpisodesInFirestore(data.comic).catch(() => null);
+        }
         setIsEditingComicModalOpen(false);
         setSelectedComic(data.comic);
         onRefreshComics();
@@ -669,9 +683,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setIsUpdatingChapter(true);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: newTitle.trim(),
           authorId: user?.id,
@@ -714,9 +729,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setIsUpdatingEpisode(true);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${selectedChapterId}/episodes/${editingEpisode.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: editEpisodeTitle.trim(),
           synopsis: editEpisodeSynopsis.trim(),
@@ -727,8 +743,12 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         }),
       });
 
+      const data = await res.json().catch(() => ({}));
       setIsUpdatingEpisode(false);
       if (res.ok) {
+        if (data.comic) {
+          await upsertComicAndEpisodesInFirestore(data.comic).catch(() => null);
+        }
         setEditingEpisode(null);
         onRefreshComics();
         setSubmissionFeedback(`"${editEpisodeTitle}" was updated successfully!`);
@@ -763,8 +783,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     });
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${chapId}/episodes/${epId}?authorId=${user?.id || ''}&authorName=${encodeURIComponent(user?.name || '')}`, {
         method: 'DELETE',
+        headers,
       });
       const data = await res.json();
       if (res.ok) {
@@ -772,12 +794,14 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         setSubmissionFeedback('Episode deleted successfully.');
         setTimeout(() => setSubmissionFeedback(null), 5000);
       } else {
-        alert(data.error || 'Failed to delete episode.');
+        setSubmissionFeedback(data.error || 'Failed to delete episode.');
+        setTimeout(() => setSubmissionFeedback(null), 5000);
         onRefreshComics();
       }
     } catch (err) {
       console.error(err);
-      alert('Network error while deleting episode.');
+      setSubmissionFeedback('Network error while deleting episode.');
+      setTimeout(() => setSubmissionFeedback(null), 5000);
       onRefreshComics();
     }
   };
@@ -788,9 +812,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     if (!selectedComic || !chapterTitle.trim()) return;
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: chapterTitle.trim(),
           authorId: user?.id,
@@ -810,11 +835,13 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   // Open Author Live Preview Modal
   const handleOpenAuthorLivePreview = () => {
     if (episodeAttachedPages.length === 0) {
-      alert('Please attach at least one photo (comic page) before launching preview.');
+      setSubmissionFeedback('Please attach at least one photo (comic page) before launching preview.');
+      setTimeout(() => setSubmissionFeedback(null), 5000);
       return;
     }
     if (!episodeTitle.trim()) {
-      alert('Please enter an episode title before launching preview.');
+      setSubmissionFeedback('Please enter an episode title before launching preview.');
+      setTimeout(() => setSubmissionFeedback(null), 5000);
       return;
     }
     setPreviewCurrentPage(1);
@@ -832,9 +859,10 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     const episodeCoverUrl = selectedEpCoverPage?.dataUrl || selectedComic.coverImage;
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/comics/${selectedComic.id}/chapters/${selectedChapterId}/episodes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: episodeTitle.trim(),
           synopsis: episodeSynopsis.trim(),
@@ -851,8 +879,12 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
         }),
       });
 
+      const data = await res.json().catch(() => ({}));
       setIsPublishingEpisode(false);
       if (res.ok) {
+        if (data.comic) {
+          await upsertComicAndEpisodesInFirestore(data.comic).catch(() => null);
+        }
         setShowAuthorLivePreview(false);
         setEpisodeAttachedPages([]);
         setSelectedEpisodeCoverPageId(null);
@@ -2413,7 +2445,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               Access &amp; Monetization Model
             </label>
             
-            <div className="flex items-center gap-6">
+            <div className="flex flex-wrap items-center gap-6">
               <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold">
                 <input
                   type="radio"
@@ -2433,36 +2465,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                   onChange={() => setNewAccess('premium')}
                   className="text-rose-600"
                 />
-                <span>Premium Series (Paid episodes / full unlock)</span>
+                <span>Premium Wall (Platform subscription &amp; standard access)</span>
               </label>
             </div>
-
-            {newAccess === 'premium' && (
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                    Complete Comic Unlock (₹ INR)
-                  </label>
-                  <input
-                    type="number"
-                    value={newFullPrice}
-                    onChange={(e) => setNewFullPrice(Number(e.target.value))}
-                    className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                    Single Episode Default Price (₹ INR)
-                  </label>
-                  <input
-                    type="number"
-                    value={newEpPrice}
-                    onChange={(e) => setNewEpPrice(Number(e.target.value))}
-                    className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
-                  />
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Submission to Admin Option */}

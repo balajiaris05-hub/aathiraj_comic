@@ -1,6 +1,6 @@
 /**
- * Firestore Security Rules Verification Suite (Dirty Dozen Payloads)
- * Verifies that all 12 adversarial payloads defined in security_spec.md return PERMISSION_DENIED.
+ * Firestore Security Rules Verification Suite (Dirty Dozen + Extended Platform Payloads)
+ * Verifies that all adversarial payloads defined in security_spec.md return PERMISSION_DENIED.
  */
 
 export interface SecurityPayloadTest {
@@ -184,6 +184,34 @@ export const DIRTY_DOZEN_TESTS: SecurityPayloadTest[] = [
       paymentMethod: 'UPI',
       receiptNumber: 'INV-9999',
       status: 'success',
+      createdAt: 'SERVER_TIME',
+      updatedAt: 'SERVER_TIME',
+    },
+    expectedOutcome: 'PERMISSION_DENIED',
+  },
+  {
+    id: 13,
+    name: 'Non-Admin Modification of /platformSettings/global_config',
+    collectionPath: '/platformSettings/global_config',
+    operation: 'update',
+    auth: { uid: 'uid_reader', email: 'reader@gmail.com', email_verified: true },
+    payload: {
+      merchantUpiId: 'attacker@okaxis',
+    },
+    expectedOutcome: 'PERMISSION_DENIED',
+  },
+  {
+    id: 14,
+    name: 'Invalid Rating Range (> 5 Stars) on /ratings/{ratingId}',
+    collectionPath: '/ratings/r_bad',
+    operation: 'create',
+    auth: { uid: 'uid_reader', email: 'reader@gmail.com', email_verified: true },
+    payload: {
+      ratingId: 'r_bad',
+      comicId: 'comic_virasen',
+      episodeId: 'ep_v1_1',
+      userId: 'uid_reader',
+      stars: 10,
       createdAt: 'SERVER_TIME',
       updatedAt: 'SERVER_TIME',
     },

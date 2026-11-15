@@ -1,6 +1,12 @@
 User-agent: *
 Allow: /
+Allow: /books
+Allow: /comic/
+Allow: /authors
+Allow: /about
+Allow: /premium
 Disallow: /api/admin/
 Disallow: /api/admin-auth/
+Disallow: /admin
 
 Sitemap: https://aathiraicomic.app/sitemap.xml

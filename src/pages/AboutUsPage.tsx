@@ -35,7 +35,7 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({ setCurrentTab }) => {
         </p>
 
         <p>
-          Whether it is the celestial mythological combats of <em>Virasen</em>, the rain-drenched cyberpunk streets of <em>Neo Madras 2099</em>, or romantic wanderings in Ooty, we are committed to building the most enjoyable comic reading experience on the web.
+          Whether it is celestial mythological epics, rain-drenched futuristic cyberpunk realms, or heartfelt slice-of-life journeys, we are committed to building the most enjoyable comic reading experience on the web.
         </p>
       </div>
 

@@ -141,7 +141,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                           <Calendar className="w-3 h-3 text-sky-500" /> DOB / Age:
                         </span>
                         <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                          {user.dob || '15/05/2002'} ({user.age ? `${user.age} yrs` : '24 yrs'})
+                          {user.dob || 'Not set'} ({user.age ? `${user.age} yrs` : 'Age not set'})
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
@@ -149,7 +149,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                           <Phone className="w-3 h-3 text-amber-500" /> Mobile:
                         </span>
                         <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                          {user.phone || '+91 8610950780'}
+                          {user.phone || 'Not set'}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">

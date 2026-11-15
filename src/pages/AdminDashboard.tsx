@@ -11,9 +11,11 @@ import {
   DeleteRequest,
   GstBusinessSettings,
   CreditNoteRecord,
+  AdPlacementRequest,
 } from '../types/comic';
 import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
 import { firebaseConfig, syncAllPlatformDataToFirestore, syncGstSettingsToFirestore } from '../firebase';
+import { upsertComicAndEpisodesInFirestore, upsertAdRequestInFirestore, fetchAdRequestsFromFirestore } from '../services/firestoreBackend';
 import {
   INDIAN_STATES_AND_UTS,
   DEFAULT_GST_SETTINGS,
@@ -90,10 +92,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   setCurrentTab,
   initialSubTab,
 }) => {
-  const { user, switchDemoRole, updateUser } = useAuth();
+  const { user, switchDemoRole, updateUser, getAuthHeaders } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
+    'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'ad-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
   >(() => {
     if (initialSubTab === 'delete-requests') return 'delete-requests';
     if (initialSubTab === 'gst-billing') return 'gst-billing';
@@ -101,21 +103,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   });
 
   const [stats, setStats] = useState<any>({
-    totalUsers: 14,
-    totalAuthors: 2,
-    pendingApplications: 1,
-    approvedAuthors: 1,
-    totalComics: 4,
-    totalChapters: 6,
-    totalEpisodes: 12,
-    totalComments: 8,
-    totalTransactions: 16,
-    totalRevenueInr: 3420.0,
-    totalAuthorEarningsInr: 2394.0,
+    totalUsers: 0,
+    totalAuthors: 0,
+    pendingApplications: 0,
+    approvedAuthors: 0,
+    totalComics: 0,
+    totalChapters: 0,
+    totalEpisodes: 0,
+    totalComments: 0,
+    totalTransactions: 0,
+    totalRevenueInr: 0,
+    totalAuthorEarningsInr: 0,
   });
 
   const [allComicsWithPending, setAllComicsWithPending] = useState<Comic[]>([]);
   const [deleteRequests, setDeleteRequests] = useState<DeleteRequest[]>([]);
+  const [adRequests, setAdRequests] = useState<AdPlacementRequest[]>([]);
   const [deleteReviewNote, setDeleteReviewNote] = useState('');
   const [applications, setApplications] = useState<AuthorApplication[]>([]);
   const [transactions, setTransactions] = useState<Purchase[]>([]);
@@ -188,6 +191,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [previewQueuePageIdx, setPreviewQueuePageIdx] = useState<number>(0);
   const [previewQueueMode, setPreviewQueueMode] = useState<'page' | 'vertical'>('page');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [firestoreStatus, setFirestoreStatus] = useState<any>(null);
+  const [isSyncingFirestore, setIsSyncingFirestore] = useState(false);
 
   // Search/Filters in Financial Tab
   const [txSearch, setTxSearch] = useState('');
@@ -226,7 +231,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     // Helper to safely fetch and set data
     const safeFetch = async (url: string, setter: (data: any) => void) => {
       try {
-        const res = await fetch(url);
+        const headers = await getAuthHeaders();
+        const res = await fetch(url, { headers });
         if (res.ok) {
           const d = await res.json();
           setter(d);
@@ -247,11 +253,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       safeFetch('/api/admin/ratings', (d) => setAllRatings(Array.isArray(d) ? d : (d.ratings || []))),
       safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(Array.isArray(d) ? d : (d.comics || []))),
       safeFetch('/api/admin/delete-requests', (d) => setDeleteRequests(Array.isArray(d) ? d : (d.deleteRequests || []))),
+      safeFetch('/api/admin/ad-requests', async (d) => {
+        const backendItems: AdPlacementRequest[] = Array.isArray(d) ? d : (d.adRequests || []);
+        const fsItems = await fetchAdRequestsFromFirestore().catch(() => [] as AdPlacementRequest[]);
+        const mergedMap = new Map<string, AdPlacementRequest>();
+        for (const item of backendItems) mergedMap.set(item.id, item);
+        for (const item of fsItems) {
+          if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+        }
+        const merged = Array.from(mergedMap.values()).sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        setAdRequests(merged);
+      }),
       safeFetch('/api/admin/readers', (d) => setReaderAccounts(Array.isArray(d) ? d : (d.readers || []))),
       safeFetch('/api/admin/gst/settings', (d) => {
         if (d?.gstSettings) setGstSettings(d.gstSettings);
         if (Array.isArray(d?.creditNotes)) setCreditNotes(d.creditNotes);
       }),
+      safeFetch('/api/admin/firestore/status', (d) => setFirestoreStatus(d)),
     ]);
   };
 
@@ -269,6 +289,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setActionMessage(data.message);
         setDeleteReviewNote('');
         onRefreshComics();
+        fetchAdminData();
+        setTimeout(() => setActionMessage(null), 5000);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleUpdateAdRequestStatus = async (
+    requestId: string,
+    status: 'pending' | 'contacted' | 'approved' | 'rejected'
+  ) => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`/api/admin/ad-requests/${requestId}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json();
+      if (res.ok && data.adRequest) {
+        await upsertAdRequestInFirestore(data.adRequest).catch(() => null);
+        setActionMessage(`Company Ad Request from "${data.adRequest.companyName}" updated to "${status}".`);
         fetchAdminData();
         setTimeout(() => setActionMessage(null), 5000);
       }
@@ -593,9 +636,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         attachedFileType: 'IMAGE_GALLERY',
       };
 
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/admin/comics/publish-direct', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
 
@@ -603,6 +647,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setIsDirectPublishing(false);
 
       if (res.ok) {
+        if (data.comic) {
+          await upsertComicAndEpisodesInFirestore(data.comic).catch(() => null);
+        }
         setShowLivePreview(false);
         setPublishedEpisodeInfo({
           comicTitle: data.comic.title,
@@ -1190,9 +1237,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <Users className="w-4 h-4" />
                   </div>
                 </div>
-                <p className="text-[11px] text-slate-400 mt-1.5">
-                  Notice: Authorized administrator accounts: <strong className="text-amber-500 font-mono">balajiaris05@gmail.com</strong>, <strong className="text-amber-500 font-mono">admin@aathirai.com</strong>, or Indian mobile (+91 8610950780).
-                </p>
               </div>
 
               {/* Delivery Channel Radio Choice */}
@@ -1524,6 +1568,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           { id: 'my-comics-episodes-upload', label: 'My Comic & Episode / Upload New Comic' },
           { id: 'comic-queue', label: `Comic Approvals Queue (${pendingComics.length})` },
           { id: 'delete-requests', label: `🗑️ Delete Requests (${deleteRequests.filter(r => r.status === 'pending').length})` },
+          { id: 'ad-requests', label: `📢 Ad Requests (${adRequests.length})` },
           { id: 'comics', label: 'Paywall & Catalog Moderation' },
           { id: 'gst-billing', label: '🧾 GST & Billing' },
           { id: 'authors', label: `Author Profiles (${applications.filter(a => a.status === 'pending').length})` },
@@ -1794,33 +1839,63 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div>
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 mb-1">
                   <Users className="w-3 h-3" />
-                  <span>Reader Account Tracking ({readerAccounts.length} Accounts) · Firebase Project: {firebaseConfig.projectId}</span>
+                  <span>
+                    Reader Account Tracking ({readerAccounts.length} Accounts) · Firebase Project: {firebaseConfig.projectId} · DB:{' '}
+                    {firestoreStatus?.connected ? 'Connected' : 'Checking...'}
+                  </span>
                 </div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
                   Tracked Reader Accounts (Gmail, Mobile, UPI ID &amp; Premium Paywall Status)
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   Tracks every reader&apos;s connected Gmail, Mobile Number, UPI ID, and active 1-Month (₹49) or 6-Months (₹249) Premium subscription.
+                  {firestoreStatus?.publishedComicsInFirestore !== undefined
+                    ? ` Live Firestore Catalog: ${firestoreStatus.publishedComicsInFirestore} published series.`
+                    : ''}
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-wrap self-start">
                 <button
                   type="button"
+                  disabled={isSyncingFirestore}
                   onClick={async () => {
+                    setIsSyncingFirestore(true);
                     try {
-                      await syncAllPlatformDataToFirestore({
+                      const headers = await getAuthHeaders();
+                      const res = await syncAllPlatformDataToFirestore({
                         readers: readerAccounts,
                         comics: allComicsWithPending.length > 0 ? allComicsWithPending : comics,
+                        purchases: transactions,
+                        authorApplications: applications,
+                        deleteRequests,
+                        gstSettings,
+                        platformSettings: settings,
                       });
+                      await fetch('/api/admin/firestore/sync', {
+                        method: 'POST',
+                        headers,
+                      }).catch(() => null);
+                      setActionMessage(
+                        `Synced to Firebase Firestore (${firebaseConfig.projectId}): ${res?.syncedReaders || 0} readers, ${res?.syncedComics || 0} comics, ${res?.syncedEpisodes || 0} episodes, ${res?.syncedPurchases || 0} purchases.`
+                      );
+                      setTimeout(() => setActionMessage(null), 6000);
                       fetchAdminData();
-                    } catch (e) {
+                    } catch (e: any) {
                       console.error('Firestore sync error:', e);
+                      setActionMessage(`Firestore sync notice: ${e?.message || 'Please sign in with Google Admin (balajiaris05@gmail.com) to sync directly.'}`);
+                      setTimeout(() => setActionMessage(null), 6000);
+                    } finally {
+                      setIsSyncingFirestore(false);
                     }
                   }}
-                  className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                  className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  <span>Store All in Firebase Firestore ({firebaseConfig.projectId})</span>
+                  <span>
+                    {isSyncingFirestore
+                      ? 'Syncing All 15 Collections...'
+                      : `Store All in Firebase Firestore (${firebaseConfig.projectId})`}
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -4476,6 +4551,203 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             Save Platform Settings
           </button>
         </form>
+      )}
+
+      {/* TAB 10.5: COMPANY AD & SPONSORSHIP REQUESTS */}
+      {activeTab === 'ad-requests' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white font-heading">
+                Company In-Comic Ad Requests ({adRequests.filter(r => r.status === 'pending').length} Pending)
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Brands requesting in-comic character promotions, sponsored pages, and episode sponsorships. Official contact:{' '}
+                <strong className="font-mono text-amber-500">aathiraicomic@gmail.com</strong>
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={fetchAdminData}
+              className="py-2 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-auto"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Refresh Ad Requests</span>
+            </button>
+          </div>
+
+          {adRequests.length === 0 ? (
+            <div className="p-10 text-center rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-500">
+              No company ad placement requests submitted yet. Companies can submit requests from the Home Page.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {adRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="p-5 sm:p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 text-xs"
+                >
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <h3 className="text-base font-extrabold text-slate-900 dark:text-white font-heading">
+                        {req.companyName}
+                      </h3>
+                      <span className="px-2.5 py-0.5 rounded bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30 text-[10px] font-bold uppercase">
+                        {req.placementType === 'character_promotion'
+                          ? 'In-Comic Character Promotion'
+                          : req.placementType === 'sponsored_page'
+                          ? 'Sponsored Comic Page'
+                          : 'Episode Sponsor'}
+                      </span>
+                      <span
+                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          req.status === 'approved'
+                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                            : req.status === 'contacted'
+                            ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
+                            : req.status === 'rejected'
+                            ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                            : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                        }`}
+                      >
+                        {req.status}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[11px] font-mono text-slate-500 dark:text-slate-400 shrink-0">
+                      <span>Submitted: {new Date(req.createdAt).toLocaleString()}</span>
+                    </div>
+                  </div>
+
+                  {/* Full Entered Company Details Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Company / Brand Name
+                      </span>
+                      <span className="font-bold text-slate-900 dark:text-white select-all">
+                        {req.companyName}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Contact Person
+                      </span>
+                      <span className="font-bold text-slate-900 dark:text-white select-all">
+                        {req.contactName}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Work / Business Email
+                      </span>
+                      <a
+                        href={`mailto:${req.contactEmail}`}
+                        className="font-mono font-bold text-rose-600 dark:text-rose-400 hover:underline break-all select-all"
+                      >
+                        {req.contactEmail}
+                      </a>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Phone / WhatsApp
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-white select-all">
+                        {req.contactPhone?.trim() ? req.contactPhone : 'Not provided'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Ad Placement Format
+                      </span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {req.placementType === 'character_promotion'
+                          ? 'In-Comic Character Promotion (Inside Comic Pages)'
+                          : req.placementType === 'sponsored_page'
+                          ? 'Full Sponsored Comic Page (Inside Episode)'
+                          : 'Episode & Series Sponsor Banner'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Target Comic Series
+                      </span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {req.targetComicTitle || 'Any Popular Comic Series'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Estimated Campaign Budget
+                      </span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                        {req.budgetRange || 'Custom Campaign'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">
+                        Request ID / Account
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-600 dark:text-slate-300 break-all select-all">
+                        {req.id}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Exact Campaign Brief Entered by Company */}
+                  <div className="p-4 rounded-xl bg-amber-50/40 dark:bg-slate-950 border border-amber-500/20 dark:border-slate-800 space-y-1.5">
+                    <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                      Campaign Description &amp; Character Promotion Request (As Entered)
+                    </span>
+                    <p className="text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap select-text">
+                      {req.description}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <a
+                      href={`mailto:${req.contactEmail}?subject=${encodeURIComponent(
+                        `Re: Your Ad Placement Request for ${req.companyName} on Aathirai_Comic`
+                      )}`}
+                      className="py-1.5 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold inline-flex items-center gap-1.5"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>Reply via Email ({req.contactEmail})</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateAdRequestStatus(req.id, 'contacted')}
+                      className="py-1.5 px-3 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-600 dark:text-sky-400 font-bold cursor-pointer"
+                    >
+                      Mark Contacted
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateAdRequestStatus(req.id, 'approved')}
+                      className="py-1.5 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 font-bold cursor-pointer"
+                    >
+                      Approve Campaign
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateAdRequestStatus(req.id, 'rejected')}
+                      className="py-1.5 px-3 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-400 font-bold cursor-pointer"
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* TAB 11: AUDIT LOGS */}

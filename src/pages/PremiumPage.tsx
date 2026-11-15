@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   Sparkles,
@@ -12,9 +12,23 @@ import {
   RefreshCw,
   Lock,
   Unlock,
-  UserCheck
+  UserCheck,
+  ExternalLink
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
+
+const RAZORPAY_PLAN_LINKS = {
+  '1_month': {
+    id: 'sub_U0DeTe3l42sQ9K',
+    planId: 'plan_U0CwrDGonjUDN2',
+    url: 'https://rzp.io/rzp/eMyTbngF',
+  },
+  '6_months': {
+    id: 'sub_U0DEqhM6bgOd0h',
+    planId: 'plan_U0DDDaA2ru0PLQ',
+    url: 'https://rzp.io/rzp/E077NNn',
+  },
+} as const;
 
 interface PremiumPageProps {
   openAuthModal: () => void;
@@ -29,7 +43,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
   redirectNotice,
   onClearRedirectNotice,
 }) => {
-  const { user, hasActivePremium, refreshUser } = useAuth();
+  const { user, hasActivePremium, refreshUser, getAuthHeaders } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState<{
     open: boolean;
     planKey: '1_month' | '6_months';
@@ -49,29 +63,86 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
     activePlan?: '1_month' | '6_months' | null;
     expiresAt?: string;
     activeReceipt?: string;
+    transactionId?: string | null;
+    paymentMethod?: string | null;
     verifiedGmail?: string | null;
+    razorpayVerified?: boolean;
+    verificationSource?: string;
+    razorpayApiConfigured?: boolean;
   } | null>(null);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+  const [awaitingPaymentInfo, setAwaitingPaymentInfo] = useState<string | null>(null);
+  const [razorpayPaymentIdInput, setRazorpayPaymentIdInput] = useState('');
+  const [verifyNotice, setVerifyNotice] = useState<string | null>(null);
+  const isMountedRef = useRef(true);
+  const verifyingInFlightRef = useRef(false);
 
-  const handleVerifyGmailAccess = async () => {
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const handleVerifyGmailAccess = async (explicitPaymentId?: string) => {
     if (!user) {
       openAuthModal();
       return;
     }
+    if (verifyingInFlightRef.current) return;
+    verifyingInFlightRef.current = true;
     setVerifyingGmail(true);
+    setVerifyNotice(null);
+
+    const payIdParam = (explicitPaymentId ?? razorpayPaymentIdInput).trim();
+    const url = `/api/payments/verify-access?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(
+      user.email
+    )}&phone=${encodeURIComponent(user.phone || '')}${payIdParam ? `&paymentId=${encodeURIComponent(payIdParam)}` : ''}`;
+
     try {
-      const res = await fetch(
-        `/api/payments/verify-access?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}&phone=${encodeURIComponent(user.phone || '')}`
-      );
-      const data = await res.json();
-      if (res.ok) {
+      const headers = await getAuthHeaders();
+      let res: Response | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          res = await fetch(url, { cache: 'no-store', headers });
+          break;
+        } catch {
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 450));
+          }
+        }
+      }
+
+      if (!res) {
+        if (isMountedRef.current) {
+          setVerifyNotice('Could not reach the verification server just now. Please tap Verify Payment Status again.');
+        }
+        return;
+      }
+
+      if (res.ok && isMountedRef.current) {
+        const data = await res.json();
         setVerificationResult(data);
         await refreshUser();
+        if (data.hasAccess) {
+          setAwaitingPaymentInfo(null);
+          if (data.razorpayVerified) {
+            setBannerMsg(
+              `Razorpay Payment Verified (${data.transactionId || data.activeReceipt || 'Active Pass'})! All paywalled comics are unlocked for ${user.email}.`
+            );
+          }
+        } else if (payIdParam) {
+          setVerifyNotice(
+            data.razorpayError ||
+              `No captured Razorpay subscription found yet for Payment ID ${payIdParam}.`
+          );
+        }
       }
-    } catch (e) {
-      console.error(e);
     } finally {
-      setVerifyingGmail(false);
+      verifyingInFlightRef.current = false;
+      if (isMountedRef.current) {
+        setVerifyingGmail(false);
+      }
     }
   };
 
@@ -80,6 +151,15 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
       handleVerifyGmailAccess();
     }
   }, [user?.id, user?.email]);
+
+  useEffect(() => {
+    if (!awaitingPaymentInfo || !user?.email) return;
+    const onFocus = () => {
+      handleVerifyGmailAccess();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [awaitingPaymentInfo, user?.id, user?.email]);
 
   const openPlanCheckout = (planKey: '1_month' | '6_months', title: string, amountInr: number) => {
     if (!user) {
@@ -177,10 +257,10 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                   )}
                 </div>
                 {hasActivePremium && user.premiumExpiresAt ? (
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1 pt-0.5">
-                    <Clock className="w-3 h-3" />
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1 pt-0.5 flex-wrap">
+                    <Clock className="w-3 h-3 shrink-0" />
                     <span>
-                      Paywall Unlocked! Valid until {new Date(user.premiumExpiresAt).toLocaleDateString()} ({verificationResult?.activeReceipt ? `Receipt: ${verificationResult.activeReceipt}` : 'Verified via Gmail'})
+                      Razorpay Payment Verified · Valid until {new Date(user.premiumExpiresAt).toLocaleDateString()} ({verificationResult?.transactionId ? `Razorpay ID: ${verificationResult.transactionId}` : verificationResult?.activeReceipt ? `Receipt: ${verificationResult.activeReceipt}` : 'Verified in Backend DB'})
                     </span>
                   </p>
                 ) : (
@@ -202,12 +282,12 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
             <>
               <button
                 type="button"
-                onClick={handleVerifyGmailAccess}
+                onClick={() => handleVerifyGmailAccess()}
                 disabled={verifyingGmail}
                 className="py-2 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${verifyingGmail ? 'animate-spin text-rose-500' : ''}`} />
-                <span>{verifyingGmail ? 'Verifying Gmail...' : 'Verify Payment Status'}</span>
+                <span>{verifyingGmail ? 'Verifying Razorpay...' : 'Verify Payment Status'}</span>
               </button>
               <button
                 type="button"
@@ -229,6 +309,52 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
           )}
         </div>
       </div>
+
+      {verifyNotice && (
+        <div className="max-w-4xl mx-auto p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs font-semibold flex items-center justify-between gap-3">
+          <span>{verifyNotice}</span>
+          <button
+            type="button"
+            onClick={() => handleVerifyGmailAccess()}
+            className="px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] shrink-0 cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {awaitingPaymentInfo && !hasActivePremium && (
+        <div className="max-w-4xl mx-auto p-4 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-700 dark:text-sky-300 text-xs font-semibold space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <span>{awaitingPaymentInfo}</span>
+            <button
+              type="button"
+              onClick={() => handleVerifyGmailAccess()}
+              disabled={verifyingGmail}
+              className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+            >
+              {verifyingGmail ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-sky-500/20">
+            <input
+              type="text"
+              placeholder="Optional: Paste Razorpay Payment ID (pay_...)"
+              value={razorpayPaymentIdInput}
+              onChange={(e) => setRazorpayPaymentIdInput(e.target.value)}
+              className="flex-1 px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-950 border border-sky-500/30 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+            <button
+              type="button"
+              onClick={() => handleVerifyGmailAccess(razorpayPaymentIdInput)}
+              disabled={verifyingGmail || !razorpayPaymentIdInput.trim()}
+              className="px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-sky-500 text-white dark:text-slate-950 font-extrabold text-[11px] disabled:opacity-50 cursor-pointer shrink-0"
+            >
+              Verify Razorpay ID
+            </button>
+          </div>
+        </div>
+      )}
 
       {bannerMsg && (
         <div className="max-w-4xl mx-auto p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-bold flex items-center justify-between gap-3">
@@ -290,32 +416,63 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
             </ul>
           </div>
 
-          <button
-            type="button"
-            disabled={hasActivePremium}
-            onClick={() => openPlanCheckout('1_month', '1 Month Premium Pass (30 Days)', 49)}
-            className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all ${
-              hasActivePremium
-                ? user?.premiumPlan === '1_month'
-                  ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
-                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
-                : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer'
-            }`}
-          >
-            {hasActivePremium
-              ? user?.premiumPlan === '1_month'
-                ? `✓ Active Until ${
-                    user?.premiumExpiresAt
-                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                      : 'Expiry'
-                  } · Choose After Plan Ends`
-                : `Available After Current Plan Ends (${
-                    user?.premiumExpiresAt
-                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                      : ''
-                  })`
-              : 'Subscribe 1 Month Premium — ₹49'}
-          </button>
+          <div className="space-y-2">
+            {hasActivePremium ? (
+              <button
+                type="button"
+                disabled
+                className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all ${
+                  user?.premiumPlan === '1_month'
+                    ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                    : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                {user?.premiumPlan === '1_month'
+                  ? `✓ Active Until ${
+                      user?.premiumExpiresAt
+                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                        : 'Expiry'
+                    } · Choose After Plan Ends`
+                  : `Available After Current Plan Ends (${
+                      user?.premiumExpiresAt
+                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                        : ''
+                    })`}
+              </button>
+            ) : !user ? (
+              <button
+                type="button"
+                onClick={openAuthModal}
+                className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer"
+              >
+                Subscribe 1 Month Premium — ₹49
+              </button>
+            ) : (
+              <>
+                <a
+                  href={RAZORPAY_PLAN_LINKS['1_month'].url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() =>
+                    setAwaitingPaymentInfo(
+                      `Razorpay payment page opened for 1 Month Pass (₹49). Please enter your registered email (${user.email}) or phone when completing payment, then click "Verify Payment Status Now".`
+                    )
+                  }
+                  className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <span>Subscribe 1 Month Premium — ₹49</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => openPlanCheckout('1_month', '1 Month Premium Pass (30 Days)', 49)}
+                  className="w-full text-[11px] font-semibold text-slate-500 hover:text-rose-500 dark:text-slate-400 dark:hover:text-rose-400 transition-colors cursor-pointer py-1"
+                >
+                  Or pay via In-App Checkout
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* PLAN 2: 6 MONTHS PREMIUM — ₹249 */}
@@ -365,32 +522,63 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
             </ul>
           </div>
 
-          <button
-            type="button"
-            disabled={hasActivePremium}
-            onClick={() => openPlanCheckout('6_months', '6 Months Premium Pass (180 Days)', 249)}
-            className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all ${
-              hasActivePremium
-                ? user?.premiumPlan === '6_months'
-                  ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
-                  : 'bg-slate-800 text-slate-400 cursor-not-allowed'
-                : 'bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer'
-            }`}
-          >
-            {hasActivePremium
-              ? user?.premiumPlan === '6_months'
-                ? `✓ Active Until ${
-                    user?.premiumExpiresAt
-                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                      : 'Expiry'
-                  } · Choose After Plan Ends`
-                : `Available After Current Plan Ends (${
-                    user?.premiumExpiresAt
-                      ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                      : ''
-                  })`
-              : 'Subscribe 6 Months Premium — ₹249'}
-          </button>
+          <div className="space-y-2">
+            {hasActivePremium ? (
+              <button
+                type="button"
+                disabled
+                className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all ${
+                  user?.premiumPlan === '6_months'
+                    ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                    : 'bg-slate-800 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                {user?.premiumPlan === '6_months'
+                  ? `✓ Active Until ${
+                      user?.premiumExpiresAt
+                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                        : 'Expiry'
+                    } · Choose After Plan Ends`
+                  : `Available After Current Plan Ends (${
+                      user?.premiumExpiresAt
+                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
+                        : ''
+                    })`}
+              </button>
+            ) : !user ? (
+              <button
+                type="button"
+                onClick={openAuthModal}
+                className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer"
+              >
+                Subscribe 6 Months Premium — ₹249
+              </button>
+            ) : (
+              <>
+                <a
+                  href={RAZORPAY_PLAN_LINKS['6_months'].url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() =>
+                    setAwaitingPaymentInfo(
+                      `Razorpay payment page opened for 6 Months Pass (₹249). Please enter your registered email (${user.email}) or phone when completing payment, then click "Verify Payment Status Now".`
+                    )
+                  }
+                  className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <span>Subscribe 6 Months Premium — ₹249</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => openPlanCheckout('6_months', '6 Months Premium Pass (180 Days)', 249)}
+                  className="w-full text-[11px] font-semibold text-slate-400 hover:text-amber-400 transition-colors cursor-pointer py-1"
+                >
+                  Or pay via In-App Checkout
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
       </div>

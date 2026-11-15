@@ -62,7 +62,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
 }) => {
   const { user, updateUser, refreshUser, getAuthHeaders } = useAuth();
   const [selectedMethod, setSelectedMethod] = useState<'upi' | 'card' | 'netbanking' | 'wallet'>('upi');
-  const [upiId, setUpiId] = useState(user?.upiId || 'balajiaris05@okaxis');
+  const [upiId, setUpiId] = useState(user?.upiId || '');
   const [merchantUpiId, setMerchantUpiId] = useState('balajiaris05@okaxis');
   const [merchantUpiName, setMerchantUpiName] = useState('Aathirai_Comic Official');
   const [paymentMode, setPaymentMode] = useState<'unconfigured' | 'test' | 'live'>('test');
@@ -183,6 +183,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           subscriptionPlan,
           amountInr,
           userId: user?.id || 'usr_guest',
+          customerName: user?.name || 'Customer',
           userEmail: user?.email || 'customer@aathirai.com',
           userPhone: user?.phone,
           paymentMethod: methodDesc,
@@ -209,6 +210,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
             razorpayPaymentId: params.razorpayPaymentId,
             razorpaySignature: params.razorpaySignature,
             userId: user?.id || 'usr_guest',
+            customerName: user?.name || 'Customer',
             userEmail: user?.email || 'customer@aathirai.com',
             userPhone: user?.phone,
             userUpiId: selectedMethod === 'upi' ? upiId.trim() : user?.upiId,

@@ -122,7 +122,50 @@ function calculateAgeFromDob(day: string, month: string, year: string): number {
   if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < d)) {
     age--;
   }
-  return Math.max(5, Math.min(110, age));
+  return Math.max(5, Math.min(115, age));
+}
+
+function validateCalendarDob(
+  day: string,
+  month: string,
+  year: string
+): { valid: boolean; dob?: string; age?: number; error?: string } {
+  if (!day || !month || !year) {
+    return { valid: false, error: 'Please select your Date of Birth (Date, Month, and Year).' };
+  }
+  const d = parseInt(day, 10);
+  const m = parseInt(month, 10);
+  const y = parseInt(year, 10);
+  const currentYear = new Date().getFullYear();
+  if (!Number.isInteger(d) || !Number.isInteger(m) || !Number.isInteger(y) || y < 1910 || y > currentYear || m < 1 || m > 12) {
+    return { valid: false, error: 'Please select a valid Date of Birth.' };
+  }
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  if (
+    Number.isNaN(probe.getTime()) ||
+    probe.getUTCFullYear() !== y ||
+    probe.getUTCMonth() !== m - 1 ||
+    probe.getUTCDate() !== d
+  ) {
+    return {
+      valid: false,
+      error: `Invalid calendar date (${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}). Please check the day for that month.`,
+    };
+  }
+  const dobLocal = new Date(y, m - 1, d);
+  const today = new Date();
+  if (dobLocal.getTime() > today.getTime()) {
+    return { valid: false, error: 'Date of Birth cannot be in the future.' };
+  }
+  const age = calculateAgeFromDob(day, month, year);
+  if (age < 5 || age > 115) {
+    return { valid: false, error: 'Customer age must be between 5 and 115 years.' };
+  }
+  return {
+    valid: true,
+    dob: `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`,
+    age,
+  };
 }
 
 export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
@@ -131,7 +174,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   setCurrentTab,
   initialMode = 'profile',
 }) => {
-  const { user, login, logout, updateUser, refreshUser, hasActivePremium } = useAuth();
+  const { user, login, logout, updateUser, refreshUser, hasActivePremium, getAuthHeaders } = useAuth();
 
   const [viewSection, setViewSection] = useState<'login_register_form' | 'profile_dashboard'>(
     initialMode === 'login' || !user ? 'login_register_form' : 'profile_dashboard'
@@ -146,12 +189,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   }, [initialMode]);
 
   // Parse existing user DOB (DD/MM/YYYY) if present for profile dashboard editing only
-  const initialDobParts = (user?.dob || '15/05/2002').split('/');
+  const initialDobParts = (user?.dob || '').split('/');
   const [dobDay, setDobDay] = useState('');
   const [dobMonth, setDobMonth] = useState('');
   const [dobYear, setDobYear] = useState('');
 
   const [authTab, setAuthTab] = useState<'login' | 'register' | 'verify-otp' | 'change-password'>('login');
+  const [loginMethod, setLoginMethod] = useState<'gmail' | 'mobile'>('gmail');
   const [credential, setCredential] = useState('');
   const [loginCountryCode, setLoginCountryCode] = useState('+91');
   const [loginPhone, setLoginPhone] = useState('');
@@ -162,6 +206,24 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [identityVerified, setIdentityVerified] = useState(false);
   const [verifiedDbStatus, setVerifiedDbStatus] = useState<'exists' | 'not_found' | null>(null);
   const [verifiedCustomerName, setVerifiedCustomerName] = useState('');
+  const [verifiedCustomerEmail, setVerifiedCustomerEmail] = useState('');
+  const [verifiedCustomerPhone, setVerifiedCustomerPhone] = useState('');
+  const [verifiedUserId, setVerifiedUserId] = useState('');
+  const [verifiedRazorpayStatus, setVerifiedRazorpayStatus] = useState<{
+    hasActiveSubscription: boolean;
+    activePlan: '1_month' | '6_months' | null;
+    amountPaidInr?: number;
+    expiresAt?: string | null;
+    transactionId?: string | null;
+    receiptNumber?: string | null;
+    paymentMethod?: string | null;
+    razorpayVerified: boolean;
+    verificationSource?: string;
+    razorpayApiConfigured?: boolean;
+  } | null>(null);
+  const [razorpayVerifyPaymentId, setRazorpayVerifyPaymentId] = useState('');
+  const [razorpayVerifyLoading, setRazorpayVerifyLoading] = useState(false);
+  const [razorpayVerifyError, setRazorpayVerifyError] = useState<string | null>(null);
   const [remainingAttempts, setRemainingAttempts] = useState<number>(3);
   const [isAccountLocked, setIsAccountLocked] = useState<boolean>(false);
   const [lockedUntilIso, setLockedUntilIso] = useState<string | null>(null);
@@ -201,8 +263,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [notifyMobile, setNotifyMobile] = useState<boolean>(user?.notifyMobile ?? true);
 
   const hasSelectedDob = Boolean(dobDay && dobMonth && dobYear);
-  const calculatedAge = hasSelectedDob ? calculateAgeFromDob(dobDay, dobMonth, dobYear) : 22;
-  const formattedDob = hasSelectedDob ? `${dobDay}/${dobMonth}/${dobYear}` : '';
+  const dobCheck = hasSelectedDob ? validateCalendarDob(dobDay, dobMonth, dobYear) : null;
+  const calculatedAge = dobCheck?.valid && dobCheck.age ? dobCheck.age : 22;
+  const formattedDob = dobCheck?.valid && dobCheck.dob ? dobCheck.dob : '';
 
   const [otp, setOtp] = useState('');
   const [sandboxOtp, setSandboxOtp] = useState<string | null>(null);
@@ -217,13 +280,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [editCountryCode, setEditCountryCode] = useState(user?.countryCode || '+91');
   const [editPhone, setEditPhone] = useState(user?.phone || '');
   const [editAvatar, setEditAvatar] = useState(user?.avatar || '');
-  const [editDobDay, setEditDobDay] = useState(initialDobParts[0] || '15');
-  const [editDobMonth, setEditDobMonth] = useState(initialDobParts[1] || '05');
-  const [editDobYear, setEditDobYear] = useState(initialDobParts[2] || '2002');
+  const [editDobDay, setEditDobDay] = useState(initialDobParts[0] || '');
+  const [editDobMonth, setEditDobMonth] = useState(initialDobParts[1] || '');
+  const [editDobYear, setEditDobYear] = useState(initialDobParts[2] || '');
   const [editNotifyGmail, setEditNotifyGmail] = useState<boolean>(user?.notifyGmail ?? true);
   const [editNotifyMobile, setEditNotifyMobile] = useState<boolean>(user?.notifyMobile ?? true);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   // Real-time Gmail verification state
   const [verifyingStatus, setVerifyingStatus] = useState(false);
@@ -247,12 +311,18 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     if (user) {
       setEditName(user.name || '');
       setEditEmail(user.email || '');
+      setEditCountryCode(user.countryCode || '+91');
       setEditPhone(user.phone || '');
-      const parts = (user.dob || '15/05/2002').split('/');
+      setEditAvatar(user.avatar || '');
+      const parts = (user.dob || '').split('/');
       if (parts.length === 3) {
         setEditDobDay(parts[0]);
         setEditDobMonth(parts[1]);
         setEditDobYear(parts[2]);
+      } else {
+        setEditDobDay('');
+        setEditDobMonth('');
+        setEditDobYear('');
       }
       setEditNotifyGmail(user.notifyGmail ?? true);
       setEditNotifyMobile(user.notifyMobile ?? true);
@@ -314,11 +384,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           }
         })
         .catch(() => {});
+      const headers = await getAuthHeaders();
       const params = new URLSearchParams();
       if (user.id) params.set('userId', user.id);
       if (user.email) params.set('email', user.email);
       if (user.phone) params.set('phone', user.phone);
-      const res = await fetch(`/api/auth/reader-status?${params.toString()}`);
+      const res = await fetch(`/api/auth/reader-status?${params.toString()}`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (data.purchases) {
@@ -333,30 +404,47 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     }
   };
 
+  const parseUnifiedLoginInput = (rawInput: string, method: 'gmail' | 'mobile', countryCode: string) => {
+    const trimmed = rawInput.trim();
+    const isEmail = trimmed.includes('@') || (method === 'gmail' && /[a-zA-Z]/.test(trimmed));
+    const emailValue = isEmail ? trimmed : '';
+    const phoneDigits = trimmed.replace(/\D/g, '');
+    const rawPhone = !isEmail && phoneDigits.length >= 6 ? trimmed : '';
+    const fullPhone = rawPhone ? formatPhoneWithCountry(rawPhone, countryCode) : '';
+    return { isEmail, emailValue, rawPhone, fullPhone };
+  };
+
   // Step 1 of Returning Customer Login: Verify EITHER Gmail OR Global Mobile Number in Backend Database
   const handleVerifyCustomerIdentity = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!credential.trim() && !loginPhone.trim()) {
-      setAuthError('Please enter either your Gmail address OR your Global Mobile Number to verify in the backend database.');
+    const { emailValue, fullPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+    if (!emailValue && !fullPhone) {
+      setAuthError(
+        loginMethod === 'gmail'
+          ? 'Please enter your Gmail address (or switch to Mobile Number) to verify your account.'
+          : 'Please enter a valid Mobile Number (or switch to Gmail) to verify your account.'
+      );
       return;
     }
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
     setVerifiedDbStatus(null);
+    setVerifiedRazorpayStatus(null);
+    setRazorpayVerifyError(null);
     const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === loginCountryCode);
-    const fullLoginPhone = loginPhone.trim()
-      ? formatPhoneWithCountry(loginPhone, loginCountryCode)
-      : '';
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/verify-identity', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
-          email: credential.trim(),
-          phone: fullLoginPhone,
+          credential: credential.trim(),
+          email: emailValue,
+          phone: fullPhone,
           countryCode: loginCountryCode,
           countryName: selectedCountryObj?.country || 'India',
+          razorpayPaymentId: razorpayVerifyPaymentId.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -365,9 +453,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         setIdentityVerified(true);
         setVerifiedDbStatus('exists');
         setVerifiedCustomerName(data.name || '');
-        if (data.email && !credential.trim()) setCredential(data.email);
+        setVerifiedCustomerEmail(data.email || emailValue);
+        setVerifiedCustomerPhone(data.phone || fullPhone);
+        setVerifiedUserId(data.userId || '');
+        setVerifiedRazorpayStatus(data.razorpayStatus || null);
         if (data.countryCode) setLoginCountryCode(data.countryCode);
-        if (data.phone && !loginPhone.trim()) setLoginPhone(data.phone);
+        if (data.phone) setLoginPhone(data.phone);
         setIsAccountLocked(Boolean(data.isLocked));
         setLockedUntilIso(data.lockedUntil || null);
         setRemainingAttempts(typeof data.remainingAttempts === 'number' ? data.remainingAttempts : 3);
@@ -385,6 +476,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       } else {
         setIdentityVerified(false);
         setVerifiedDbStatus('not_found');
+        setVerifiedCustomerEmail('');
+        setVerifiedCustomerPhone('');
+        setVerifiedUserId('');
+        setVerifiedRazorpayStatus(null);
         setAuthError(
           data.error ||
             'Customer account does not exist in the backend database. Please register in First-Time Customer Register.'
@@ -393,6 +488,56 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     } catch (err: any) {
       setAuthLoading(false);
       setAuthError(err.message || 'Network error while verifying customer identity.');
+    }
+  };
+
+  const handleVerifyRazorpayPayment = async () => {
+    const { emailValue, fullPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+    const resolvedEmail = emailValue || verifiedCustomerEmail;
+    const resolvedPhone = fullPhone || verifiedCustomerPhone;
+    if (!resolvedEmail && !resolvedPhone && !razorpayVerifyPaymentId.trim()) {
+      setRazorpayVerifyError('Enter a Gmail, Mobile Number, or Razorpay Payment ID (pay_...) to check.');
+      return;
+    }
+    setRazorpayVerifyLoading(true);
+    setRazorpayVerifyError(null);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/payments/verify-razorpay', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          userId: verifiedUserId || undefined,
+          email: resolvedEmail || undefined,
+          phone: resolvedPhone || undefined,
+          razorpayPaymentId: razorpayVerifyPaymentId.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      setRazorpayVerifyLoading(false);
+      if (res.ok) {
+        const sub = data.subscription || {};
+        setVerifiedRazorpayStatus({
+          hasActiveSubscription: Boolean(sub.hasActiveSubscription),
+          activePlan: sub.activePlan || null,
+          amountPaidInr: sub.amountPaidInr,
+          expiresAt: sub.expiresAt || null,
+          transactionId: sub.transactionId || null,
+          receiptNumber: sub.activeReceipt || null,
+          paymentMethod: sub.paymentMethod || null,
+          razorpayVerified: Boolean(data.razorpayVerified),
+          verificationSource: data.verificationSource,
+          razorpayApiConfigured: Boolean(data.razorpayApiConfigured),
+        });
+        if (!sub.hasActiveSubscription && data.error) {
+          setRazorpayVerifyError(data.error);
+        }
+      } else {
+        setRazorpayVerifyError(data.error || 'Could not confirm Razorpay premium payment.');
+      }
+    } catch (err: any) {
+      setRazorpayVerifyLoading(false);
+      setRazorpayVerifyError(err.message || 'Network error while verifying Razorpay payment.');
     }
   };
 
@@ -417,12 +562,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthError(null);
     setAuthSuccess(null);
     const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === loginCountryCode);
-    const fullLoginPhone = loginPhone.trim()
-      ? formatPhoneWithCountry(loginPhone, loginCountryCode)
-      : '';
-    const primaryIdentifier = credential.trim() || fullLoginPhone;
+    const { emailValue, fullPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+    const primaryIdentifier = emailValue || fullPhone || verifiedCustomerEmail || verifiedCustomerPhone;
     const res = await login(primaryIdentifier, {
-      phone: fullLoginPhone || undefined,
+      phone: fullPhone || verifiedCustomerPhone || undefined,
       countryCode: loginCountryCode,
       countryName: selectedCountryObj?.country || 'India',
       password: loginPassword,
@@ -622,11 +765,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       if (typeof reader.result === 'string') {
         const newAvatarDataUrl = reader.result;
         setEditAvatar(newAvatarDataUrl);
-        updateUser({ avatar: newAvatarDataUrl });
+        setProfileError(null);
         try {
+          const headers = await getAuthHeaders();
           const res = await fetch('/api/auth/update-profile', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               userId: user.id,
               avatar: newAvatarDataUrl,
@@ -635,11 +779,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           const data = await res.json();
           if (res.ok && data.user) {
             updateUser(data.user);
-            setProfileMessage('Account holder profile image uploaded and saved to your account!');
+            setProfileMessage('Account holder profile image uploaded and saved in backend database!');
             setTimeout(() => setProfileMessage(null), 5000);
+          } else {
+            setProfileError(data.error || 'Could not save profile image to backend database.');
           }
         } catch (err) {
           console.error(err);
+          setProfileError('Network error while saving profile image.');
         }
       }
     };
@@ -649,6 +796,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
   const handleReaderRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!regName.trim() || regName.trim().length < 2) {
+      setAuthError('Please enter your Full Name (minimum 2 characters).');
+      return;
+    }
     if (!regEmail.trim()) {
       setAuthError('Please enter your Gmail address.');
       return;
@@ -657,8 +808,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setAuthError('Please choose your country and enter your mobile number.');
       return;
     }
-    if (!dobDay || !dobMonth || !dobYear) {
-      setAuthError('Please select your Date of Birth (Date, Month, and Year).');
+    const registerDobResult = validateCalendarDob(dobDay, dobMonth, dobYear);
+    if (!registerDobResult.valid || !registerDobResult.dob || registerDobResult.age === undefined) {
+      setAuthError(registerDobResult.error || 'Please select a valid Date of Birth (Date, Month, and Year).');
       return;
     }
     if (!regPassword || regPassword.length < 4) {
@@ -675,14 +827,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === regCountryCode);
     const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/register', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           name: regName.trim(),
           email: regEmail.trim(),
-          age: calculatedAge,
-          dob: formattedDob,
+          age: registerDobResult.age,
+          dob: registerDobResult.dob,
           phone: fullRegPhone,
           countryCode: regCountryCode,
           countryName: selectedCountryObj?.country || 'India',
@@ -698,14 +851,22 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setAuthLoading(false);
       if (res.ok) {
         if (data.user) {
-          await syncReaderAccountToFirestore(data.user);
+          await syncReaderAccountToFirestore({
+            uid: data.user.firebaseUid,
+            name: data.user.name || regName.trim(),
+            email: data.user.email || regEmail.trim(),
+            age: Number(data.user.age) || registerDobResult.age,
+            phone: data.user.phone || fullRegPhone,
+            upiId: data.user.upiId || 'Not provided',
+            paidPlan: data.user.premiumPlan || 'free',
+          }).catch(() => null);
         }
         if (data.welcomeEmail) {
           setWelcomeEmailNotice(data.welcomeEmail);
         }
         setSandboxOtp(data.devOtpHint || null);
         setAuthSuccess(
-          `Welcome to Aathirai_Comic! Account & Global Mobile (${fullRegPhone}) stored in backend database for password recovery. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
+          `Welcome to Aathirai_Comic! Account, DOB (${registerDobResult.dob}), & Global Mobile (${fullRegPhone}) stored securely in backend database. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
         );
         setAuthTab('verify-otp');
       } else {
@@ -719,22 +880,28 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
   const handleVerifyReaderOtp = async (e: React.FormEvent) => {
     e.preventDefault();
+    const dobResult = hasSelectedDob ? validateCalendarDob(dobDay, dobMonth, dobYear) : null;
+    if (dobResult && !dobResult.valid) {
+      setAuthError(dobResult.error || 'Please select a valid Date of Birth.');
+      return;
+    }
     setAuthLoading(true);
     setAuthError(null);
     const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === regCountryCode);
     const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: regEmail.trim(),
           phone: fullRegPhone,
           countryCode: regCountryCode,
           countryName: selectedCountryObj?.country || 'India',
           otp: otp.trim(),
-          age: calculatedAge,
-          dob: formattedDob,
+          age: dobResult?.age,
+          dob: dobResult?.dob,
           notifyGmail,
           notifyMobile,
         }),
@@ -748,8 +915,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           countryName: selectedCountryObj?.country || 'India',
           password: regPassword || undefined,
           name: regName.trim() || undefined,
-          age: calculatedAge,
-          dob: formattedDob,
+          age: dobResult?.age,
+          dob: dobResult?.dob,
           notifyGmail,
           notifyMobile,
         });
@@ -766,22 +933,33 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    setProfileSaving(true);
+    setProfileError(null);
     setProfileMessage(null);
-    const updatedDob = `${editDobDay}/${editDobMonth}/${editDobYear}`;
-    const updatedAge = calculateAgeFromDob(editDobDay, editDobMonth, editDobYear);
+
+    const hasAnyEditDob = Boolean(editDobDay || editDobMonth || editDobYear);
+    let validatedDobPayload: { dob: string; age: number } | null = null;
+    if (hasAnyEditDob) {
+      const dobResult = validateCalendarDob(editDobDay, editDobMonth, editDobYear);
+      if (!dobResult.valid || !dobResult.dob || dobResult.age === undefined) {
+        setProfileError(dobResult.error || 'Please select a valid Date of Birth (Date, Month, and Year).');
+        return;
+      }
+      validatedDobPayload = { dob: dobResult.dob, age: dobResult.age };
+    }
+
+    setProfileSaving(true);
     const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === editCountryCode);
     const fullEditPhone = formatPhoneWithCountry(editPhone, editCountryCode);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/update-profile', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId: user.id,
           name: editName.trim(),
           email: editEmail.trim(),
-          age: updatedAge,
-          dob: updatedDob,
+          ...(validatedDobPayload ? { age: validatedDobPayload.age, dob: validatedDobPayload.dob } : {}),
           phone: fullEditPhone,
           countryCode: editCountryCode,
           countryName: selectedCountryObj?.country || 'India',
@@ -797,19 +975,22 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         await syncReaderAccountToFirestore({
           name: editName.trim(),
           email: editEmail.trim(),
-          age: updatedAge,
+          age: validatedDobPayload?.age || Number(data.user.age) || 18,
           phone: fullEditPhone,
-          upiId: user.upiId || 'balajiaris05@okaxis',
+          upiId: user.upiId || 'Not provided',
           paidPlan: user.premiumPlan || 'free',
         }).catch(() => {});
         await handleLiveVerifyGmail();
         setProfileMessage(
-          `Account Holder Profile Image, Gmail, Global Mobile Number (${fullEditPhone}), DOB (${updatedDob}), and Notification preferences saved in database!`
+          `Customer Profile, Gmail, Global Mobile Number (${fullEditPhone})${validatedDobPayload ? `, DOB (${validatedDobPayload.dob})` : ''}, and Notification preferences saved securely in backend database!`
         );
         setTimeout(() => setProfileMessage(null), 5000);
+      } else {
+        setProfileError(data.error || 'Could not save customer profile changes.');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      setProfileError(e?.message || 'Network error while saving customer profile.');
     } finally {
       setProfileSaving(false);
     }
@@ -820,9 +1001,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     const nextGmail = channel === 'gmail' ? !(user.notifyGmail ?? true) : (user.notifyGmail ?? true);
     const nextMobile = channel === 'mobile' ? !(user.notifyMobile ?? true) : (user.notifyMobile ?? true);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/auth/update-profile', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId: user.id,
           email: user.email,
@@ -846,9 +1028,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthError(null);
     setAuthSuccess(null);
     try {
-      const enteredPhone = (authTab === 'login' ? loginPhone : regPhone).trim();
+      const rawEnteredPhone = (authTab === 'login' ? loginPhone : regPhone).trim();
+      const activeCountryCode = authTab === 'login' ? loginCountryCode : regCountryCode;
+      const enteredPhone = rawEnteredPhone ? formatPhoneWithCountry(rawEnteredPhone, activeCountryCode) : '';
+      const validDobForGoogle = hasSelectedDob && dobCheck?.valid ? dobCheck : null;
       const fbUser = await signInWithGoogleAndSyncToFirestore({
-        age: calculatedAge,
+        age: validDobForGoogle?.age || 18,
         phone: enteredPhone || undefined,
         upiId: user?.upiId,
         paidPlan: user?.premiumPlan || 'free',
@@ -858,17 +1043,27 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         setAuthError('Could not retrieve Gmail address from Google Sign-In.');
         return;
       }
-      await login(fbUser.email, {
+      const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === activeCountryCode);
+      const loginRes = await login(fbUser.email, {
         name: fbUser.displayName || regName.trim() || undefined,
         phone: enteredPhone || undefined,
-        age: hasSelectedDob ? calculatedAge : undefined,
-        dob: formattedDob || undefined,
+        countryCode: activeCountryCode,
+        countryName: selectedCountryObj?.country || 'India',
+        age: validDobForGoogle?.age,
+        dob: validDobForGoogle?.dob,
         notifyGmail,
         notifyMobile,
+        isGoogleAuth: true,
+        firebaseUid: fbUser.uid,
+        avatar: fbUser.photoURL || undefined,
       });
       setAuthLoading(false);
+      if (!loginRes.success) {
+        setAuthError(loginRes.error || 'Could not save Google customer account in backend database.');
+        return;
+      }
       setAuthSuccess(
-        `Gmail (${fbUser.email}) Connected${enteredPhone ? ` along with Mobile Number (${enteredPhone})` : ''}!`
+        `Gmail (${fbUser.email}) Connected & Stored in Backend Database${enteredPhone ? ` along with Mobile Number (${enteredPhone})` : ''}!`
       );
       setTimeout(() => {
         setViewSection('profile_dashboard');
@@ -990,11 +1185,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       ● Gmail &amp; Mobile Connected
                     </span>
                     <span className="font-mono text-[11px] text-slate-400">
-                      DOB: {user.dob || '15/05/2002'} ({user.age || 24} yrs)
+                      DOB: {user.dob || 'Not set'} ({user.age ? `${user.age} yrs` : 'Age not set'})
                     </span>
                   </div>
                   <div className="font-bold text-white">{user.name}</div>
-                  <div className="font-mono text-rose-400 text-[11px]">{user.email} · {user.phone || '+91 8610950780'}</div>
+                  <div className="font-mono text-rose-400 text-[11px]">{user.email} · {user.phone || 'Not set'}</div>
                   <div className="text-[11px] text-emerald-400 font-semibold">
                     Notifications: Gmail {(user.notifyGmail ?? true) ? 'ON' : 'OFF'} · Mobile {(user.notifyMobile ?? true) ? 'ON' : 'OFF'}
                   </div>
@@ -1052,7 +1247,18 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
-                    {(authTab === 'login' ? credential : authTab === 'change-password' ? resetEmail : regEmail) || 'Your Gmail address'} &amp; {(authTab === 'login' ? loginPhone : authTab === 'change-password' ? resetPhone : regPhone) || 'your mobile number'} linked for reader account &amp; new comic alerts.
+                    {(authTab === 'login'
+                      ? verifiedCustomerEmail || (credential.includes('@') ? credential : '')
+                      : authTab === 'change-password'
+                      ? resetEmail
+                      : regEmail) || 'Your Gmail address'}{' '}
+                    &amp;{' '}
+                    {(authTab === 'login'
+                      ? verifiedCustomerPhone || (!credential.includes('@') && loginMethod === 'mobile' ? credential : '')
+                      : authTab === 'change-password'
+                      ? resetPhone
+                      : regPhone) || 'your mobile number'}{' '}
+                    linked for reader account &amp; new comic alerts.
                   </p>
                 </div>
                 <button
@@ -1110,48 +1316,195 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 </div>
               )}
 
-              {/* TAB 1: RETURNING CUSTOMER LOGIN (Step 1: Verify EITHER Gmail OR Global Mobile in Backend DB -> Step 2: Verify Account Password Div) */}
+              {/* TAB 1: RETURNING CUSTOMER LOGIN (Single unified Gmail / Mobile Number input component -> Backend DB & Razorpay -> Password Div) */}
               {authTab === 'login' && (
                 <form onSubmit={handleReaderLogin} className="space-y-4">
-                  <div className="grid grid-cols-1 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                        Connected Gmail Address
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                        Gmail Address or Mobile Number
                       </label>
-                      <div className="relative">
-                        <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
-                        <input
-                          type="email"
-                          required
-                          placeholder="Enter Gmail address"
-                          value={credential}
-                          onChange={(e) => {
-                            setCredential(e.target.value);
+                      <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLoginMethod('gmail');
                             setIdentityVerified(false);
                             setVerifiedDbStatus(null);
+                            setVerifiedRazorpayStatus(null);
+                            setIsAccountLocked(false);
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                            loginMethod === 'gmail'
+                              ? 'bg-rose-600 text-white shadow-sm'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <Mail className="w-3 h-3" />
+                          <span>Gmail</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLoginMethod('mobile');
+                            setIdentityVerified(false);
+                            setVerifiedDbStatus(null);
+                            setVerifiedRazorpayStatus(null);
+                            setIsAccountLocked(false);
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                            loginMethod === 'mobile'
+                              ? 'bg-rose-600 text-white shadow-sm'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <Phone className="w-3 h-3" />
+                          <span>Mobile Number</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-stretch gap-2">
+                      {loginMethod === 'mobile' && (
+                        <select
+                          aria-label="Login Country Code"
+                          value={loginCountryCode}
+                          onChange={(e) => {
+                            setLoginCountryCode(e.target.value);
+                            setIdentityVerified(false);
+                            setVerifiedDbStatus(null);
+                            setVerifiedRazorpayStatus(null);
+                          }}
+                          className="w-28 shrink-0 px-2.5 py-3 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                        >
+                          {GLOBAL_COUNTRIES.map((c) => (
+                            <option key={`login-${c.iso}-${c.code}`} value={c.code}>
+                              {c.iso} ({c.code})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <div className="relative flex-1 min-w-0">
+                        {loginMethod === 'gmail' ? (
+                          <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                        ) : (
+                          <Phone className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                        )}
+                        <input
+                          type={loginMethod === 'gmail' ? 'text' : 'tel'}
+                          placeholder={
+                            loginMethod === 'gmail'
+                              ? 'Enter Gmail address or mobile number'
+                              : `Enter mobile number (${loginCountryCode}) or Gmail`
+                          }
+                          value={credential}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const trimmedVal = val.trim();
+                            if (trimmedVal.includes('@') || /[a-zA-Z]/.test(trimmedVal)) {
+                              setLoginMethod('gmail');
+                            } else if (/^[+\d\s\-()]{3,}$/.test(trimmedVal)) {
+                              setLoginMethod('mobile');
+                            }
+                            setCredential(val);
+                            setIdentityVerified(false);
+                            setVerifiedDbStatus(null);
+                            setVerifiedRazorpayStatus(null);
                             setIsAccountLocked(false);
                           }}
                           className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                         />
                       </div>
-                      <span className="block text-[10px] text-slate-500 mt-1">
-                        Login with your registered Gmail address
-                      </span>
                     </div>
+
+                    <span className="block text-[10px] text-slate-500 mt-1.5">
+                      Choose Gmail or Mobile Number above — or simply type either one to sign in
+                    </span>
                   </div>
 
-                  {/* Backend Database Verification Result Notice */}
+                  {/* Backend Database & Razorpay Premium Verification Result Panel */}
                   {verifiedDbStatus === 'exists' && (
-                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 font-bold">
-                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
-                        <span>
-                          Backend Database Verified: Customer Account Exists ({verifiedCustomerName || credential || loginPhone})
+                    <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 font-bold text-emerald-700 dark:text-emerald-300">
+                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
+                          <span>
+                            Stored in Backend DB: {verifiedCustomerName || credential}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold text-emerald-700 dark:text-emerald-300 shrink-0">
+                          {verifiedUserId ? `ID: ${verifiedUserId}` : 'DB Verified'}
                         </span>
                       </div>
-                      <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 shrink-0">
-                        DB Verified
-                      </span>
+
+                      <div className="pt-2.5 border-t border-emerald-500/20 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 font-extrabold text-slate-800 dark:text-slate-100">
+                            <CreditCard className="w-3.5 h-3.5 text-amber-500" />
+                            <span>
+                              Razorpay Premium Status:{' '}
+                              {verifiedRazorpayStatus?.hasActiveSubscription ? (
+                                <span className="text-emerald-600 dark:text-emerald-400">
+                                  ACTIVE ({verifiedRazorpayStatus.activePlan === '6_months' ? '6 Months · ₹249' : '1 Month · ₹49'})
+                                </span>
+                              ) : (
+                                <span className="text-amber-600 dark:text-amber-400">
+                                  NO PAID RAZORPAY PASS FOUND
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          {verifiedRazorpayStatus?.razorpayVerified && (
+                            <span className="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold">
+                              Razorpay Verified
+                            </span>
+                          )}
+                        </div>
+
+                        {verifiedRazorpayStatus?.hasActiveSubscription ? (
+                          <div className="text-[11px] font-mono text-slate-600 dark:text-slate-300 flex flex-wrap gap-x-4 gap-y-1">
+                            {verifiedRazorpayStatus.transactionId && (
+                              <span>Payment ID: {verifiedRazorpayStatus.transactionId}</span>
+                            )}
+                            {verifiedRazorpayStatus.receiptNumber && (
+                              <span>Receipt: {verifiedRazorpayStatus.receiptNumber}</span>
+                            )}
+                            {verifiedRazorpayStatus.expiresAt && (
+                              <span>
+                                Valid Until: {new Date(verifiedRazorpayStatus.expiresAt).toLocaleDateString()}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                              Paid on Razorpay recently? Enter your Razorpay Payment ID (`pay_...`) or re-check now:
+                            </p>
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                              <input
+                                type="text"
+                                placeholder="Razorpay Payment ID (e.g. pay_...)"
+                                value={razorpayVerifyPaymentId}
+                                onChange={(e) => setRazorpayVerifyPaymentId(e.target.value)}
+                                className="flex-1 px-3 py-1.5 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={handleVerifyRazorpayPayment}
+                                disabled={razorpayVerifyLoading}
+                                className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-extrabold text-[11px] shrink-0 cursor-pointer"
+                              >
+                                {razorpayVerifyLoading ? 'Checking Razorpay...' : 'Verify Razorpay'}
+                              </button>
+                            </div>
+                            {razorpayVerifyError && (
+                              <p className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+                                {razorpayVerifyError}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1163,8 +1516,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          if (credential.trim()) setRegEmail(credential.trim());
-                          if (loginPhone.trim()) setRegPhone(loginPhone.trim());
+                          const { emailValue, rawPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+                          if (emailValue) setRegEmail(emailValue);
+                          if (rawPhone) setRegPhone(rawPhone);
                           setRegCountryCode(loginCountryCode);
                           setAuthError(null);
                           setAuthTab('register');
@@ -1188,16 +1542,19 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         <span>
                           {authLoading
                             ? 'Checking Backend Database...'
-                            : 'Verify Mobile Number or Gmail in Backend Database'}
+                            : 'Verify Gmail or Mobile Number in Backend Database'}
                         </span>
                         <ArrowRight className="w-4 h-4" />
                       </button>
 
                       <div className="flex items-center justify-between text-[11px] text-slate-500">
-                        <span>Enter either your Mobile Number or Gmail above</span>
+                        <span>Enter either your Gmail or Mobile Number above</span>
                         <button
                           type="button"
-                          onClick={() => openChangePasswordTab(credential, loginPhone, loginCountryCode)}
+                          onClick={() => {
+                            const { emailValue, rawPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+                            openChangePasswordTab(emailValue || verifiedCustomerEmail, rawPhone || verifiedCustomerPhone, loginCountryCode);
+                          }}
                           className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                         >
                           Forgot Password / Recover via Mobile or Gmail?
@@ -1240,7 +1597,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           </p>
                           <button
                             type="button"
-                            onClick={() => openChangePasswordTab(credential, loginPhone, loginCountryCode)}
+                            onClick={() => {
+                              const { emailValue, rawPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+                              openChangePasswordTab(emailValue || verifiedCustomerEmail, rawPhone || verifiedCustomerPhone, loginCountryCode);
+                            }}
                             className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
                           >
                             <KeyRound className="w-4 h-4" />
@@ -1256,7 +1616,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               </label>
                               <button
                                 type="button"
-                                onClick={() => openChangePasswordTab(credential, loginPhone, loginCountryCode)}
+                                onClick={() => {
+                                  const { emailValue, rawPhone } = parseUnifiedLoginInput(credential, loginMethod, loginCountryCode);
+                                  openChangePasswordTab(emailValue || verifiedCustomerEmail, rawPhone || verifiedCustomerPhone, loginCountryCode);
+                                }}
                                 className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                               >
                                 Forgot Password?
@@ -1379,8 +1742,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                           Date of Birth (Date / Month / Year) <span className="text-rose-500">*</span>
                         </label>
-                        <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
-                          {hasSelectedDob ? `Age: ${calculatedAge} yrs` : 'Select DOB'}
+                        <span className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded border ${
+                          hasSelectedDob && dobCheck && !dobCheck.valid
+                            ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                            : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+                        }`}>
+                          {!hasSelectedDob
+                            ? 'Select DOB'
+                            : dobCheck?.valid
+                            ? `Age: ${calculatedAge} yrs`
+                            : 'Invalid Date'}
                         </span>
                       </div>
                       <div className="grid grid-cols-3 gap-2">
@@ -1813,6 +2184,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
               <span>{profileMessage}</span>
             </div>
           )}
+          {profileError && (
+            <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-bold flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{profileError}</span>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             
@@ -1890,7 +2267,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         </span>
                       </div>
                       <div className="font-mono font-bold text-slate-900 dark:text-white">
-                        {user.phone || '+91 8610950780'}
+                        {user.phone || 'Not set'}
                       </div>
                     </div>
 
@@ -1900,7 +2277,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <Calendar className="w-3.5 h-3.5 text-sky-500" /> Date of Birth:
                         </span>
                         <div className="font-mono text-xs font-black text-slate-900 dark:text-white">
-                          {user.dob || '15/05/2002'}
+                          {user.dob || 'Not set'}
                         </div>
                       </div>
 
@@ -1909,7 +2286,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <User className="w-3.5 h-3.5 text-rose-500" /> Customer Age:
                         </span>
                         <div className="font-mono text-xs font-black text-slate-900 dark:text-white">
-                          {user.age ? `${user.age} Years` : '24 Years'}
+                          {user.age ? `${user.age} Years` : 'Not set'}
                         </div>
                       </div>
                     </div>

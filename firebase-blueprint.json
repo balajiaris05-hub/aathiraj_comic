@@ -227,6 +227,297 @@
         "updatedAt"
       ]
     },
+    "EpisodeRecord": {
+      "title": "EpisodeRecord",
+      "description": "Comic episode document inside a comic subcollection.",
+      "type": "object",
+      "properties": {
+        "episodeId": {
+          "type": "string",
+          "description": "Unique episode identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicId": {
+          "type": "string",
+          "description": "Parent comic ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chapterId": {
+          "type": "string",
+          "description": "Chapter identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chapterNumber": {
+          "type": "number",
+          "description": "Sequential chapter number."
+        },
+        "chapterTitle": {
+          "type": "string",
+          "description": "Chapter display title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "episodeNumber": {
+          "type": "number",
+          "description": "Sequential episode number."
+        },
+        "title": {
+          "type": "string",
+          "description": "Episode title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "authorId": {
+          "type": "string",
+          "description": "Owner creator UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "isPremium": {
+          "type": "boolean",
+          "description": "Whether episode requires premium pass."
+        },
+        "priceInr": {
+          "type": "number",
+          "description": "Episode unlock price in INR."
+        },
+        "pagesCount": {
+          "type": "number",
+          "description": "Total page count."
+        },
+        "status": {
+          "type": "string",
+          "description": "Publication moderation status.",
+          "enum": ["pending", "published", "rejected"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "episodeId",
+        "comicId",
+        "chapterId",
+        "chapterNumber",
+        "chapterTitle",
+        "episodeNumber",
+        "title",
+        "authorId",
+        "isPremium",
+        "priceInr",
+        "pagesCount",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CommentRecord": {
+      "title": "CommentRecord",
+      "description": "Reader comment on an episode.",
+      "type": "object",
+      "properties": {
+        "commentId": {
+          "type": "string",
+          "description": "Unique comment ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicId": {
+          "type": "string",
+          "description": "Parent comic ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "episodeId": {
+          "type": "string",
+          "description": "Target episode ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Comment author UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of commenter.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "content": {
+          "type": "string",
+          "description": "Comment body text.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "likesCount": {
+          "type": "number",
+          "description": "Total comment likes."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "commentId",
+        "comicId",
+        "episodeId",
+        "userId",
+        "userName",
+        "content",
+        "likesCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RatingRecord": {
+      "title": "RatingRecord",
+      "description": "Star rating submitted by a verified reader for an episode.",
+      "type": "object",
+      "properties": {
+        "ratingId": {
+          "type": "string",
+          "description": "Unique rating ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicId": {
+          "type": "string",
+          "description": "Target comic ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "episodeId": {
+          "type": "string",
+          "description": "Target episode ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Voter Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "stars": {
+          "type": "number",
+          "description": "Star rating from 1 to 5."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ratingId",
+        "comicId",
+        "episodeId",
+        "userId",
+        "stars",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "VoteRecord": {
+      "title": "VoteRecord",
+      "description": "Like or dislike vote by a reader on an episode.",
+      "type": "object",
+      "properties": {
+        "voteId": {
+          "type": "string",
+          "description": "Unique vote ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "comicId": {
+          "type": "string",
+          "description": "Target comic ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "episodeId": {
+          "type": "string",
+          "description": "Target episode ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Voter UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "voteType": {
+          "type": "string",
+          "description": "Vote direction.",
+          "enum": ["like", "dislike"],
+          "minLength": 4,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "voteId",
+        "comicId",
+        "episodeId",
+        "userId",
+        "voteType",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
     "PurchaseRecord": {
       "title": "PurchaseRecord",
       "description": "Customer UPI / Razorpay payment receipt stored in Firestore.",
@@ -321,6 +612,141 @@
         "updatedAt"
       ]
     },
+    "NotificationRecord": {
+      "title": "NotificationRecord",
+      "description": "User-scoped in-app release or payment notification.",
+      "type": "object",
+      "properties": {
+        "notificationId": {
+          "type": "string",
+          "description": "Unique notification ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Recipient UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "description": "Notification category.",
+          "enum": ["new_comic", "new_episode", "payment_success", "author_approved", "author_rejected", "comic_approved", "comic_rejected", "comment_reply", "system"],
+          "minLength": 5,
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "description": "Notification heading.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "message": {
+          "type": "string",
+          "description": "Notification message body.",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "targetId": {
+          "type": "string",
+          "description": "Target comic or transaction ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "isPaywalled": {
+          "type": "boolean",
+          "description": "Whether target requires active premium access."
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Whether the reader marked this notification read."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "notificationId",
+        "userId",
+        "type",
+        "title",
+        "message",
+        "targetId",
+        "isPaywalled",
+        "read",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AuthorApplicationRecord": {
+      "title": "AuthorApplicationRecord",
+      "description": "Creator onboarding application awaiting Admin approval.",
+      "type": "object",
+      "properties": {
+        "applicationId": {
+          "type": "string",
+          "description": "Unique application ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Applicant UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "penName": {
+          "type": "string",
+          "description": "Creator pen name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "bio": {
+          "type": "string",
+          "description": "Creator biography and sample pitch.",
+          "minLength": 3,
+          "maxLength": 600
+        },
+        "status": {
+          "type": "string",
+          "description": "Approval state.",
+          "enum": ["pending", "approved", "rejected"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "applicationId",
+        "userId",
+        "penName",
+        "bio",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
     "DeleteRequestRecord": {
       "title": "DeleteRequestRecord",
       "description": "Author request asking Admin to delete an uploaded comic, chapter, or episode.",
@@ -397,6 +823,74 @@
         "targetType",
         "authorId",
         "authorName",
+        "reason",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ContentReportRecord": {
+      "title": "ContentReportRecord",
+      "description": "Reader moderation report on a comment or comic.",
+      "type": "object",
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "description": "Unique report ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "reporterId": {
+          "type": "string",
+          "description": "Reporting user UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "targetType": {
+          "type": "string",
+          "description": "Type of reported target.",
+          "enum": ["comment", "comic", "episode"],
+          "minLength": 5,
+          "maxLength": 16
+        },
+        "targetId": {
+          "type": "string",
+          "description": "ID of reported item.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Moderation report reason.",
+          "minLength": 3,
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "description": "Review state.",
+          "enum": ["pending", "resolved", "dismissed"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "reportId",
+        "reporterId",
+        "targetType",
+        "targetId",
         "reason",
         "status",
         "createdAt",
@@ -500,6 +994,174 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "PlatformSettingsRecord": {
+      "title": "PlatformSettingsRecord",
+      "description": "Admin-managed merchant UPI and Razorpay plan link configuration.",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "description": "Settings document ID (e.g., global_config).",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "merchantUpiId": {
+          "type": "string",
+          "description": "Merchant UPI VPA.",
+          "minLength": 3,
+          "maxLength": 100
+        },
+        "merchantUpiName": {
+          "type": "string",
+          "description": "Merchant UPI display name.",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "razorpay1MonthUrl": {
+          "type": "string",
+          "description": "Razorpay 1-month subscription link.",
+          "minLength": 8,
+          "maxLength": 200
+        },
+        "razorpay6MonthsUrl": {
+          "type": "string",
+          "description": "Razorpay 6-month subscription link.",
+          "minLength": 8,
+          "maxLength": 200
+        },
+        "updatedByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email who updated platform settings.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "settingId",
+        "merchantUpiId",
+        "merchantUpiName",
+        "razorpay1MonthUrl",
+        "razorpay6MonthsUrl",
+        "updatedByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdRequestRecord": {
+      "title": "AdRequestRecord",
+      "description": "Company advertising and in-comic character promotion request submitted from the Home Page.",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "description": "Unique ad request ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyName": {
+          "type": "string",
+          "description": "Sponsor company or brand name.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "contactName": {
+          "type": "string",
+          "description": "Representative contact name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "contactEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Company contact email.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "contactPhone": {
+          "type": "string",
+          "description": "Optional phone or WhatsApp contact.",
+          "minLength": 0,
+          "maxLength": 32
+        },
+        "placementType": {
+          "type": "string",
+          "description": "Ad placement format requested in comic pages.",
+          "enum": ["character_promotion", "sponsored_page", "episode_sponsor"],
+          "minLength": 10,
+          "maxLength": 32
+        },
+        "targetComicTitle": {
+          "type": "string",
+          "description": "Preferred comic series for integration.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "budgetRange": {
+          "type": "string",
+          "description": "Indicative campaign budget tier.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "description": "Campaign brief detailing how comic characters will promote the brand.",
+          "minLength": 5,
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "description": "Admin moderation status.",
+          "enum": ["pending", "contacted", "approved", "rejected"],
+          "minLength": 7,
+          "maxLength": 16
+        },
+        "submittedByUserId": {
+          "type": "string",
+          "description": "Authenticated requester user ID or guest identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "requestId",
+        "companyName",
+        "contactName",
+        "contactEmail",
+        "contactPhone",
+        "placementType",
+        "targetComicTitle",
+        "budgetRange",
+        "description",
+        "status",
+        "submittedByUserId",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -519,17 +1181,53 @@
       "schema": { "$ref": "#/entities/ComicRecord" },
       "description": "Comic catalog series documents."
     },
+    "/comics/{comicId}/episodes/{episodeId}": {
+      "schema": { "$ref": "#/entities/EpisodeRecord" },
+      "description": "Normalized episode documents under each comic."
+    },
+    "/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/CommentRecord" },
+      "description": "Reader comments on comic episodes."
+    },
+    "/ratings/{ratingId}": {
+      "schema": { "$ref": "#/entities/RatingRecord" },
+      "description": "Star ratings per reader and episode."
+    },
+    "/votes/{voteId}": {
+      "schema": { "$ref": "#/entities/VoteRecord" },
+      "description": "Like and dislike votes per reader and episode."
+    },
     "/purchases/{purchaseId}": {
       "schema": { "$ref": "#/entities/PurchaseRecord" },
       "description": "Customer UPI and Razorpay payment receipts."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationRecord" },
+      "description": "User-scoped release and payment notifications."
+    },
+    "/authorApplications/{applicationId}": {
+      "schema": { "$ref": "#/entities/AuthorApplicationRecord" },
+      "description": "Author onboarding applications."
     },
     "/deleteRequests/{requestId}": {
       "schema": { "$ref": "#/entities/DeleteRequestRecord" },
       "description": "Author deletion requests awaiting Admin approval."
     },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/ContentReportRecord" },
+      "description": "Content and comment moderation reports."
+    },
     "/gstSettings/{settingId}": {
       "schema": { "$ref": "#/entities/GstSettingsRecord" },
       "description": "Persistent business GST configuration restricted to authorized administrators."
+    },
+    "/platformSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSettingsRecord" },
+      "description": "Persistent platform UPI and Razorpay checkout settings."
+    },
+    "/adRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/AdRequestRecord" },
+      "description": "Company advertising and in-comic character sponsorship requests."
     }
   }
 }

@@ -19,16 +19,60 @@ import { AboutUsPage } from './pages/AboutUsPage';
 import { TermsPage } from './pages/TermsPage';
 import { CopyrightPage } from './pages/CopyrightPage';
 import { Comic, NotificationItem } from './types/comic';
+import { updateDocumentSeo } from './utils/seo';
+
+function resolveInitialRoute() {
+  const path = window.location.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+  const params = new URLSearchParams(window.location.search);
+  const q = params.get('q') || '';
+  const genre = params.get('genre') || 'All';
+  const tabParam = (params.get('tab') || '').toLowerCase();
+
+  if (path === '/admin' || path === '/admin.com') {
+    return { tab: 'admin_dashboard', search: '', genre: 'All', comicSlug: '' };
+  }
+  if (path.startsWith('/comic/')) {
+    const slug = decodeURIComponent(window.location.pathname.slice('/comic/'.length)).replace(/\/+$/, '');
+    return { tab: 'books', search: '', genre: 'All', comicSlug: slug };
+  }
+  if (path === '/books' || tabParam === 'books' || q || (genre && genre !== 'All')) {
+    return { tab: 'books', search: q, genre, comicSlug: '' };
+  }
+  if (path === '/authors' || tabParam === 'authors') {
+    return { tab: 'authors', search: '', genre: 'All', comicSlug: '' };
+  }
+  if (path === '/premium' || tabParam === 'premium') {
+    return { tab: 'premium', search: '', genre: 'All', comicSlug: '' };
+  }
+  if (path === '/about' || tabParam === 'about') {
+    return { tab: 'about', search: '', genre: 'All', comicSlug: '' };
+  }
+  if (path === '/terms' || tabParam === 'terms') {
+    return { tab: 'terms', search: '', genre: 'All', comicSlug: '' };
+  }
+  if (path === '/copyright' || tabParam === 'copyright') {
+    return { tab: 'copyright', search: '', genre: 'All', comicSlug: '' };
+  }
+  return { tab: 'home', search: '', genre: 'All', comicSlug: '' };
+}
+
+const TAB_TO_PATH: Record<string, string> = {
+  home: '/',
+  books: '/books',
+  authors: '/authors',
+  premium: '/premium',
+  about: '/about',
+  terms: '/terms',
+  copyright: '/copyright',
+};
 
 function MainAppContent() {
   const { user, hasActivePremium, refreshNotifications } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>(() => {
-    const path = window.location.pathname.toLowerCase();
-    if (path === '/admin' || path === '/admin.com') {
-      return 'admin_dashboard';
-    }
-    return 'home';
-  });
+  const [initialRoute] = useState(resolveInitialRoute);
+  const [currentTab, setCurrentTab] = useState<string>(initialRoute.tab);
+  const [booksSearch, setBooksSearch] = useState<string>(initialRoute.search);
+  const [booksGenre, setBooksGenre] = useState<string>(initialRoute.genre);
+  const [pendingComicSlug, setPendingComicSlug] = useState<string>(initialRoute.comicSlug);
   const [selectedComic, setSelectedComic] = useState<Comic | null>(null);
   const [activeReaderEpisodeId, setActiveReaderEpisodeId] = useState<string | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -61,9 +105,54 @@ function MainAppContent() {
     fetchComics();
   }, []);
 
+  useEffect(() => {
+    if (!pendingComicSlug || comics.length === 0) return;
+    const match = comics.find(
+      (c) =>
+        (c.slug && c.slug.toLowerCase() === pendingComicSlug.toLowerCase()) ||
+        c.id === pendingComicSlug
+    );
+    if (match) {
+      setSelectedComic(match);
+    }
+    setPendingComicSlug('');
+  }, [pendingComicSlug, comics]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const next = resolveInitialRoute();
+      setCurrentTab(next.tab);
+      setBooksSearch(next.search);
+      setBooksGenre(next.genre);
+      if (next.comicSlug) {
+        const match = comics.find(
+          (c) =>
+            (c.slug && c.slug.toLowerCase() === next.comicSlug.toLowerCase()) ||
+            c.id === next.comicSlug
+        );
+        setSelectedComic(match || null);
+      } else {
+        setSelectedComic(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [comics]);
+
   const publicComics = comics.filter(
     (c) => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested'
   );
+
+  useEffect(() => {
+    if (currentTab === 'admin_dashboard' || currentTab === 'admin_dashboard_delete_requests') return;
+    updateDocumentSeo({
+      currentTab,
+      comics: publicComics,
+      selectedComic,
+      booksSearch,
+      booksGenre,
+    });
+  }, [currentTab, selectedComic, publicComics.length, booksSearch, booksGenre]);
 
   const handleTabChange = (tab: string) => {
     setSelectedComic(null);
@@ -71,6 +160,10 @@ function MainAppContent() {
       setPremiumRedirectNotice(null);
     }
     setCurrentTab(tab);
+    const targetPath = TAB_TO_PATH[tab];
+    if (targetPath && window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -82,11 +175,16 @@ function MainAppContent() {
         'This comic is on Premium. Please verify an active paid account or choose a plan below before reading.'
     );
     setCurrentTab('premium');
+    window.history.pushState({}, '', '/premium');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleSelectComic = (comic: Comic) => {
     setSelectedComic(comic);
+    const comicUrl = `/comic/${encodeURIComponent(comic.slug || comic.id)}`;
+    if (window.location.pathname !== comicUrl) {
+      window.history.pushState({}, '', comicUrl);
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -227,7 +325,13 @@ function MainAppContent() {
         {selectedComic ? (
           <ComicDetailsPage
             comic={selectedComic}
-            onBack={() => setSelectedComic(null)}
+            onBack={() => {
+              setSelectedComic(null);
+              const backPath = TAB_TO_PATH[currentTab] || '/books';
+              if (window.location.pathname.startsWith('/comic/')) {
+                window.history.pushState({}, '', backPath);
+              }
+            }}
             onOpenEpisode={handleOpenEpisode}
             openAuthModal={() => setAuthModalOpen(true)}
           />
@@ -246,6 +350,12 @@ function MainAppContent() {
               <BooksPage
                 comics={publicComics}
                 onSelectComic={handleSelectComic}
+                initialSearch={booksSearch}
+                initialGenre={booksGenre}
+                onFilterChange={(nextSearch, nextGenre) => {
+                  setBooksSearch(nextSearch);
+                  setBooksGenre(nextGenre);
+                }}
               />
             )}
 

@@ -160,10 +160,10 @@ export async function signInWithGoogleAndSyncToFirestore(options: {
   await syncReaderAccountToFirestore({
     uid: fbUser.uid,
     name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Reader'),
-    email: fbUser.email || 'reader@gmail.com',
-    age: options.age || 24,
-    phone: options.phone || '+91 8610950780',
-    upiId: options.upiId || 'balajiaris05@okaxis',
+    email: fbUser.email || '',
+    age: options.age || 0,
+    phone: options.phone || 'Not provided',
+    upiId: options.upiId || 'Not provided',
     paidPlan: options.paidPlan || 'free',
     paymentMethod: options.paymentMethod || 'UPI (Google Pay / PhonePe)',
     transactionId: options.transactionId || 'UPI-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
@@ -193,10 +193,10 @@ export async function syncReaderAccountToFirestore(params: {
 
   const targetUid = sanitizeFirestoreId(params.uid || currentUser.uid);
   const safeName = (params.name || 'Reader').trim().slice(0, 80) || 'Reader';
-  const safeEmail = (params.email || currentUser.email || 'reader@gmail.com').trim().slice(0, 120);
-  const safePhone = (params.phone || '+91 8610950780').trim().slice(0, 32);
-  const safeUpiId = (params.upiId || 'balajiaris05@okaxis').trim().slice(0, 100);
-  const safeAge = Math.min(110, Math.max(5, Number(params.age) || 24));
+  const safeEmail = (params.email || currentUser.email || '').trim().slice(0, 120);
+  const safePhone = (params.phone || 'Not provided').trim().slice(0, 32);
+  const safeUpiId = (params.upiId || 'Not provided').trim().slice(0, 100);
+  const safeAge = Number(params.age) >= 5 ? Math.min(110, Math.round(Number(params.age))) : 18;
   const safePlan: 'free' | '1_month' | '6_months' =
     params.paidPlan === '6_months' ? '6_months' : params.paidPlan === '1_month' ? '1_month' : 'free';
   const safePaymentMethod = (params.paymentMethod || 'UPI (Google Pay / PhonePe)').trim().slice(0, 80);
@@ -319,7 +319,7 @@ export async function syncPurchaseToFirestore(params: {
       itemTitle: (params.itemTitle || 'Premium Pass').slice(0, 140),
       planType: params.planType,
       amountInr: Math.min(50000, Math.max(1, Number(params.amountInr) || 49)),
-      upiId: (params.upiId || 'balajiaris05@okaxis').slice(0, 100),
+      upiId: (params.upiId || 'Not provided').slice(0, 100),
       paymentMethod: (params.paymentMethod || 'UPI').slice(0, 80),
       receiptNumber: (params.receiptNumber || 'INV-1001').slice(0, 64),
       status: 'success',
@@ -338,6 +338,13 @@ export async function syncPurchaseToFirestore(params: {
 export async function syncAllPlatformDataToFirestore(params: {
   readers: any[];
   comics: any[];
+  purchases?: any[];
+  authorApplications?: any[];
+  deleteRequests?: any[];
+  reports?: any[];
+  notifications?: any[];
+  gstSettings?: any;
+  platformSettings?: any;
 }) {
   let currentUser = auth.currentUser;
   if (!currentUser) {
@@ -345,77 +352,8 @@ export async function syncAllPlatformDataToFirestore(params: {
     currentUser = cred.user;
   }
 
-  let syncedReaders = 0;
-  let syncedComics = 0;
-
-  for (const r of params.readers) {
-    const uid = sanitizeFirestoreId(r.id || currentUser.uid);
-    await syncReaderAccountToFirestore({
-      uid,
-      name: r.name || 'Reader',
-      email: r.email || 'reader@gmail.com',
-      age: Number(r.age) || 24,
-      phone: r.phone || '+91 8610950780',
-      upiId: r.upiId || r.subscription?.upiId || 'balajiaris05@okaxis',
-      paidPlan:
-        r.subscription?.plan === '6_months'
-          ? '6_months'
-          : r.subscription?.plan === '1_month'
-            ? '1_month'
-            : 'free',
-      paymentMethod: r.subscription?.paymentMethod || 'UPI',
-      transactionId: r.subscription?.receiptNumber || 'UPI-SYNC',
-    });
-    syncedReaders++;
-  }
-
-  for (const c of params.comics) {
-    const comicId = sanitizeFirestoreId(c.id || 'comic_default');
-    const authorId = sanitizeFirestoreId(c.authorId || currentUser.uid);
-
-    // Ensure author exists in /users/{authorId}
-    const authorRef = doc(db, 'users', authorId);
-    const authorSnap = await getDoc(authorRef);
-    if (!authorSnap.exists()) {
-      await setDoc(authorRef, {
-        userId: authorId,
-        name: (c.authorName || 'Creator').slice(0, 80),
-        role: 'author',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-
-    const comicRef = doc(db, 'comics', comicId);
-    const comicSnap = await getDoc(comicRef);
-    const genreStr = Array.isArray(c.genre) ? c.genre.join(', ') : String(c.genre || 'Action');
-    if (!comicSnap.exists()) {
-      await setDoc(comicRef, {
-        comicId,
-        title: (c.title || 'Untitled Comic').slice(0, 140),
-        authorId,
-        authorName: (c.authorName || 'Creator').slice(0, 80),
-        genre: genreStr.slice(0, 50),
-        accessType: c.accessType === 'premium' ? 'premium' : 'free',
-        fullUnlockPriceInr: Math.min(10000, Math.max(0, Number(c.fullPriceInr || c.fullUnlockPriceInr) || 0)),
-        status: c.moderationStatus === 'pending' ? 'pending' : c.moderationStatus === 'rejected' ? 'rejected' : 'published',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(comicRef, {
-        title: (c.title || 'Untitled Comic').slice(0, 140),
-        genre: genreStr.slice(0, 50),
-        accessType: c.accessType === 'premium' ? 'premium' : 'free',
-        fullUnlockPriceInr: Math.min(10000, Math.max(0, Number(c.fullPriceInr || c.fullUnlockPriceInr) || 0)),
-        status: c.moderationStatus === 'pending' ? 'pending' : c.moderationStatus === 'rejected' ? 'rejected' : 'published',
-        updatedAt: serverTimestamp(),
-      });
-    }
-    syncedComics++;
-  }
-
-  return { syncedReaders, syncedComics, adminEmail: currentUser.email };
+  const { syncFullPlatformSnapshotToFirestore } = await import('./services/firestoreBackend');
+  return syncFullPlatformSnapshotToFirestore(params);
 }
 
 /**

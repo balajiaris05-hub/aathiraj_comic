@@ -16,6 +16,9 @@ export interface LoginExtraOptions {
   paidPlan?: '1_month' | '6_months' | 'free';
   paymentMethod?: string;
   transactionId?: string;
+  isGoogleAuth?: boolean;
+  firebaseUid?: string;
+  avatar?: string;
 }
 
 export interface LoginResult {
@@ -154,6 +157,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           paidPlan: opts.paidPlan,
           paymentMethod: opts.paymentMethod,
           transactionId: opts.transactionId,
+          isGoogleAuth: opts.isGoogleAuth,
+          firebaseUid: opts.firebaseUid,
+          avatar: opts.avatar,
         }),
       });
       const data = await res.json();
@@ -222,10 +228,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshUser = async () => {
     if (!user) return;
     try {
+      const headers = await getAuthHeaders();
       const [authorRes, statusRes] = await Promise.all([
-        fetch(`/api/author/me?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}`),
+        fetch(`/api/author/me?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}`, { headers }),
         fetch(
-          `/api/auth/reader-status?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}&phone=${encodeURIComponent(user.phone || '')}`
+          `/api/auth/reader-status?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}&phone=${encodeURIComponent(user.phone || '')}`,
+          { headers }
         ),
       ]);
       const authorData = await authorRes.json();

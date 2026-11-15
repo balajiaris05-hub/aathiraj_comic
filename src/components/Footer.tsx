@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { BookOpen, ShieldCheck, Heart, Sparkles, CheckCircle2 } from 'lucide-react';
+import { BookOpen, ShieldCheck, Mail, Megaphone } from 'lucide-react';
 
 interface FooterProps {
   setCurrentTab: (tab: string) => void;
@@ -61,6 +61,20 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
                   Become an Author (Creator Application)
                 </button>
               </li>
+              <li>
+                <button
+                  onClick={() => {
+                    setCurrentTab('home');
+                    setTimeout(() => {
+                      document.getElementById('company-ad-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }, 120);
+                  }}
+                  className="hover:text-amber-300 text-indigo-300 font-medium transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Megaphone className="w-3.5 h-3.5" />
+                  <span>Put My Company&apos;s Ad in Comic</span>
+                </button>
+              </li>
             </ul>
           </div>
 
@@ -87,6 +101,15 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
                 <button onClick={() => setCurrentTab('purchases')} className="hover:text-rose-400 transition-colors">
                   Customer Purchase History &amp; Invoices
                 </button>
+              </li>
+              <li className="pt-1">
+                <a
+                  href="mailto:aathiraicomic@gmail.com?subject=Contact%20Admin%20-%20Aathirai_Comic"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 font-bold transition-colors"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>Contact Admin: aathiraicomic@gmail.com</span>
+                </a>
               </li>
             </ul>
           </div>

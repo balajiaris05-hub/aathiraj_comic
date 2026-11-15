@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { db } from './src/server/storage.ts';
@@ -15,6 +16,7 @@ import {
   PaymentTransaction,
   GstBusinessSettings,
   CreditNoteRecord,
+  DeleteRequest,
 } from './src/types/comic.ts';
 import {
   securityHeadersMiddleware,
@@ -26,8 +28,16 @@ import {
   computeRazorpayOrderSignature,
   verifyRazorpayPaymentSignature,
   verifyRazorpayWebhookSignature,
+  verifyBearerToken,
   resolveAuthenticatedUser,
+  validateAndNormalizeDob,
 } from './src/server/security.ts';
+import {
+  hasRealRazorpayApiKeys,
+  createGatewayOrderOnRazorpay,
+  fetchRazorpayPaymentById,
+  findCapturedRazorpayPaymentForCustomer,
+} from './src/server/razorpayService.ts';
 import {
   INDIAN_STATES_AND_UTS,
   getStateByCode,
@@ -42,6 +52,28 @@ import {
   generateGstReconciliationCsv,
   generateTaxInvoicePdfBytes,
 } from './src/utils/gstUtils.ts';
+import {
+  extractFirebaseIdToken,
+  mirrorWritesInBackground,
+  deleteFirestoreDoc,
+  buildUserWriteItems,
+  buildComicAndEpisodeWriteItems,
+  buildEpisodeWriteItem,
+  buildPurchaseWriteItem,
+  buildCommentWriteItem,
+  buildRatingWriteItem,
+  buildVoteWriteItem,
+  buildNotificationWriteItem,
+  buildAuthorApplicationWriteItem,
+  buildDeleteRequestWriteItem,
+  buildReportWriteItem,
+  buildGstSettingsWriteItem,
+  buildPlatformSettingsWriteItem,
+  buildAdRequestWriteItem,
+  syncDatabaseSnapshotToFirestore,
+  getFirestoreLiveStatus,
+  sanitizeFirestoreId,
+} from './src/server/firestoreAdmin.ts';
 
 dotenv.config();
 
@@ -51,7 +83,14 @@ async function startServer() {
 
   // Security headers & JSON Body Parser with 15mb limit for comic artwork uploads
   app.use(securityHeadersMiddleware);
-  app.use(express.json({ limit: '15mb' }));
+  app.use(
+    express.json({
+      limit: '15mb',
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf.toString('utf8');
+      },
+    })
+  );
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
   const authRateLimiter = createRateLimiter({ maxRequests: 30, windowMs: 15 * 60 * 1000 });
@@ -201,7 +240,7 @@ async function startServer() {
     // 1. Check User record if subscription is stored directly and not expired
     if (matchedUser?.premiumPlan && matchedUser?.premiumExpiresAt) {
       const expTime = new Date(matchedUser.premiumExpiresAt).getTime();
-      if (expTime > now) {
+      if (Number.isFinite(expTime) && expTime > now) {
         hasActiveSubscription = true;
         activePlan = matchedUser.premiumPlan;
         startedAt = matchedUser.premiumStartedAt;
@@ -227,9 +266,11 @@ async function startServer() {
       const plan: '1_month' | '6_months' =
         sub.subscriptionPlan || (Number(sub.amountInr) >= 249 ? '6_months' : '1_month');
       const durationMs = plan === '6_months' ? 180 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
-      const computedExpires = sub.expiresAt ? new Date(sub.expiresAt).getTime() : createdTime + durationMs;
+      const computedExpires = sub.expiresAt
+        ? new Date(sub.expiresAt).getTime()
+        : (Number.isFinite(createdTime) ? createdTime + durationMs : 0);
 
-      if (computedExpires > now) {
+      if (Number.isFinite(computedExpires) && computedExpires > now) {
         hasActiveSubscription = true;
         activePlan = plan;
         startedAt = sub.createdAt;
@@ -269,6 +310,259 @@ async function startServer() {
       verifiedPhone: matchedUser?.phone || params.phone || null,
       age: matchedUser?.age,
       matchedUser,
+    };
+  };
+
+  // Reconcile customer's Premium Pass against Backend DB + Live Razorpay API
+  const reconcileCustomerRazorpayPremium = async (params: {
+    userId?: string;
+    email?: string;
+    phone?: string;
+    paymentId?: string;
+    firebaseIdToken?: string;
+  }) => {
+    let subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+      userId: params.userId,
+      email: params.email,
+      phone: params.phone,
+    });
+
+    const cleanPaymentId = (params.paymentId || '').trim();
+    const targetEmail = (params.email || subStatus.verifiedGmail || '').trim().toLowerCase();
+    const targetPhone = (params.phone || subStatus.verifiedPhone || '').trim();
+    const rzpStatus = getRazorpayEnvironmentStatus();
+    const environment: 'test' | 'live' = rzpStatus.isLiveMode ? 'live' : 'test';
+
+    let verificationSource: 'database' | 'razorpay_api' | 'none' = subStatus.hasActiveSubscription
+      ? 'database'
+      : 'none';
+    let razorpayError: string | undefined;
+    let checkedRazorpayApi = false;
+
+    // Query Razorpay API if no active pass locally OR if a specific Razorpay payment ID (`pay_...`) was supplied
+    if ((!subStatus.hasActiveSubscription || cleanPaymentId) && hasRealRazorpayApiKeys()) {
+      const rzpCheck = await findCapturedRazorpayPaymentForCustomer({
+        email: targetEmail || undefined,
+        phone: targetPhone || undefined,
+        paymentId: cleanPaymentId || undefined,
+      });
+      checkedRazorpayApi = rzpCheck.checkedRazorpayApi;
+      if (rzpCheck.error) {
+        razorpayError = rzpCheck.error;
+      }
+
+      if (rzpCheck.verified && rzpCheck.payment) {
+        const verifiedPay = rzpCheck.payment;
+        verificationSource = 'razorpay_api';
+        let syncedUser: User | null = null;
+        let syncedPurchase: Purchase | null = null;
+
+        db.mutate((d) => {
+          const alreadyExists = d.purchases.some(
+            (p: Purchase) => p.razorpayPaymentId === verifiedPay.paymentId && p.status === 'success'
+          );
+
+          let matchedUser = d.users.find(
+            (u: User) =>
+              (params.userId && u.id === params.userId) ||
+              (targetEmail && u.email?.toLowerCase() === targetEmail) ||
+              (verifiedPay.email && u.email?.toLowerCase() === verifiedPay.email) ||
+              (targetPhone && phonesMatch(u.phone, targetPhone)) ||
+              (verifiedPay.contact && phonesMatch(u.phone, verifiedPay.contact))
+          );
+
+          // Ensure customer exists in backend DB if they paid on Razorpay directly
+          if (!matchedUser && (targetEmail || verifiedPay.email)) {
+            const customerEmail = (targetEmail || verifiedPay.email || 'customer@aathirai.com').toLowerCase();
+            const nowIso = new Date().toISOString();
+            matchedUser = {
+              id: params.userId || 'usr_' + Date.now(),
+              name: customerEmail.split('@')[0] || 'Reader',
+              email: customerEmail,
+              phone: targetPhone || verifiedPay.contact || undefined,
+              countryCode: '+91',
+              countryName: 'India',
+              role: 'reader',
+              isVerified: true,
+              emailVerified: true,
+              bookmarks: [],
+              favorites: [],
+              readingHistory: [],
+              avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(customerEmail)}`,
+              createdAt: nowIso,
+              lastLoginAt: nowIso,
+              premiumPlan: verifiedPay.plan,
+            };
+            d.users.push(matchedUser);
+          }
+
+          if (matchedUser) {
+            if (verifiedPay.contact && !matchedUser.phone) matchedUser.phone = verifiedPay.contact;
+            if (verifiedPay.vpa && !matchedUser.upiId) matchedUser.upiId = verifiedPay.vpa;
+            matchedUser.premiumPlan = verifiedPay.plan;
+            matchedUser.premiumStartedAt = verifiedPay.paidAt;
+            matchedUser.premiumExpiresAt = verifiedPay.expiresAt;
+            matchedUser.premiumPaymentDetail = {
+              plan: verifiedPay.plan,
+              amountPaidInr: verifiedPay.amountInr,
+              upiId: matchedUser.upiId || verifiedPay.vpa,
+              paymentMethod: verifiedPay.method || 'Razorpay',
+              transactionId: verifiedPay.paymentId,
+              receiptNumber: `INV-RZP-${verifiedPay.paymentId.slice(-8).toUpperCase()}`,
+              paidAt: verifiedPay.paidAt,
+              expiresAt: verifiedPay.expiresAt,
+              status: 'paid',
+              environment,
+            };
+            syncedUser = matchedUser;
+          }
+
+          if (!alreadyExists) {
+            const gstSettings = d.gstSettings || getDefaultGstBusinessSettings();
+            const sellerSnap = buildSellerSnapshot(gstSettings);
+            const posCode = sellerSnap.stateCode || '33';
+            const gstCalc = calculateInclusiveGstBreakdown({
+              totalAmountInr: verifiedPay.amountInr,
+              sellerStateCode: sellerSnap.stateCode,
+              placeOfSupplyStateCode: posCode,
+              applicableRatePercent: gstSettings.applicableGstRate ?? 18,
+              applyGst: gstSettings.applyGstToDomesticSales !== false,
+              isInternational: false,
+              hsnSacCode: sellerSnap.hsnSacCode,
+              hsnSacDescription: sellerSnap.hsnSacDescription,
+            });
+            const seq = gstSettings.nextInvoiceSequence || d.purchases.length + 1;
+            const invoiceNumber = formatGstInvoiceNumber(gstSettings.invoicePrefix || 'AAC/2627/', seq);
+            gstSettings.nextInvoiceSequence = seq + 1;
+
+            const receiptNum = `INV-AATHIRAI-${new Date().getFullYear()}-${String(seq).padStart(4, '0')}`;
+            if (syncedUser?.premiumPaymentDetail) {
+              syncedUser.premiumPaymentDetail.receiptNumber = receiptNum;
+            }
+            const baseRevenue = gstCalc.taxableValue;
+            const authorEarningsInr = Number((baseRevenue * 0.7).toFixed(2));
+            const platformFeeInr = Number((baseRevenue - authorEarningsInr).toFixed(2));
+
+            const purchaseRecord: Purchase = {
+              id: 'pur_' + Date.now(),
+              userId: syncedUser?.id || params.userId || 'usr_guest',
+              customerName: syncedUser?.name || (targetEmail ? targetEmail.split('@')[0] : 'Customer'),
+              userEmail: syncedUser?.email || targetEmail || verifiedPay.email || 'customer@aathirai.com',
+              userPhone: syncedUser?.phone || targetPhone || verifiedPay.contact || undefined,
+              userUpiId: syncedUser?.upiId || verifiedPay.vpa || undefined,
+              comicId: 'global_subscription',
+              comicTitle:
+                verifiedPay.plan === '6_months'
+                  ? 'Aathirai 6-Month Premium Pass (₹249)'
+                  : 'Aathirai 1-Month Premium Pass (₹49)',
+              type: 'subscription',
+              subscriptionPlan: verifiedPay.plan,
+              expiresAt: verifiedPay.expiresAt,
+              amountInr: verifiedPay.amountInr,
+              currency: 'INR',
+              paymentMethod: verifiedPay.method || 'Razorpay Gateway',
+              razorpayOrderId: verifiedPay.orderId || verifiedPay.subscriptionId || `order_rzp_${Date.now()}`,
+              razorpayPaymentId: verifiedPay.paymentId,
+              signatureVerified: true,
+              environment,
+              idempotencyKey: `idem_rzp_${verifiedPay.paymentId}`,
+              status: 'success',
+              createdAt: verifiedPay.paidAt,
+              receiptNumber: receiptNum,
+              invoiceNumber,
+              taxableValue: gstCalc.taxableValue,
+              taxAmount: gstCalc.taxAmount,
+              taxRate: gstCalc.taxRate,
+              taxType: gstCalc.taxType,
+              cgstRate: gstCalc.cgstRate,
+              cgstAmount: gstCalc.cgstAmount,
+              sgstRate: gstCalc.sgstRate,
+              sgstAmount: gstCalc.sgstAmount,
+              igstRate: gstCalc.igstRate,
+              igstAmount: gstCalc.igstAmount,
+              hsnSacCode: gstCalc.hsnSacCode,
+              hsnSacDescription: gstCalc.hsnSacDescription,
+              placeOfSupplyStateCode: gstCalc.placeOfSupplyStateCode,
+              placeOfSupplyStateName: gstCalc.placeOfSupplyStateName,
+              isInternational: false,
+              supplyType: gstCalc.supplyType,
+              sellerSnapshot: sellerSnap,
+              authorEarningsInr,
+              platformFeeInr,
+            };
+            d.purchases.unshift(purchaseRecord);
+            if (!Array.isArray(d.paymentTransactions)) d.paymentTransactions = [];
+            d.paymentTransactions.unshift({
+              id: `tx_${purchaseRecord.id}`,
+              orderId: purchaseRecord.razorpayOrderId,
+              paymentId: purchaseRecord.razorpayPaymentId,
+              userId: purchaseRecord.userId,
+              userEmail: purchaseRecord.userEmail,
+              comicId: purchaseRecord.comicId,
+              itemTitle: purchaseRecord.comicTitle,
+              type: 'subscription',
+              subscriptionPlan: verifiedPay.plan,
+              amountInr: verifiedPay.amountInr,
+              amountPaise: verifiedPay.amountPaise,
+              currency: 'INR',
+              status: 'verified',
+              environment,
+              signatureVerified: true,
+              idempotencyKey: `idem_rzp_${verifiedPay.paymentId}`,
+              createdAt: verifiedPay.paidAt,
+              updatedAt: new Date().toISOString(),
+            });
+            syncedPurchase = purchaseRecord;
+          }
+        });
+
+        if (syncedUser || syncedPurchase) {
+          db.logActivity(
+            'RAZORPAY_API_VERIFIED',
+            (syncedUser as User | null)?.email || targetEmail || 'customer',
+            'reader',
+            `Verified Razorpay payment ${verifiedPay.paymentId} (₹${verifiedPay.amountInr} · ${verifiedPay.plan}) via Razorpay API and stored customer & purchase in backend.`,
+            'purchase',
+            verifiedPay.paymentId
+          );
+          const writes = [
+            ...(syncedUser ? buildUserWriteItems(syncedUser) : []),
+            ...(syncedPurchase ? [buildPurchaseWriteItem(syncedPurchase)] : []),
+          ];
+          if (writes.length > 0) {
+            mirrorWritesInBackground('razorpay_api_verify', writes, params.firebaseIdToken);
+          }
+        }
+
+        subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+          userId: params.userId || (syncedUser as User | null)?.id,
+          email: targetEmail || verifiedPay.email,
+          phone: targetPhone || verifiedPay.contact,
+        });
+      }
+    }
+
+    const razorpayVerified = Boolean(
+      subStatus.hasActiveSubscription &&
+        (verificationSource === 'razorpay_api' ||
+          Boolean(subStatus.transactionId) ||
+          db.getSnapshot().purchases.some(
+            (p: Purchase) =>
+              p.status === 'success' &&
+              p.type === 'subscription' &&
+              (p.signatureVerified || Boolean(p.razorpayPaymentId)) &&
+              ((subStatus.matchedUser?.id && p.userId === subStatus.matchedUser.id) ||
+                (subStatus.verifiedGmail && p.userEmail?.toLowerCase() === subStatus.verifiedGmail.toLowerCase()))
+          ))
+    );
+
+    return {
+      subStatus,
+      razorpayVerified,
+      verificationSource,
+      checkedRazorpayApi,
+      razorpayApiConfigured: hasRealRazorpayApiKeys(),
+      razorpayError,
     };
   };
 
@@ -444,33 +738,78 @@ async function startServer() {
     return false;
   };
 
-  app.post('/api/auth/register', authRateLimiter, (req, res) => {
+  const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes validity
+
+  const createOtpEntry = (code: string) => ({
+    code,
+    expiresAt: Date.now() + OTP_TTL_MS,
+  });
+
+  const verifyOtpAgainstKeys = (
+    otpsMap: Record<string, { code: string; expiresAt: number } | string>,
+    keys: string[],
+    providedOtp?: unknown
+  ): { valid: boolean; expired: boolean } => {
+    const cleanOtp = String(providedOtp || '').trim();
+    if (!cleanOtp || cleanOtp.length < 4) {
+      return { valid: false, expired: false };
+    }
+    const now = Date.now();
+    let sawExpired = false;
+    for (const key of keys) {
+      if (!key) continue;
+      const entry = otpsMap[key];
+      if (!entry) continue;
+      if (typeof entry === 'string') {
+        if (entry === cleanOtp) return { valid: true, expired: false };
+      } else if (entry && typeof entry === 'object' && entry.code) {
+        if (now > Number(entry.expiresAt || 0)) {
+          sawExpired = true;
+          continue;
+        }
+        if (entry.code === cleanOtp) {
+          return { valid: true, expired: false };
+        }
+      }
+    }
+    return { valid: false, expired: sawExpired };
+  };
+
+  app.post('/api/auth/register', authRateLimiter, async (req, res) => {
     const {
       name,
       email,
       phone,
       countryCode,
       countryName,
-      age,
       dob,
       password,
       confirmPassword,
       notifyGmail,
       notifyMobile,
       upiId,
-      paidPlan,
-      paymentMethod,
-      transactionId,
       bio,
       avatar,
     } = req.body;
-    const cleanEmail = email?.trim().toLowerCase() || '';
+    const cleanName = typeof name === 'string' ? name.trim() : '';
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
     const formattedPhone = formatGlobalPhone(phone, countryCode);
     const cleanDigits = formattedPhone.replace(/\D/g, '');
-    const parsedAge = age !== undefined && age !== '' ? Number(age) : undefined;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (!name || (!cleanEmail && cleanDigits.length < 6)) {
-      return res.status(400).json({ error: 'Full Name, Gmail address, and Global Mobile Number are required.' });
+    if (cleanName.length < 2) {
+      return res.status(400).json({ error: 'Please enter your Full Name (minimum 2 characters).' });
+    }
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid Gmail address.' });
+    }
+    if (cleanDigits.length < 6) {
+      return res.status(400).json({ error: 'Please select your country and enter a valid Global Mobile Number.' });
+    }
+
+    const dobCheck = validateAndNormalizeDob(dob);
+    if (!dobCheck.valid || !dobCheck.dob || dobCheck.age === undefined) {
+      return res.status(400).json({ error: dobCheck.error || 'Valid Date of Birth (DD/MM/YYYY) is required.' });
     }
 
     if (!password || String(password).length < 4) {
@@ -481,13 +820,13 @@ async function startServer() {
       return res.status(400).json({ error: 'Password and Confirm Password do not match.' });
     }
 
-    const finalEmail = cleanEmail || `${cleanDigits.slice(-10)}@gmail.com`;
     const nowIso = new Date().toISOString();
     const hashedPass = hashPassword(String(password));
 
     let registeredUser: User | null = null;
+    let duplicateConflict = false;
     const otp = crypto.randomInt(100000, 999999).toString();
-    const otpKey = finalEmail.toLowerCase();
+    const otpKey = cleanEmail.toLowerCase();
     const phoneKey = getPhoneOtpKey(phone, countryCode);
 
     db.mutate(d => {
@@ -497,13 +836,23 @@ async function startServer() {
       );
 
       if (existing) {
-        if (name?.trim()) existing.name = name.trim();
-        if (cleanEmail) existing.email = cleanEmail;
-        if (formattedPhone) existing.phone = formattedPhone;
+        if (
+          existing.isVerified ||
+          existing.emailVerified ||
+          existing.role === 'admin' ||
+          existing.role === 'author'
+        ) {
+          duplicateConflict = true;
+          return;
+        }
+        // Only allow updating an unverified pending reader registration before OTP confirmation
+        existing.name = cleanName;
+        existing.email = cleanEmail;
+        existing.phone = formattedPhone;
         if (countryCode) existing.countryCode = String(countryCode).trim();
         if (countryName) existing.countryName = String(countryName).trim();
-        if (parsedAge && !isNaN(parsedAge)) existing.age = parsedAge;
-        if (dob) existing.dob = String(dob).trim();
+        existing.age = dobCheck.age;
+        existing.dob = dobCheck.dob;
         if (avatar) existing.avatar = String(avatar);
         existing.passwordHash = hashedPass;
         delete existing.password;
@@ -515,20 +864,19 @@ async function startServer() {
         if (typeof notifyMobile === 'boolean') existing.notifyMobile = notifyMobile;
         if (upiId?.trim()) existing.upiId = upiId.trim();
         existing.lastLoginAt = nowIso;
-        applyPaidPremiumDetailToUser(d, existing, paidPlan, paymentMethod, transactionId, upiId);
         registeredUser = existing;
       } else {
         const newUser: User = {
           id: 'usr_' + Date.now(),
-          name: name.trim(),
-          email: finalEmail,
+          name: cleanName,
+          email: cleanEmail,
           passwordHash: hashedPass,
           failedLoginAttempts: 0,
           lockedUntil: null,
           welcomeEmailSent: true,
           welcomeEmailSentAt: nowIso,
-          age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
-          dob: dob ? String(dob).trim() : undefined,
+          age: dobCheck.age,
+          dob: dobCheck.dob,
           notifyGmail: typeof notifyGmail === 'boolean' ? notifyGmail : true,
           notifyMobile: typeof notifyMobile === 'boolean' ? notifyMobile : true,
           upiId: upiId?.trim() || undefined,
@@ -542,70 +890,111 @@ async function startServer() {
           readingHistory: [],
           avatar:
             avatar ||
-            `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name.trim())}`,
+            `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanName)}`,
           bio: bio || 'Reader on Aathirai_Comic Network.',
           createdAt: nowIso,
           lastLoginAt: nowIso,
           premiumPlan: null,
         };
-        applyPaidPremiumDetailToUser(d, newUser, paidPlan, paymentMethod, transactionId, upiId);
         d.users.push(newUser);
         registeredUser = newUser;
       }
 
-      d.otps[otpKey] = otp;
+      const otpEntry = createOtpEntry(otp);
+      d.otps[otpKey] = otpEntry;
       if (phoneKey.length >= 6) {
-        d.otps[phoneKey] = otp;
+        d.otps[phoneKey] = otpEntry;
       }
     });
+
+    if (duplicateConflict) {
+      return res.status(409).json({
+        error: 'An account with this Gmail address or Global Mobile Number already exists in the backend database. Please sign in using Returning Customer Login or reset via Forgot Password.',
+      });
+    }
 
     if (!registeredUser) {
       return res.status(500).json({ error: 'Could not register reader account.' });
     }
 
-    db.addNotification({
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
       userId: (registeredUser as User).id,
-      userEmail: (registeredUser as User).email,
+      email: (registeredUser as User).email,
+      phone: (registeredUser as User).phone,
+      firebaseIdToken: fbToken,
+    });
+    const finalUser = reconciled.subStatus.matchedUser || (registeredUser as User);
+
+    db.addNotification({
+      userId: finalUser.id,
+      userEmail: finalUser.email,
       title: 'Welcome to Aathirai_Comic!',
-      message: `Hello ${(registeredUser as User).name}, your reader account is registered. Explore Indian comics, bookmark your favorite series, and enjoy smooth reading modes.`,
+      message: `Hello ${finalUser.name}, your reader account is registered. Explore Indian comics, bookmark your favorite series, and enjoy smooth reading modes.`,
       type: 'system',
-      targetId: (registeredUser as User).id,
+      targetId: finalUser.id,
     });
 
     const welcomeEmailPayload = {
-      to: (registeredUser as User).email,
+      to: finalUser.email,
       subject: 'Welcome to Aathirai_Comic! Your Customer Account Has Been Created',
-      body: `Hello ${(registeredUser as User).name}, welcome to Aathirai_Comic! Your customer account (${(registeredUser as User).email} / ${(registeredUser as User).phone || 'Mobile Linked'}) has been created and stored in our database.`,
+      body: `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your customer account (${finalUser.email} / ${finalUser.phone || 'Mobile Linked'}) has been created and stored in our database.`,
       sentAt: nowIso,
     };
 
     db.logActivity(
       'READER_REGISTERED',
-      (registeredUser as User).email,
-      (registeredUser as User).role,
-      `Customer registered & Welcome Email sent to ${(registeredUser as User).email}: ${(registeredUser as User).name} | DOB: ${(registeredUser as User).dob || 'N/A'} | Age: ${(registeredUser as User).age || 'N/A'} | Mobile: ${(registeredUser as User).phone || 'N/A'}.`,
+      finalUser.email,
+      finalUser.role,
+      `Customer registered & Welcome Email sent to ${finalUser.email}: ${finalUser.name} | DOB verified | Age: ${finalUser.age || 'N/A'} | Mobile: ${finalUser.phone || 'N/A'}.`,
       'user',
-      (registeredUser as User).id
+      finalUser.id
+    );
+
+    mirrorWritesInBackground(
+      'auth_register',
+      buildUserWriteItems(finalUser),
+      fbToken
     );
 
     return res.json({
       success: true,
-      user: sanitizeUserForClient(registeredUser as User, true),
+      storedInBackend: true,
+      user: sanitizeUserForClient(finalUser, false),
+      subscription: reconciled.subStatus,
+      razorpayVerified: reconciled.razorpayVerified,
       welcomeEmail: welcomeEmailPayload,
-      message: `Account created and stored in backend! Welcome email sent to ${finalEmail} ("Welcome to Aathirai_Comic"). Verification OTP dispatched.`,
+      message: `Account created and stored securely in backend! Welcome email sent to ${cleanEmail} ("Welcome to Aathirai_Comic"). Verification OTP dispatched.`,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 
   app.post('/api/auth/verify-otp', authRateLimiter, (req, res) => {
-    const { email, phone, countryCode, countryName, otp, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
-    const cleanEmail = email?.trim().toLowerCase() || '';
+    const { email, phone, countryCode, countryName, otp, dob, notifyGmail, notifyMobile, upiId } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
     const phoneKey = getPhoneOtpKey(phone || email, countryCode);
     const snapshot = db.getSnapshot();
-    const storedOtp = snapshot.otps[cleanEmail] || (phoneKey.length >= 6 ? snapshot.otps[phoneKey] : undefined);
+    const otpCheck = verifyOtpAgainstKeys(
+      snapshot.otps,
+      [cleanEmail, phoneKey.length >= 6 ? phoneKey : ''],
+      otp
+    );
 
-    if (!otp || (storedOtp && storedOtp !== String(otp).trim())) {
-      return res.status(400).json({ error: 'Invalid verification OTP. Please check the code sent to your email or mobile.' });
+    if (!otpCheck.valid) {
+      return res.status(400).json({
+        error: otpCheck.expired
+          ? 'Verification OTP has expired (valid for 10 minutes). Please re-register or request a fresh code.'
+          : 'Invalid verification OTP. Please check the 6-digit code sent to your email or mobile.',
+      });
+    }
+
+    let dobUpdate: { dob: string; age: number } | null = null;
+    if (dob !== undefined && String(dob).trim() !== '') {
+      const dobCheck = validateAndNormalizeDob(dob);
+      if (!dobCheck.valid || !dobCheck.dob || dobCheck.age === undefined) {
+        return res.status(400).json({ error: dobCheck.error || 'Invalid Date of Birth.' });
+      }
+      dobUpdate = { dob: dobCheck.dob, age: dobCheck.age };
     }
 
     let updatedUser: User | null = null;
@@ -624,17 +1013,14 @@ async function startServer() {
         }
         if (countryCode) u.countryCode = String(countryCode).trim();
         if (countryName) u.countryName = String(countryName).trim();
-        if (age !== undefined && age !== '' && !isNaN(Number(age))) {
-          u.age = Number(age);
+        if (dobUpdate) {
+          u.dob = dobUpdate.dob;
+          u.age = dobUpdate.age;
         }
-        if (dob) u.dob = String(dob).trim();
         if (typeof notifyGmail === 'boolean') u.notifyGmail = notifyGmail;
         if (typeof notifyMobile === 'boolean') u.notifyMobile = notifyMobile;
         if (upiId?.trim()) {
           u.upiId = upiId.trim();
-        }
-        if (paidPlan) {
-          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
         }
         updatedUser = u;
       }
@@ -664,9 +1050,15 @@ async function startServer() {
       'READER_VERIFIED',
       userWithPremium.email,
       userWithPremium.role,
-      `Reader verified account & Welcome Email confirmed (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'} | DOB: ${userWithPremium.dob || 'N/A'}).`,
+      `Reader verified account & Welcome Email confirmed (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'}).`,
       'user',
       userWithPremium.id
+    );
+
+    mirrorWritesInBackground(
+      'auth_verify_otp',
+      buildUserWriteItems(userWithPremium),
+      extractFirebaseIdToken(req.headers.authorization)
     );
 
     return res.json({
@@ -677,9 +1069,9 @@ async function startServer() {
     });
   });
 
-  // Step 1 of Returning Customer Login: Verify EITHER Gmail OR Global Mobile Number in Backend Database
-  app.post('/api/auth/verify-identity', (req, res) => {
-    const { email, credential, phone, countryCode, countryName } = req.body;
+  // Step 1 of Returning Customer Login: Verify EITHER Gmail OR Global Mobile Number in Backend Database + Razorpay Premium Status
+  app.post('/api/auth/verify-identity', authRateLimiter, async (req, res) => {
+    const { email, credential, phone, countryCode, countryName, razorpayPaymentId } = req.body;
     const rawEmailInput = (email || (credential && String(credential).includes('@') ? credential : '') || '').trim().toLowerCase();
     const rawPhoneInput = (phone || (credential && !String(credential).includes('@') ? credential : '') || '').trim();
     const formattedPhone = formatGlobalPhone(rawPhoneInput, countryCode);
@@ -715,17 +1107,11 @@ async function startServer() {
         return false;
       });
 
-      if (matchedUser) {
-        // If 12-hour lock has expired, automatically clear it
-        if (matchedUser.lockedUntil && new Date(matchedUser.lockedUntil).getTime() <= now) {
+      if (matchedUser && matchedUser.lockedUntil) {
+        const lockTime = new Date(matchedUser.lockedUntil).getTime();
+        if (!Number.isFinite(lockTime) || lockTime <= now) {
           matchedUser.lockedUntil = null;
           matchedUser.failedLoginAttempts = 0;
-        }
-        // Store / update global mobile number only when empty or explicit country code is provided
-        if (cleanDigits.length >= 6 && formattedPhone && (!matchedUser.phone || countryCode)) {
-          matchedUser.phone = formattedPhone;
-          if (countryCode) matchedUser.countryCode = String(countryCode).trim();
-          if (countryName) matchedUser.countryName = String(countryName).trim();
         }
       }
     });
@@ -742,43 +1128,106 @@ async function startServer() {
       });
     }
 
-    const isLocked = Boolean(matchedUser.lockedUntil && new Date(matchedUser.lockedUntil).getTime() > now);
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
+      userId: matchedUser.id,
+      email: matchedUser.email,
+      phone: matchedUser.phone,
+      paymentId: razorpayPaymentId ? String(razorpayPaymentId) : undefined,
+      firebaseIdToken: fbToken,
+    });
+
+    const lockTs = matchedUser.lockedUntil ? new Date(matchedUser.lockedUntil).getTime() : NaN;
+    const isLocked = Boolean(Number.isFinite(lockTs) && lockTs > now);
     const remainingAttempts = isLocked ? 0 : Math.max(0, 3 - (matchedUser.failedLoginAttempts || 0));
 
     return res.json({
       success: true,
       verified: true,
       existsInDatabase: true,
+      storedInBackend: true,
       matchedBy,
+      userId: matchedUser.id,
       email: matchedUser.email,
-      phone: matchedUser.phone || formattedPhone || '',
+      phone: matchedUser.phone || '',
       countryCode: matchedUser.countryCode || countryCode || '+91',
       countryName: matchedUser.countryName || countryName || 'India',
       name: matchedUser.name,
+      createdAt: matchedUser.createdAt,
       isLocked,
-      lockedUntil: matchedUser.lockedUntil || null,
+      lockedUntil: isLocked ? matchedUser.lockedUntil : null,
       remainingAttempts,
+      razorpayStatus: {
+        hasActiveSubscription: reconciled.subStatus.hasActiveSubscription,
+        activePlan: reconciled.subStatus.activePlan,
+        amountPaidInr: reconciled.subStatus.amountPaidInr,
+        expiresAt: reconciled.subStatus.expiresAt || null,
+        transactionId: reconciled.subStatus.transactionId || null,
+        receiptNumber: reconciled.subStatus.activeReceipt || null,
+        paymentMethod: reconciled.subStatus.paymentMethod || null,
+        razorpayVerified: reconciled.razorpayVerified,
+        verificationSource: reconciled.verificationSource,
+        razorpayApiConfigured: reconciled.razorpayApiConfigured,
+      },
       message: isLocked
         ? 'Your account is locked after 3 failed password attempts. Please try again after 12 hours or use Forgot Password to reset via OTP.'
         : `Verified in Backend Database! Customer account found for ${matchedUser.name} (${matchedUser.email}${matchedUser.phone ? ` · ${matchedUser.phone}` : ''}). Please enter your account password below.`,
     });
   });
 
-  // Step 2 of Returning Customer Login: Verify Account Password (with 3-attempt / 12-hour lockout)
-  app.post('/api/auth/login', authRateLimiter, (req, res) => {
-    const { email, credential, phone, countryCode, countryName, password, name, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId } = req.body;
+  // Step 2 of Returning Customer Login: Verify Password OR Google Firebase Auth Token, persist customer in backend, & verify Razorpay Premium
+  app.post('/api/auth/login', authRateLimiter, async (req, res) => {
+    const {
+      email,
+      credential,
+      phone,
+      countryCode,
+      countryName,
+      password,
+      name,
+      dob,
+      notifyGmail,
+      notifyMobile,
+      upiId,
+      isGoogleAuth,
+      firebaseUid,
+      avatar,
+    } = req.body;
     const rawIdentifier = (credential || email || phone || '').trim();
     if (!rawIdentifier && !phone?.trim()) {
       return res.status(400).json({ error: 'Please enter either your Gmail address or your Mobile Number to sign in.' });
     }
 
+    const verifiedBearer = await verifyBearerToken(req.headers.authorization);
     const isEmail = rawIdentifier.includes('@');
     const cleanEmail = isEmail ? rawIdentifier.toLowerCase() : (email?.includes('@') ? email.trim().toLowerCase() : '');
     const rawPhoneInput = (phone || (!isEmail ? rawIdentifier : '') || '').trim();
     const formattedPhone = formatGlobalPhone(rawPhoneInput, countryCode);
     const cleanDigits = rawPhoneInput.replace(/\D/g, '');
-    const parsedAge = age !== undefined && age !== '' && !isNaN(Number(age)) ? Number(age) : undefined;
     const now = Date.now();
+    const nowIso = new Date().toISOString();
+
+    const verifiedGoogleEmailMatch = Boolean(
+      isGoogleAuth &&
+        cleanEmail &&
+        verifiedBearer?.email &&
+        verifiedBearer.email.toLowerCase() === cleanEmail &&
+        verifiedBearer.emailVerified !== false
+    );
+
+    if (!verifiedGoogleEmailMatch && (!password || String(password).length === 0)) {
+      return res.status(400).json({ error: 'Account password is required to sign in.' });
+    }
+
+    let validatedDob: { dob: string; age: number } | null = null;
+    if (dob !== undefined && String(dob).trim() !== '') {
+      const dobCheck = validateAndNormalizeDob(dob);
+      if (dobCheck.valid && dobCheck.dob && dobCheck.age !== undefined) {
+        validatedDob = { dob: dobCheck.dob, age: dobCheck.age };
+      } else if (!verifiedGoogleEmailMatch) {
+        return res.status(400).json({ error: dobCheck.error || 'Invalid Date of Birth.' });
+      }
+    }
 
     let user: User | undefined;
     let lockError: { status: number; body: any } | null = null;
@@ -789,6 +1238,48 @@ async function startServer() {
         if (cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode)) return true;
         return false;
       });
+
+      // If signing in via verified Google Sign-In for the first time, create & store the customer record in backend DB!
+      if (!user && verifiedGoogleEmailMatch && cleanEmail) {
+        const displayName =
+          (name && String(name).trim()) ||
+          cleanEmail.split('@')[0] ||
+          'Reader';
+        const newUser: User = {
+          id: 'usr_' + Date.now(),
+          firebaseUid: verifiedBearer?.firebaseUid || (firebaseUid ? String(firebaseUid) : undefined),
+          name: displayName,
+          email: cleanEmail,
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+          welcomeEmailSent: true,
+          welcomeEmailSentAt: nowIso,
+          age: validatedDob?.age,
+          dob: validatedDob?.dob,
+          notifyGmail: typeof notifyGmail === 'boolean' ? notifyGmail : true,
+          notifyMobile: typeof notifyMobile === 'boolean' ? notifyMobile : true,
+          upiId: upiId?.trim() || undefined,
+          phone: formattedPhone || undefined,
+          countryCode: countryCode ? String(countryCode).trim() : '+91',
+          countryName: countryName ? String(countryName).trim() : 'India',
+          role: 'reader',
+          isVerified: true,
+          emailVerified: true,
+          bookmarks: [],
+          favorites: [],
+          readingHistory: [],
+          avatar:
+            avatar ||
+            `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(displayName)}`,
+          bio: 'Reader on Aathirai_Comic Network.',
+          createdAt: nowIso,
+          lastLoginAt: nowIso,
+          premiumPlan: null,
+        };
+        d.users.push(newUser);
+        user = newUser;
+        return;
+      }
 
       if (!user) {
         return;
@@ -805,36 +1296,46 @@ async function startServer() {
         return;
       }
 
-      // Clear expired 12-hour lock if 12 hours have passed
-      if (user.lockedUntil && new Date(user.lockedUntil).getTime() <= now) {
-        user.lockedUntil = null;
-        user.failedLoginAttempts = 0;
+      if (user.lockedUntil) {
+        const lockTs = new Date(user.lockedUntil).getTime();
+        if (!Number.isFinite(lockTs) || lockTs <= now) {
+          user.lockedUntil = null;
+          user.failedLoginAttempts = 0;
+        }
       }
 
-      // Check active 12-hour lock
-      if (user.lockedUntil && new Date(user.lockedUntil).getTime() > now) {
-        const hoursLeft = Math.max(1, Math.ceil((new Date(user.lockedUntil).getTime() - now) / (60 * 60 * 1000)));
-        lockError = {
-          status: 423,
-          body: {
-            error: `Account Locked! You exceeded 3 failed password attempts. Please try again after ${hoursLeft} hour(s) (12-hour security lock), or click "Forgot Password" to verify via OTP and change your password.`,
-            isLocked: true,
-            lockedUntil: user.lockedUntil,
-            remainingAttempts: 0,
-          },
-        };
-        return;
+      if (!verifiedGoogleEmailMatch && user.lockedUntil) {
+        const lockTs = new Date(user.lockedUntil).getTime();
+        if (Number.isFinite(lockTs) && lockTs > now) {
+          const hoursLeft = Math.max(1, Math.ceil((lockTs - now) / (60 * 60 * 1000)));
+          lockError = {
+            status: 423,
+            body: {
+              error: `Account Locked! You exceeded 3 failed password attempts. Please try again after ${hoursLeft} hour(s) (12-hour security lock), or click "Forgot Password" to verify via OTP and change your password.`,
+              isLocked: true,
+              lockedUntil: user.lockedUntil,
+              remainingAttempts: 0,
+            },
+          };
+          return;
+        }
       }
 
-      // Verify password via scrypt hash (or upgrade legacy password on first login)
-      if (password !== undefined) {
-        const inputPass = String(password);
+      if (!verifiedGoogleEmailMatch) {
+        const inputPass = String(password || '');
         const storedSecret = user.passwordHash || user.password;
-        const passCheck = verifyPasswordHash(inputPass, user.password, user.passwordHash);
         if (!storedSecret) {
-          user.passwordHash = hashPassword(inputPass);
-          delete user.password;
-        } else if (!passCheck.valid) {
+          lockError = {
+            status: 401,
+            body: {
+              error: 'This account uses Google Sign-In and does not have a password set yet. Please click "Connect Gmail Account" or use "Forgot Password" to set one via OTP.',
+              isLocked: false,
+            },
+          };
+          return;
+        }
+        const passCheck = verifyPasswordHash(inputPass, user.password, user.passwordHash);
+        if (!passCheck.valid) {
           const attempts = (user.failedLoginAttempts || 0) + 1;
           user.failedLoginAttempts = attempts;
 
@@ -869,25 +1370,31 @@ async function startServer() {
         }
       }
 
-      // Password verified -> reset failed attempts and store global mobile number in database for password recovery
       user.failedLoginAttempts = 0;
       user.lockedUntil = null;
-      user.lastLoginAt = new Date().toISOString();
+      user.lastLoginAt = nowIso;
+      if (verifiedBearer?.firebaseUid || firebaseUid) {
+        user.firebaseUid = verifiedBearer?.firebaseUid || String(firebaseUid);
+      }
+      if (verifiedGoogleEmailMatch) {
+        user.isVerified = true;
+        user.emailVerified = true;
+      }
       if (name?.trim()) user.name = name.trim();
+      if (avatar && (!user.avatar || user.avatar.includes('dicebear.com'))) user.avatar = String(avatar);
       if (formattedPhone && cleanDigits.length >= 6) {
         user.phone = formattedPhone;
       }
       if (countryCode) user.countryCode = String(countryCode).trim();
       if (countryName) user.countryName = String(countryName).trim();
       if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
-      if (parsedAge !== undefined && !user.age) user.age = parsedAge;
-      if (dob && !user.dob) user.dob = String(dob).trim();
+      if (validatedDob && !user.dob) {
+        user.dob = validatedDob.dob;
+        user.age = validatedDob.age;
+      }
       if (typeof notifyGmail === 'boolean') user.notifyGmail = notifyGmail;
       if (typeof notifyMobile === 'boolean') user.notifyMobile = notifyMobile;
       if (upiId?.trim()) user.upiId = upiId.trim();
-      if (paidPlan && paidPlan !== 'free') {
-        applyPaidPremiumDetailToUser(d, user, paidPlan, paymentMethod, transactionId, upiId);
-      }
     });
 
     if (lockError) {
@@ -898,14 +1405,18 @@ async function startServer() {
       return res.status(404).json({ error: 'Customer account not found in the backend database. Please register your account in First-Time Customer Register.' });
     }
 
-    const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
       userId: user.id,
       email: user.email,
       phone: user.phone,
+      firebaseIdToken: fbToken,
     });
+    const subStatus = reconciled.subStatus;
+    const latestUser = subStatus.matchedUser || user;
 
     const enrichedUser: User = {
-      ...user,
+      ...latestUser,
       premiumPlan: subStatus.activePlan,
       premiumStartedAt: subStatus.startedAt,
       premiumExpiresAt: subStatus.expiresAt,
@@ -916,44 +1427,77 @@ async function startServer() {
       'READER_LOGIN',
       enrichedUser.email,
       enrichedUser.role,
-      `Customer logged in | Gmail: ${enrichedUser.email} | Mobile: ${enrichedUser.phone || 'N/A'} | Age: ${enrichedUser.age || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr})` : 'Free'}`,
+      `Customer logged in | Gmail: ${enrichedUser.email} | Mobile: ${enrichedUser.phone || 'N/A'} | Age: ${enrichedUser.age || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr}, Razorpay Verified: ${reconciled.razorpayVerified})` : 'Free'}`,
       'user',
       enrichedUser.id
     );
 
-    return res.json({ success: true, user: sanitizeUserForClient(enrichedUser, true), subscription: subStatus });
-  });
-
-  app.get('/api/auth/reader-status', (req, res) => {
-    const { userId, email, phone } = req.query;
-    const snapshot = db.getSnapshot();
-    const subStatus = getReaderSubscriptionStatus(snapshot, {
-      userId: userId ? String(userId) : undefined,
-      email: email ? String(email) : undefined,
-      phone: phone ? String(phone) : undefined,
-    });
-
-    const cleanEmail = (email ? String(email) : subStatus.verifiedGmail || '').trim().toLowerCase();
-    const purchases = snapshot.purchases.filter(
-      p =>
-        (userId && p.userId === userId) ||
-        (cleanEmail && p.userEmail?.toLowerCase() === cleanEmail)
+    mirrorWritesInBackground(
+      'auth_login',
+      buildUserWriteItems(enrichedUser),
+      fbToken
     );
 
     return res.json({
       success: true,
+      storedInBackend: true,
+      razorpayVerified: reconciled.razorpayVerified,
+      verificationSource: reconciled.verificationSource,
+      user: sanitizeUserForClient(enrichedUser, true),
+      subscription: subStatus,
+    });
+  });
+
+  app.get('/api/auth/reader-status', async (req, res) => {
+    const { userId, email, phone, paymentId } = req.query;
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
+      userId: userId ? String(userId) : undefined,
+      email: email ? String(email) : undefined,
+      phone: phone ? String(phone) : undefined,
+      paymentId: paymentId ? String(paymentId) : undefined,
+      firebaseIdToken: fbToken,
+    });
+    const subStatus = reconciled.subStatus;
+    const snapshot = db.getSnapshot();
+    const authCtx = await resolveAuthenticatedUser(req, snapshot.users);
+    const matched = subStatus.matchedUser;
+    const isAuthorizedOwner = Boolean(
+      authCtx.authMethod === 'token' &&
+        authCtx.user &&
+        matched &&
+        (authCtx.user.id === matched.id || authCtx.role === 'admin')
+    );
+
+    const cleanEmail = (email ? String(email) : subStatus.verifiedGmail || '').trim().toLowerCase();
+    const purchases = isAuthorizedOwner
+      ? snapshot.purchases.filter(
+          p =>
+            (userId && p.userId === userId) ||
+            (matched?.id && p.userId === matched.id) ||
+            (cleanEmail && p.userEmail?.toLowerCase() === cleanEmail)
+        )
+      : [];
+
+    return res.json({
+      success: true,
+      storedInBackend: Boolean(matched),
+      razorpayVerified: reconciled.razorpayVerified,
+      verificationSource: reconciled.verificationSource,
+      razorpayApiConfigured: reconciled.razorpayApiConfigured,
       subscription: subStatus,
       purchases,
-      user: subStatus.matchedUser
+      user: matched
         ? sanitizeUserForClient(
             {
-              ...subStatus.matchedUser,
+              ...matched,
+              ...(isAuthorizedOwner ? {} : { dob: undefined, upiId: undefined }),
               premiumPlan: subStatus.activePlan,
               premiumStartedAt: subStatus.startedAt,
               premiumExpiresAt: subStatus.expiresAt,
               premiumPaymentDetail: subStatus.premiumPaymentDetail,
             },
-            true
+            false
           )
         : null,
     });
@@ -986,10 +1530,11 @@ async function startServer() {
     const inputPhoneKey = getPhoneOtpKey(rawPhoneInput, countryCode);
 
     db.mutate(d => {
-      if (targetEmail) d.otps[targetEmail] = otp;
-      if (cleanEmail) d.otps[cleanEmail] = otp;
-      if (targetPhoneKey.length >= 6) d.otps[targetPhoneKey] = otp;
-      if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otp;
+      const otpEntry = createOtpEntry(otp);
+      if (targetEmail) d.otps[targetEmail] = otpEntry;
+      if (cleanEmail) d.otps[cleanEmail] = otpEntry;
+      if (targetPhoneKey.length >= 6) d.otps[targetPhoneKey] = otpEntry;
+      if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otpEntry;
     });
 
     return res.json({
@@ -997,7 +1542,7 @@ async function startServer() {
       email: matchedUser.email,
       phone: matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '',
       countryCode: matchedUser.countryCode || countryCode || '+91',
-      message: `6-digit verification OTP sent for password recovery to ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}.`,
+      message: `6-digit verification OTP sent for password recovery to ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
@@ -1013,14 +1558,23 @@ async function startServer() {
       return emailMatch || phoneMatch;
     });
     const userPhoneKey = matchedUser?.phone ? getPhoneOtpKey(matchedUser.phone, matchedUser.countryCode) : '';
-    const storedOtp =
-      (cleanEmail ? snapshot.otps[cleanEmail] : undefined) ||
-      (matchedUser?.email ? snapshot.otps[matchedUser.email.toLowerCase()] : undefined) ||
-      (phoneKey.length >= 6 ? snapshot.otps[phoneKey] : undefined) ||
-      (userPhoneKey.length >= 6 ? snapshot.otps[userPhoneKey] : undefined);
+    const otpCheck = verifyOtpAgainstKeys(
+      snapshot.otps,
+      [
+        cleanEmail,
+        matchedUser?.email ? matchedUser.email.toLowerCase() : '',
+        phoneKey.length >= 6 ? phoneKey : '',
+        userPhoneKey.length >= 6 ? userPhoneKey : '',
+      ],
+      otp
+    );
 
-    if (!otp || !storedOtp || storedOtp !== String(otp).trim()) {
-      return res.status(400).json({ error: 'Invalid 6-digit OTP code. Please check the code sent to your Gmail / Global Mobile Number.' });
+    if (!matchedUser || !otpCheck.valid) {
+      return res.status(400).json({
+        error: otpCheck.expired
+          ? 'Reset OTP has expired (valid for 10 minutes). Please request a new OTP.'
+          : 'Invalid 6-digit OTP code. Please check the code sent to your Gmail / Global Mobile Number.',
+      });
     }
 
     return res.json({
@@ -1049,30 +1603,37 @@ async function startServer() {
       const phoneMatch = Boolean(phone && phonesMatch(u.phone, phone, countryCode));
       return emailMatch || phoneMatch;
     });
-    const userPhoneKey = preMatchedUser?.phone ? getPhoneOtpKey(preMatchedUser.phone, preMatchedUser.countryCode) : '';
-    const storedOtp =
-      (cleanEmail ? snapshot.otps[cleanEmail] : undefined) ||
-      (preMatchedUser?.email ? snapshot.otps[preMatchedUser.email.toLowerCase()] : undefined) ||
-      (phoneKey.length >= 6 ? snapshot.otps[phoneKey] : undefined) ||
-      (userPhoneKey.length >= 6 ? snapshot.otps[userPhoneKey] : undefined);
+    if (!preMatchedUser) {
+      return res.status(404).json({ error: 'Customer account not found.' });
+    }
 
-    if (storedOtp && storedOtp !== String(otp || '').trim()) {
-      return res.status(400).json({ error: 'Invalid or expired reset OTP.' });
+    const userPhoneKey = preMatchedUser.phone ? getPhoneOtpKey(preMatchedUser.phone, preMatchedUser.countryCode) : '';
+    const otpCheck = verifyOtpAgainstKeys(
+      snapshot.otps,
+      [
+        cleanEmail,
+        preMatchedUser.email.toLowerCase(),
+        phoneKey.length >= 6 ? phoneKey : '',
+        userPhoneKey.length >= 6 ? userPhoneKey : '',
+      ],
+      otp
+    );
+
+    if (!otpCheck.valid) {
+      return res.status(400).json({
+        error: otpCheck.expired
+          ? 'Reset OTP has expired (valid for 10 minutes). Please request a new OTP.'
+          : 'Invalid or expired reset OTP. Please request and verify your OTP first.',
+      });
     }
 
     const hashedNewPass = hashPassword(String(newPassword));
     let updatedUser: User | undefined;
     db.mutate(d => {
-      updatedUser = d.users.find((u: User) => {
-        const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
-        const phoneMatch = Boolean(phone && phonesMatch(u.phone, phone, countryCode));
-        return emailMatch || phoneMatch;
-      });
-
+      updatedUser = d.users.find((u: User) => u.id === preMatchedUser.id);
       if (updatedUser) {
         updatedUser.passwordHash = hashedNewPass;
         delete updatedUser.password;
-        // Immediately unlock account and reset failed attempts on password reset
         updatedUser.failedLoginAttempts = 0;
         updatedUser.lockedUntil = null;
       }
@@ -1096,6 +1657,12 @@ async function startServer() {
       updatedUser.id
     );
 
+    mirrorWritesInBackground(
+      'auth_reset_password',
+      buildUserWriteItems(updatedUser),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
+
     return res.json({
       success: true,
       email: updatedUser.email,
@@ -1104,53 +1671,112 @@ async function startServer() {
     });
   });
 
-  app.post('/api/auth/update-profile', (req, res) => {
-    const { userId, name, email, phone, countryCode, countryName, age, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId, bio, avatar, socialLinks } = req.body;
-    let updated: User | null = null;
-    db.mutate(d => {
-      const u = d.users.find(x => x.id === userId || (email && x.email.toLowerCase() === String(email).toLowerCase()));
-      if (u) {
-        if (name) u.name = name.trim();
-        if (email && email.includes('@')) u.email = email.trim().toLowerCase();
-        if (phone !== undefined) {
-          u.phone = formatGlobalPhone(phone, countryCode || u.countryCode);
-        }
-        if (countryCode) u.countryCode = String(countryCode).trim();
-        if (countryName) u.countryName = String(countryName).trim();
-        if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
-        if (dob !== undefined) u.dob = String(dob).trim();
-        if (typeof notifyGmail === 'boolean') u.notifyGmail = notifyGmail;
-        if (typeof notifyMobile === 'boolean') u.notifyMobile = notifyMobile;
-        if (upiId !== undefined) u.upiId = upiId.trim();
-        if (bio !== undefined) u.bio = bio;
-        if (avatar) u.avatar = avatar;
-        if (socialLinks && typeof socialLinks === 'object') {
-          u.socialLinks = { ...u.socialLinks, ...socialLinks };
-        }
-        if (paidPlan) {
-          applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
-        }
-        updated = u;
+  app.post('/api/auth/update-profile', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required. Please sign in again to update your customer profile.' });
+    }
+
+    const { userId, name, email, phone, countryCode, countryName, dob, notifyGmail, notifyMobile, upiId, paidPlan, paymentMethod, transactionId, bio, avatar, socialLinks } = req.body;
+    const targetId = userId ? String(userId) : authCtx.user.id;
+    if (authCtx.user.id !== targetId && authCtx.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: You can only update your own customer profile.' });
+    }
+
+    const cleanEmail = email !== undefined ? String(email).trim().toLowerCase() : undefined;
+    if (cleanEmail !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please provide a valid Gmail address.' });
+    }
+
+    let dobUpdate: { dob: string; age: number } | null = null;
+    if (dob !== undefined) {
+      const dobCheck = validateAndNormalizeDob(dob);
+      if (!dobCheck.valid || !dobCheck.dob || dobCheck.age === undefined) {
+        return res.status(400).json({ error: dobCheck.error || 'Please enter a valid Date of Birth (DD/MM/YYYY).' });
       }
+      dobUpdate = { dob: dobCheck.dob, age: dobCheck.age };
+    }
+
+    let updated: User | null = null;
+    let conflictError: string | null = null;
+
+    db.mutate(d => {
+      const u = d.users.find(x => x.id === targetId);
+      if (!u) return;
+
+      if (cleanEmail && cleanEmail !== u.email.toLowerCase()) {
+        const dupEmail = d.users.some(x => x.id !== u.id && x.email.toLowerCase() === cleanEmail);
+        if (dupEmail) {
+          conflictError = 'That Gmail address is already linked to another customer account.';
+          return;
+        }
+        u.email = cleanEmail;
+      }
+
+      if (phone !== undefined) {
+        const nextFormattedPhone = formatGlobalPhone(phone, countryCode || u.countryCode);
+        const nextDigits = nextFormattedPhone.replace(/\D/g, '');
+        if (nextDigits.length > 0 && nextDigits.length < 6) {
+          conflictError = 'Please enter a valid Global Mobile Number.';
+          return;
+        }
+        if (nextDigits.length >= 6) {
+          const dupPhone = d.users.some(x => x.id !== u.id && phonesMatch(x.phone, phone, countryCode || u.countryCode));
+          if (dupPhone) {
+            conflictError = 'That Mobile Number is already linked to another customer account.';
+            return;
+          }
+          u.phone = nextFormattedPhone;
+        }
+      }
+
+      if (name && String(name).trim().length >= 2) u.name = String(name).trim();
+      if (countryCode) u.countryCode = String(countryCode).trim();
+      if (countryName) u.countryName = String(countryName).trim();
+      if (dobUpdate) {
+        u.dob = dobUpdate.dob;
+        u.age = dobUpdate.age;
+      }
+      if (typeof notifyGmail === 'boolean') u.notifyGmail = notifyGmail;
+      if (typeof notifyMobile === 'boolean') u.notifyMobile = notifyMobile;
+      if (upiId !== undefined) u.upiId = String(upiId).trim();
+      if (bio !== undefined) u.bio = String(bio);
+      if (avatar) u.avatar = String(avatar);
+      if (socialLinks && typeof socialLinks === 'object') {
+        u.socialLinks = { ...u.socialLinks, ...socialLinks };
+      }
+      if (paidPlan && authCtx.role === 'admin') {
+        applyPaidPremiumDetailToUser(d, u, paidPlan, paymentMethod, transactionId, upiId);
+      }
+      updated = u;
     });
+
+    if (conflictError) {
+      return res.status(409).json({ error: conflictError });
+    }
     if (!updated) return res.status(404).json({ error: 'User not found' });
+
     const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
       userId: (updated as User).id,
       email: (updated as User).email,
       phone: (updated as User).phone,
     });
+    const updatedWithSub: User = {
+      ...(updated as User),
+      premiumPlan: subStatus.activePlan,
+      premiumStartedAt: subStatus.startedAt,
+      premiumExpiresAt: subStatus.expiresAt,
+      premiumPaymentDetail: subStatus.premiumPaymentDetail,
+    };
+    mirrorWritesInBackground(
+      'auth_update_profile',
+      buildUserWriteItems(updatedWithSub),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     return res.json({
       success: true,
-      user: sanitizeUserForClient(
-        {
-          ...(updated as User),
-          premiumPlan: subStatus.activePlan,
-          premiumStartedAt: subStatus.startedAt,
-          premiumExpiresAt: subStatus.expiresAt,
-          premiumPaymentDetail: subStatus.premiumPaymentDetail,
-        },
-        true
-      ),
+      storedInBackend: true,
+      user: sanitizeUserForClient(updatedWithSub, false),
     });
   });
 
@@ -1310,17 +1936,37 @@ async function startServer() {
     }
 
     if (search) {
-      const s = String(search).toLowerCase();
-      comics = comics.filter(c =>
-        c.title.toLowerCase().includes(s) ||
-        c.authorName.toLowerCase().includes(s) ||
-        c.description.toLowerCase().includes(s) ||
-        c.genre.some(g => g.toLowerCase().includes(s))
-      );
+      const s = String(search).toLowerCase().trim();
+      const umbrellaTerms = new Set([
+        'tamil', 'tamil comic', 'tamil comics', 'aathirai', 'aathirai comic', 'aathirai_comic',
+        'indian', 'indian comic', 'indian comics', 'general', 'general comic', 'general comics',
+        'comic', 'comics', 'comic book', 'comic books', 'manga', 'webtoon', 'webtoons',
+      ]);
+      const tokens = s.split(/\s+/).filter(Boolean);
+      comics = comics.filter(c => {
+        const corpus = [
+          c.title,
+          c.slug,
+          c.authorName,
+          c.description,
+          ...(c.genre || []),
+          ...(c.tags || []),
+          ...(c.chapters || []).flatMap(ch => [
+            ch.title,
+            ...(ch.episodes || []).map(ep => `${ep.title} ${ep.synopsis || ''}`),
+          ]),
+          'tamil comic tamil comics aathirai comic aathirai_comic indian comic indian comics general comic comic book manga webtoon',
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (corpus.includes(s)) return true;
+        return tokens.every(t => umbrellaTerms.has(t) || corpus.includes(t));
+      });
     }
 
     if (genre && genre !== 'All') {
-      comics = comics.filter(c => c.genre.includes(String(genre)));
+      const targetGenre = String(genre).toLowerCase();
+      comics = comics.filter(c => c.genre.some(g => g.toLowerCase() === targetGenre));
     }
 
     if (access === 'free') {
@@ -1588,6 +2234,12 @@ async function startServer() {
       releaseType: 'new_comic',
     });
 
+    mirrorWritesInBackground(
+      'admin_publish_direct',
+      buildComicAndEpisodeWriteItems(newComic),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
+
     return res.json({
       success: true,
       comic: newComic,
@@ -1676,6 +2328,11 @@ async function startServer() {
 
     if (!targetComic || !createdRequest) return res.status(404).json({ error: 'Comic series or target item not found' });
     db.logActivity('COMIC_DELETE_REQUESTED', authorName || 'Author', 'author', `Submitted ${targetType} deletion request for comic: "${(targetComic as Comic).title}"`, 'comic', comicId);
+    mirrorWritesInBackground(
+      'delete_request_submit',
+      [buildDeleteRequestWriteItem(createdRequest)],
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     return res.json({ success: true, comic: targetComic, deleteRequest: createdRequest });
   });
 
@@ -1862,6 +2519,12 @@ async function startServer() {
       req.params.id
     );
 
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    mirrorWritesInBackground('delete_request_action', [buildDeleteRequestWriteItem(updatedRequest as DeleteRequest)], fbToken);
+    if (action === 'approve' && (updatedRequest as DeleteRequest).targetType === 'series') {
+      deleteFirestoreDoc(`comics/${sanitizeFirestoreId((updatedRequest as DeleteRequest).comicId)}`, fbToken);
+    }
+
     return res.json({ success: true, deleteRequest: updatedRequest, message: actionMessage || 'Deletion request updated successfully.' });
   });
 
@@ -1974,7 +2637,7 @@ async function startServer() {
           id: newId,
           title: title || 'Untitled Series',
           slug: (title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-          authorId: authorId || 'usr_author',
+          authorId: authorId || '',
           authorName: authorName || 'Creator',
           genre: Array.isArray(genre) ? genre : [genre || 'Action'],
           coverImage: fallbackImg,
@@ -2046,6 +2709,12 @@ async function startServer() {
       `Submitted full comic "${(targetComic as Comic).title}" for administrator approval`,
       'comic',
       (targetComic as Comic).id
+    );
+
+    mirrorWritesInBackground(
+      'author_submit_comic',
+      buildComicAndEpisodeWriteItems(targetComic as Comic),
+      extractFirebaseIdToken(req.headers.authorization)
     );
 
     return res.json({
@@ -2149,6 +2818,12 @@ async function startServer() {
       });
     }
 
+    mirrorWritesInBackground(
+      'admin_moderate_comic',
+      buildComicAndEpisodeWriteItems(comicObj),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
+
     return res.json({
       success: true,
       comic: moderatedComic,
@@ -2235,6 +2910,11 @@ async function startServer() {
     if (!targetComic) return res.status(404).json({ error: 'Comic not found' });
 
     db.logActivity('PAYWALL_UPDATED', 'admin@aathirai.com', 'admin', `Admin updated paywall: ${changeSummary}`, 'paywall', comicId);
+    mirrorWritesInBackground(
+      'admin_paywall_toggle',
+      buildComicAndEpisodeWriteItems(targetComic as Comic),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
 
     return res.json({
       success: true,
@@ -2307,7 +2987,7 @@ async function startServer() {
       id: comicId,
       title,
       slug: title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
-      authorId: authorId || 'usr_rajesh',
+      authorId: authorId || '',
       authorName,
       genre: Array.isArray(genre) ? genre : [genre || 'Action'],
       coverImage: fallbackCover,
@@ -2355,6 +3035,12 @@ async function startServer() {
       releaseType: 'new_comic',
     });
 
+    mirrorWritesInBackground(
+      'comic_create',
+      buildComicAndEpisodeWriteItems(newComic),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
+
     return res.json({ success: true, comic: newComic });
   });
 
@@ -2395,6 +3081,11 @@ async function startServer() {
       return res.status(403).json({ error: 'Access Denied: You are only permitted to edit your own comic series.' });
     }
     if (!updated) return res.status(404).json({ error: 'Comic not found' });
+    mirrorWritesInBackground(
+      'comic_update',
+      buildComicAndEpisodeWriteItems(updated as Comic),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     return res.json({ success: true, comic: updated });
   });
 
@@ -2424,6 +3115,7 @@ async function startServer() {
     }
 
     db.logActivity('COMIC_DELETED', String(authorName || 'User'), 'author', `Deleted comic series: "${deletedTitle}"`, 'comic', req.params.id);
+    deleteFirestoreDoc(`comics/${sanitizeFirestoreId(req.params.id)}`, extractFirebaseIdToken(req.headers.authorization));
     return res.json({ success: true, message: `"${deletedTitle}" was deleted successfully.` });
   });
 
@@ -2528,8 +3220,7 @@ async function startServer() {
         if (authorId) {
           const isOwner =
             comic.authorId === authorId ||
-            comic.authorName?.toLowerCase() === authorName?.toLowerCase() ||
-            (authorId === 'usr_rajesh' && comic.authorId === 'usr_rajesh');
+            comic.authorName?.toLowerCase() === authorName?.toLowerCase();
           if (!isOwner) {
             isForbidden = true;
             return;
@@ -2596,9 +3287,26 @@ async function startServer() {
         episode: addedEpisode as Episode,
         releaseType: 'new_episode',
       });
+      const parentChapter = parentComic.chapters.find(ch => ch.id === req.params.chapId);
+      if (parentChapter) {
+        mirrorWritesInBackground(
+          'episode_create',
+          [
+            buildEpisodeWriteItem({
+              episode: addedEpisode as Episode,
+              comicId: parentComic.id,
+              chapterId: parentChapter.id,
+              chapterNumber: parentChapter.chapterNumber,
+              chapterTitle: parentChapter.title,
+              authorId: parentComic.authorId,
+            }),
+          ],
+          extractFirebaseIdToken(req.headers.authorization)
+        );
+      }
     }
 
-    return res.json({ success: true, episode: addedEpisode });
+    return res.json({ success: true, episode: addedEpisode, comic: parentComic || null });
   });
 
   // Edit Episode
@@ -2643,7 +3351,25 @@ async function startServer() {
 
     if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only edit your own episodes.' });
     if (!updatedEpisode) return res.status(404).json({ error: 'Episode not found' });
-    return res.json({ success: true, episode: updatedEpisode });
+    const comicRec = db.getSnapshot().comics.find(c => c.id === req.params.comicId);
+    const chapRec = comicRec?.chapters.find(ch => ch.id === req.params.chapId);
+    if (comicRec && chapRec) {
+      mirrorWritesInBackground(
+        'episode_update',
+        [
+          buildEpisodeWriteItem({
+            episode: updatedEpisode as Episode,
+            comicId: comicRec.id,
+            chapterId: chapRec.id,
+            chapterNumber: chapRec.chapterNumber,
+            chapterTitle: chapRec.title,
+            authorId: comicRec.authorId,
+          }),
+        ],
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+    }
+    return res.json({ success: true, episode: updatedEpisode, comic: comicRec || null });
   });
 
   // Delete Episode
@@ -2673,6 +3399,10 @@ async function startServer() {
 
     if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only delete your own episodes.' });
     if (!deletedTitle) return res.status(404).json({ error: 'Episode not found' });
+    deleteFirestoreDoc(
+      `comics/${sanitizeFirestoreId(req.params.comicId)}/episodes/${sanitizeFirestoreId(req.params.epId)}`,
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     return res.json({ success: true, message: `"${deletedTitle}" deleted successfully.` });
   });
 
@@ -2728,10 +3458,7 @@ async function startServer() {
       const user = subStatus.matchedUser;
       const targetEmail = (email ? String(email) : user?.email || '').trim().toLowerCase();
 
-      if (user && (user.role === 'admin' || user.id === foundComic.authorId)) {
-        hasAccess = true;
-        accessReason = 'author_or_admin';
-      } else if (subStatus.hasActiveSubscription) {
+      if (subStatus.hasActiveSubscription) {
         hasAccess = true;
         accessReason = `gmail_premium_${subStatus.activePlan}`;
       } else {
@@ -2810,15 +3537,20 @@ async function startServer() {
     });
   });
 
-  // Real-time endpoint to verify reader Gmail/account payment status for any comic/chapter/episode
-  app.get('/api/payments/verify-access', (req, res) => {
-    const { userId, email, phone, comicId, chapterId, episodeId } = req.query;
-    const snapshot = db.getSnapshot();
-    const subStatus = getReaderSubscriptionStatus(snapshot, {
+  // Real-time endpoint to verify reader Gmail/account & Razorpay payment status for any comic/chapter/episode
+  app.get('/api/payments/verify-access', async (req, res) => {
+    const { userId, email, phone, comicId, chapterId, episodeId, paymentId, razorpayPaymentId } = req.query;
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
       userId: userId ? String(userId) : undefined,
       email: email ? String(email) : undefined,
       phone: phone ? String(phone) : undefined,
+      paymentId: paymentId ? String(paymentId) : razorpayPaymentId ? String(razorpayPaymentId) : undefined,
+      firebaseIdToken: fbToken,
     });
+
+    const snapshot = db.getSnapshot();
+    const subStatus = reconciled.subStatus;
 
     let foundComic: any = comicId ? snapshot.comics.find((c: Comic) => c.id === String(comicId)) : null;
     let foundChapter: any = null;
@@ -2877,19 +3609,12 @@ async function startServer() {
         })
       : null;
 
-    const isAdminOrAuthor = Boolean(
-      matchedUser && (matchedUser.role === 'admin' || (foundComic && matchedUser.id === foundComic.authorId))
-    );
-
     let hasAccess = false;
     let accessReason = 'paywall_locked';
 
     if (hasTargetContext && !isPaywalled && (foundComic || foundEpisode)) {
       hasAccess = true;
       accessReason = 'free_content';
-    } else if (isAdminOrAuthor) {
-      hasAccess = true;
-      accessReason = 'author_or_admin';
     } else if (subStatus.hasActiveSubscription) {
       hasAccess = true;
       accessReason = `gmail_premium_${subStatus.activePlan}`;
@@ -2910,8 +3635,63 @@ async function startServer() {
       plan: subStatus.activePlan,
       expiresAt: subStatus.expiresAt,
       activeReceipt: subStatus.activeReceipt || itemPurchase?.receiptNumber,
+      transactionId: subStatus.transactionId || itemPurchase?.razorpayPaymentId,
+      paymentMethod: subStatus.paymentMethod || itemPurchase?.paymentMethod,
       verifiedGmail: subStatus.verifiedGmail,
       verifiedPhone: subStatus.verifiedPhone,
+      razorpayVerified: reconciled.razorpayVerified,
+      verificationSource: reconciled.verificationSource,
+      razorpayApiConfigured: reconciled.razorpayApiConfigured,
+      razorpayError: reconciled.razorpayError,
+    });
+  });
+
+  // Verify a Razorpay Payment ID (`pay_...`) or customer email/phone directly against Razorpay + Backend DB
+  app.post('/api/payments/verify-razorpay', paymentRateLimiter, async (req, res) => {
+    const { userId, email, phone, razorpayPaymentId, paymentId } = req.body;
+    const cleanPayId = String(razorpayPaymentId || paymentId || '').trim();
+    if (!email && !phone && !userId && !cleanPayId) {
+      return res.status(400).json({
+        error: 'Please enter a Gmail address, Mobile number, or Razorpay Payment ID (pay_...) to verify.',
+      });
+    }
+
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
+      userId: userId ? String(userId) : undefined,
+      email: email ? String(email) : undefined,
+      phone: phone ? String(phone) : undefined,
+      paymentId: cleanPayId || undefined,
+      firebaseIdToken: fbToken,
+    });
+
+    if (cleanPayId && !reconciled.subStatus.hasActiveSubscription && !reconciled.razorpayApiConfigured) {
+      // Check if that payment ID exists in local purchases/paymentTransactions
+      const localMatch = db.getSnapshot().purchases.find(
+        (p: Purchase) => p.razorpayPaymentId === cleanPayId && p.status === 'success'
+      );
+      if (!localMatch) {
+        return res.status(404).json({
+          verified: false,
+          razorpayVerified: false,
+          razorpayApiConfigured: false,
+          error:
+            'Razorpay Payment ID not found in local backend database, and live RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET API lookup is not configured.',
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      verified: reconciled.subStatus.hasActiveSubscription,
+      razorpayVerified: reconciled.razorpayVerified,
+      verificationSource: reconciled.verificationSource,
+      razorpayApiConfigured: reconciled.razorpayApiConfigured,
+      subscription: reconciled.subStatus,
+      user: reconciled.subStatus.matchedUser
+        ? sanitizeUserForClient(reconciled.subStatus.matchedUser, false)
+        : null,
+      error: reconciled.razorpayError,
     });
   });
 
@@ -2951,6 +3731,15 @@ async function startServer() {
     });
 
     db.logActivity('COMMENT_POSTED', userName || 'Reader', userRole, `Commented on episode ${req.params.id}`, 'comment', newComment.id);
+
+    const parentComicForComment = db.getSnapshot().comics.find(c =>
+      c.chapters.some(ch => ch.episodes.some(ep => ep.id === req.params.id))
+    );
+    mirrorWritesInBackground(
+      'comment_create',
+      [buildCommentWriteItem(newComment as any, parentComicForComment?.id || 'comic_virasen')],
+      extractFirebaseIdToken(req.headers.authorization)
+    );
 
     return res.json({ success: true, comment: newComment });
   });
@@ -3060,6 +3849,11 @@ async function startServer() {
       }
     });
     db.logActivity('CONTENT_REPORTED', reporterName || 'Reader', 'reader', `Reported ${targetType} (${targetId}): ${reason}`, 'report', report.id);
+    mirrorWritesInBackground(
+      'report_create',
+      [buildReportWriteItem(report)],
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     return res.json({ success: true, report });
   });
 
@@ -3218,48 +4012,72 @@ async function startServer() {
     return res.json({ success: true });
   });
 
-  app.post('/api/reader/bookmarks/toggle', (req, res) => {
-    const { userId, comicId } = req.body;
-    if (!userId || !comicId) return res.status(400).json({ error: 'userId and comicId are required' });
+  app.post('/api/reader/bookmarks/toggle', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required to update bookmarks.' });
+    }
+    const { comicId } = req.body;
+    if (!comicId) return res.status(400).json({ error: 'comicId is required' });
     let bookmarks: string[] = [];
+    let bookmarked = false;
     db.mutate(d => {
-      const u = d.users.find(x => x.id === userId);
+      const u = d.users.find(x => x.id === authCtx.user!.id);
       if (u) {
         if (!Array.isArray(u.bookmarks)) u.bookmarks = [];
         const idx = u.bookmarks.indexOf(comicId);
-        if (idx >= 0) u.bookmarks.splice(idx, 1);
-        else u.bookmarks.push(comicId);
+        if (idx >= 0) {
+          u.bookmarks.splice(idx, 1);
+          bookmarked = false;
+        } else {
+          u.bookmarks.push(comicId);
+          bookmarked = true;
+        }
         bookmarks = u.bookmarks;
       }
     });
-    return res.json({ success: true, bookmarks });
+    return res.json({ success: true, bookmarks, bookmarked });
   });
 
-  app.post('/api/reader/favorites/toggle', (req, res) => {
-    const { userId, comicId } = req.body;
-    if (!userId || !comicId) return res.status(400).json({ error: 'userId and comicId are required' });
+  app.post('/api/reader/favorites/toggle', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required to update favorites.' });
+    }
+    const { comicId } = req.body;
+    if (!comicId) return res.status(400).json({ error: 'comicId is required' });
     let favorites: string[] = [];
+    let favorited = false;
     db.mutate(d => {
-      const u = d.users.find(x => x.id === userId);
+      const u = d.users.find(x => x.id === authCtx.user!.id);
       if (u) {
         if (!Array.isArray(u.favorites)) u.favorites = [];
         const idx = u.favorites.indexOf(comicId);
-        if (idx >= 0) u.favorites.splice(idx, 1);
-        else u.favorites.push(comicId);
+        if (idx >= 0) {
+          u.favorites.splice(idx, 1);
+          favorited = false;
+        } else {
+          u.favorites.push(comicId);
+          favorited = true;
+        }
         favorites = u.favorites;
       }
     });
-    return res.json({ success: true, favorites });
+    return res.json({ success: true, favorites, favorited });
   });
 
-  app.post('/api/reader/progress', (req, res) => {
-    const { userId, comicId, comicTitle, coverImage, episodeId, episodeTitle, episodeNumber = 1, chapterNumber = 1, pageIndex = 0, totalPages = 1 } = req.body;
-    if (!userId || !comicId || !episodeId) {
-      return res.status(400).json({ error: 'userId, comicId, and episodeId are required' });
+  app.post('/api/reader/progress', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required to save reading progress.' });
+    }
+    const { comicId, comicTitle, coverImage, episodeId, episodeTitle, episodeNumber = 1, chapterNumber = 1, pageIndex = 0, totalPages = 1 } = req.body;
+    if (!comicId || !episodeId) {
+      return res.status(400).json({ error: 'comicId and episodeId are required' });
     }
     let readingHistory: any[] = [];
     db.mutate(d => {
-      const u = d.users.find(x => x.id === userId);
+      const u = d.users.find(x => x.id === authCtx.user!.id);
       if (u) {
         if (!Array.isArray(u.readingHistory)) u.readingHistory = [];
         u.readingHistory = u.readingHistory.filter(h => h.comicId !== comicId);
@@ -3342,6 +4160,17 @@ async function startServer() {
       result.dislikesCount = targetEp.dislikesCount;
     });
 
+    const latestSnapForVote = db.getSnapshot();
+    const voteRec = latestSnapForVote.votes.find(v => v.episodeId === req.params.id && v.userId === userId);
+    const voteComic = latestSnapForVote.comics.find(c => c.chapters.some(ch => ch.episodes.some(ep => ep.id === req.params.id)));
+    if (voteRec && voteComic) {
+      mirrorWritesInBackground(
+        'vote_upsert',
+        [buildVoteWriteItem(voteRec, voteComic.id)],
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+    }
+
     return res.json({ success: true, ...result });
   });
 
@@ -3394,6 +4223,17 @@ async function startServer() {
         }
       }
     });
+
+    const latestSnapForRating = db.getSnapshot();
+    const ratingRec = latestSnapForRating.ratings.find(r => r.episodeId === req.params.id && r.userId === userId);
+    const ratingComic = latestSnapForRating.comics.find(c => c.chapters.some(ch => ch.episodes.some(ep => ep.id === req.params.id)));
+    if (ratingRec && ratingComic) {
+      mirrorWritesInBackground(
+        'rating_upsert',
+        [buildRatingWriteItem(ratingRec, ratingComic.id)],
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+    }
 
     return res.json({ success: true, ...result });
   });
@@ -3513,6 +4353,14 @@ async function startServer() {
       savedApp!.id
     );
 
+    if (savedApp && updatedUser) {
+      mirrorWritesInBackground(
+        'author_apply',
+        [...buildUserWriteItems(updatedUser), buildAuthorApplicationWriteItem(savedApp)],
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+    }
+
     return res.json({
       success: true,
       application: savedApp,
@@ -3585,72 +4433,69 @@ async function startServer() {
 
   app.get('/api/authors', (_req, res) => {
     const snapshot = db.getSnapshot();
-    const defaultAuthors = [
-      {
-        id: 'usr_rajesh',
-        name: 'Rajesh Singh',
-        email: 'rajesh@aathirai.com',
-        role: 'Graphic Novelist & Manga Illustrator',
-        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80',
-        bio: 'Leading creator behind Virasen and Neo Madras 2099. Pioneering Indian mythic science fiction and cyberpunk webtoons.',
-        sampleComicTitle: 'Virasen: The Last Guardian',
-        sampleImages: [] as string[],
-        followers: '28.4K',
-        totalReads: '87.3K',
-      },
-      {
-        id: 'usr_ananya',
-        name: 'Ananya Sundaram',
-        email: 'ananya@aathirai.com',
-        role: 'Mythological Fantasy Writer & Inker',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
-        bio: 'Creator of Curse of Mahishur. Drawing inspiration from Sangam architecture and Dravidian temple guardian lore.',
-        sampleComicTitle: 'Curse of Mahishur',
-        sampleImages: [] as string[],
-        followers: '14.2K',
-        totalReads: '28.4K',
-      },
-      {
-        id: 'usr_luna',
-        name: 'Luna & Sky',
-        email: 'luna@aathirai.com',
-        role: 'Slice-of-Life Webtoon Duo',
-        avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=200&h=200&q=80',
-        bio: 'Artistic partnership creating gentle, heartwarming watercolor webtoons set in the misty Nilgiri hills.',
-        sampleComicTitle: 'Monsoon Melodies',
-        sampleImages: [] as string[],
-        followers: '32.1K',
-        totalReads: '52.1K',
-      },
-    ];
 
-    const customAuthors = snapshot.authorApplications.map(app => {
-      const matchedUser = snapshot.users.find(
-        u => u.id === app.userId || u.email.toLowerCase() === app.email.toLowerCase()
-      );
-      return {
-        id: app.userId || app.id,
-        name: app.authorName,
-        email: app.email,
-        role: 'Published Author & Reader',
-        avatar:
-          app.authorAvatar ||
-          matchedUser?.avatar ||
-          `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`,
-        bio: app.bio || matchedUser?.bio || `Creator of "${app.sampleComicTitle}" on Aathirai_Comic.`,
-        sampleComicTitle: app.sampleComicTitle,
-        sampleImages: app.sampleImages || [],
-        followers: '1.2K',
-        totalReads: '4.8K',
-      };
-    });
+    const formatReads = (views: number) => {
+      if (views >= 1000) return `${(views / 1000).toFixed(1)}K`;
+      return String(views);
+    };
 
-    // Merge custom authors first, avoiding duplicates by id, email, or name
+    const customAuthors = snapshot.authorApplications
+      .filter((app) => app.status === 'approved' || snapshot.comics.some((c) => c.authorId === app.userId && c.moderationStatus === 'approved'))
+      .map((app) => {
+        const matchedUser = snapshot.users.find(
+          (u) => u.id === app.userId || u.email.toLowerCase() === app.email.toLowerCase()
+        );
+        const authorComics = snapshot.comics.filter(
+          (c) =>
+            c.moderationStatus === 'approved' &&
+            (c.authorId === app.userId || c.authorName?.toLowerCase() === app.authorName.toLowerCase())
+        );
+        const totalViews = authorComics.reduce((sum, c) => sum + (c.totalViews || 0), 0);
+        return {
+          id: app.userId || app.id,
+          name: app.authorName,
+          email: app.email,
+          role: 'Published Author & Reader',
+          avatar:
+            app.authorAvatar ||
+            matchedUser?.avatar ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`,
+          bio: app.bio || matchedUser?.bio || `Creator of "${app.sampleComicTitle}" on Aathirai_Comic.`,
+          sampleComicTitle: app.sampleComicTitle,
+          sampleImages: app.sampleImages || [],
+          followers: String(authorComics.length),
+          totalReads: formatReads(totalViews),
+        };
+      });
+
+    // Also include real approved creators from uploaded comics or users table with role === 'author'
+    const userAuthors = snapshot.users
+      .filter((u) => u.role === 'author')
+      .map((u) => {
+        const authorComics = snapshot.comics.filter(
+          (c) => c.moderationStatus === 'approved' && c.authorId === u.id
+        );
+        const totalViews = authorComics.reduce((sum, c) => sum + (c.totalViews || 0), 0);
+        return {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: 'Published Author',
+          avatar: u.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(u.name)}`,
+          bio: u.bio || 'Original comic creator on Aathirai_Comic.',
+          sampleComicTitle: authorComics[0]?.title || '',
+          sampleImages: [] as string[],
+          followers: String(authorComics.length),
+          totalReads: formatReads(totalViews),
+        };
+      });
+
+    // Merge real authors avoiding duplicates by id, email, or name
     const seenIds = new Set<string>();
     const seenEmails = new Set<string>();
     const seenNames = new Set<string>();
     const combined = [];
-    for (const a of [...customAuthors, ...defaultAuthors]) {
+    for (const a of [...customAuthors, ...userAuthors]) {
       const idKey = (a.id || '').trim().toLowerCase();
       const emailKey = (a.email || '').trim().toLowerCase();
       const nameKey = (a.name || '').trim().toLowerCase();
@@ -3754,8 +4599,8 @@ async function startServer() {
     });
   });
 
-  // Create Razorpay Order (Server-Side)
-  app.post('/api/payments/razorpay/create-order', paymentRateLimiter, (req, res) => {
+  // Create Razorpay Order (Server-Side via Razorpay Orders API when live/real keys are set)
+  app.post('/api/payments/razorpay/create-order', paymentRateLimiter, async (req, res) => {
     const rzpStatus = getRazorpayEnvironmentStatus();
     if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
       return res.status(503).json({
@@ -3823,9 +4668,25 @@ async function startServer() {
       hsnSacDescription: gstSettings.defaultSacDescription,
     });
 
-    const orderId = 'order_' + crypto.randomBytes(10).toString('hex');
     const amountInPaise = Math.round(parsedAmount * 100);
     const environment: 'test' | 'live' = rzpStatus.isLiveMode ? 'live' : 'test';
+    const orderResult = await createGatewayOrderOnRazorpay({
+      amountPaise: amountInPaise,
+      receipt: `rcpt_${Date.now()}`,
+      notes: {
+        comicId: String(comicId || 'global_subscription'),
+        type: String(type),
+        userEmail: String(userEmail || ''),
+      },
+    });
+
+    if (!orderResult.orderId) {
+      return res.status(502).json({
+        error: orderResult.error || 'Could not initialize order with Razorpay API.',
+      });
+    }
+
+    const orderId = orderResult.orderId;
 
     // When in TEST mode, also provide a deterministic test payment token & server-computed HMAC-SHA256 signature
     const testPaymentId = rzpStatus.isTestMode ? 'pay_test_' + crypto.randomBytes(8).toString('hex') : undefined;
@@ -3839,6 +4700,7 @@ async function startServer() {
       mode: rzpStatus.mode.toUpperCase(),
       modeLower: rzpStatus.mode,
       environment,
+      createdViaRazorpayApi: orderResult.createdViaRazorpayApi,
       warningBanner: rzpStatus.statusMessage,
       orderId,
       amount: amountInPaise,
@@ -3869,8 +4731,8 @@ async function startServer() {
     });
   });
 
-  // Verify Razorpay Payment via HMAC-SHA256 & Grant Access (Idempotent)
-  app.post('/api/payments/razorpay/verify-payment', paymentRateLimiter, (req, res) => {
+  // Verify Razorpay Payment via HMAC-SHA256 + Live Razorpay API (when real keys configured) & Persist Customer + Purchase
+  app.post('/api/payments/razorpay/verify-payment', paymentRateLimiter, async (req, res) => {
     const rzpStatus = getRazorpayEnvironmentStatus();
     if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
       return res.status(503).json({
@@ -3950,6 +4812,23 @@ async function startServer() {
       return res.status(400).json({
         error: 'Cryptographic HMAC-SHA256 payment signature verification failed. Access denied.',
       });
+    }
+
+    // 2b. When real Razorpay API keys are configured and this is not a sandbox test payment ID, confirm capture status via Razorpay API
+    let confirmedViaRazorpayApi = false;
+    if (hasRealRazorpayApiKeys() && !String(razorpayPaymentId).startsWith('pay_test_')) {
+      const liveCheck = await fetchRazorpayPaymentById(String(razorpayPaymentId));
+      if (liveCheck.checked && liveCheck.found && !liveCheck.capturedOrAuthorized) {
+        return res.status(400).json({
+          error: `Razorpay payment status is "${liveCheck.rawStatus || 'unpaid'}" and has not been captured yet.`,
+        });
+      }
+      if (liveCheck.checked && !liveCheck.found && rzpStatus.isLiveMode) {
+        return res.status(400).json({
+          error: liveCheck.error || 'Razorpay payment could not be confirmed on Razorpay servers.',
+        });
+      }
+      confirmedViaRazorpayApi = Boolean(liveCheck.capturedOrAuthorized);
     }
 
     const cleanEmailCheck = (userEmail || '').trim().toLowerCase();
@@ -4097,11 +4976,37 @@ async function startServer() {
       if (!Array.isArray(d.paymentTransactions)) d.paymentTransactions = [];
       d.paymentTransactions.unshift(paymentTx);
 
-      const u = d.users.find(user =>
-        (userId && user.id === userId) ||
+      let u = d.users.find(user =>
+        (userId && userId !== 'usr_guest' && user.id === userId) ||
         (cleanEmail && user.email.toLowerCase() === cleanEmail)
       );
+
+      // Ensure paying customer is always persisted in backend users collection
+      if (!u && cleanEmail && cleanEmail !== 'customer@aathirai.com') {
+        const displayName = (customerName || cleanEmail.split('@')[0] || 'Reader').trim();
+        u = {
+          id: userId && userId !== 'usr_guest' ? userId : 'usr_' + Date.now(),
+          name: displayName,
+          email: cleanEmail,
+          phone: userPhone || undefined,
+          upiId: userUpiId?.trim() || undefined,
+          countryCode: '+91',
+          countryName: 'India',
+          role: 'reader',
+          isVerified: true,
+          bookmarks: [],
+          favorites: [],
+          readingHistory: [],
+          avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(displayName)}`,
+          createdAt: nowIso,
+          lastLoginAt: nowIso,
+          premiumPlan: null,
+        };
+        d.users.push(u);
+      }
+
       if (u) {
+        if (customerName && !u.name) u.name = String(customerName).trim();
         if (userPhone && !u.phone) u.phone = userPhone;
         if (userUpiId && userUpiId.trim()) u.upiId = userUpiId.trim();
         if (type === 'subscription' && resolvedPlan && computedExpiresAt) {
@@ -4138,14 +5043,23 @@ async function startServer() {
       'PAYMENT_CAPTURED',
       cleanEmail,
       'reader',
-      `[${environment.toUpperCase()}] Payment of ₹${amountNum} captured & HMAC-SHA256 verified for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Receipt ${receiptNumber}`,
+      `[${environment.toUpperCase()}] Payment of ₹${amountNum} captured & HMAC-SHA256 verified${confirmedViaRazorpayApi ? ' (+ Razorpay API)' : ''} for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Receipt ${receiptNumber}`,
       'purchase',
       newPurchase.id
     );
 
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const paymentWrites = [buildPurchaseWriteItem(newPurchase)];
+    if (updatedReader) {
+      paymentWrites.unshift(...buildUserWriteItems(updatedReader));
+    }
+    mirrorWritesInBackground('payment_verify', paymentWrites, fbToken);
+
     return res.json({
       success: true,
       environment,
+      razorpayVerified: true,
+      confirmedViaRazorpayApi,
       purchase: newPurchase,
       user: updatedReader ? sanitizeUserForClient(updatedReader, true) : null,
       message: resolvedPlan
@@ -4178,24 +5092,163 @@ async function startServer() {
   const handleRazorpayWebhook = (req: express.Request, res: express.Response) => {
     const signature = String(req.headers['x-razorpay-signature'] || '');
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET || '';
-    const rawBody = JSON.stringify(req.body || {});
+    const rawBody = (req as any).rawBody || JSON.stringify(req.body || {});
 
     if (webhookSecret && signature) {
       const valid = verifyRazorpayWebhookSignature(rawBody, signature, webhookSecret);
       if (!valid) {
         return res.status(400).json({ error: 'Invalid Razorpay webhook signature' });
       }
+    } else if (process.env.RAZORPAY_WEBHOOK_SECRET && !signature) {
+      return res.status(400).json({ error: 'Missing X-Razorpay-Signature header' });
     }
 
-    const event = req.body;
+    const event = req.body || {};
+    const eventName = String(event?.event || '');
+    const paymentEntity = event?.payload?.payment?.entity;
+    const plinkEntity = event?.payload?.payment_link?.entity;
+    const subEntity = event?.payload?.subscription?.entity;
+    const invoiceEntity = event?.payload?.invoice?.entity;
+    const paymentId = String(
+      paymentEntity?.id || invoiceEntity?.payment_id || plinkEntity?.id || subEntity?.id || ''
+    );
+
     db.logActivity(
       'WEBHOOK_RECEIVED',
       'Razorpay Gateway',
       'reader',
-      `Verified Webhook event: ${event?.event || 'payment.captured'}`,
+      `Verified Webhook event: ${eventName || 'payment.captured'}`,
       'payment',
-      event?.payload?.payment?.entity?.id || 'event'
+      paymentId || 'event'
     );
+
+    const isPaidEvent =
+      eventName === 'payment.captured' ||
+      eventName === 'order.paid' ||
+      eventName === 'payment_link.paid' ||
+      eventName === 'subscription.activated' ||
+      eventName === 'subscription.charged' ||
+      eventName === 'invoice.paid';
+
+    if (isPaidEvent) {
+      const paymentLinkId = String(
+        plinkEntity?.id || paymentEntity?.notes?.payment_link_id || ''
+      ).trim();
+      const subscriptionId = String(
+        subEntity?.id || paymentEntity?.subscription_id || invoiceEntity?.subscription_id || ''
+      ).trim();
+      const planId = String(subEntity?.plan_id || '').trim();
+      const amountPaise = Number(
+        paymentEntity?.amount ||
+          invoiceEntity?.amount_paid ||
+          plinkEntity?.amount_paid ||
+          plinkEntity?.amount ||
+          0
+      );
+      const amountInr = Math.round(amountPaise / 100);
+
+      let resolvedPlan: '1_month' | '6_months' | null = null;
+      if (
+        planId === 'plan_U0DDDaA2ru0PLQ' ||
+        subscriptionId === 'sub_U0DEqhM6bgOd0h' ||
+        paymentLinkId === 'plink_U0CloVifURBxlY' ||
+        amountInr >= 249
+      ) {
+        resolvedPlan = '6_months';
+      } else if (
+        planId === 'plan_U0CwrDGonjUDN2' ||
+        subscriptionId === 'sub_U0DeTe3l42sQ9K' ||
+        subscriptionId === 'sub_U0DNKt8md78zWC' ||
+        paymentLinkId === 'plink_U0ChD9beWUpb0M' ||
+        amountInr >= 49
+      ) {
+        resolvedPlan = '1_month';
+      }
+
+      const payerEmail = String(
+        paymentEntity?.email ||
+          plinkEntity?.customer?.email ||
+          invoiceEntity?.customer_details?.email ||
+          subEntity?.notes?.email ||
+          paymentEntity?.notes?.email ||
+          ''
+      )
+        .trim()
+        .toLowerCase();
+      const payerPhone = String(
+        paymentEntity?.contact ||
+          plinkEntity?.customer?.contact ||
+          invoiceEntity?.customer_details?.contact ||
+          subEntity?.notes?.phone ||
+          paymentEntity?.notes?.phone ||
+          ''
+      ).trim();
+
+      if (resolvedPlan && (payerEmail || payerPhone)) {
+        let activatedUserEmail: string | null = null;
+        let activatedUserId: string | null = null;
+
+        db.mutate(d => {
+          const alreadyProcessed =
+            paymentId &&
+            d.purchases.some((p: Purchase) => p.razorpayPaymentId === paymentId && p.status === 'success');
+          if (alreadyProcessed) return;
+
+          const matchedUser = d.users.find((u: User) => {
+            if (payerEmail && u.email?.toLowerCase() === payerEmail) return true;
+            if (payerPhone && phonesMatch(u.phone, payerPhone)) return true;
+            return false;
+          });
+
+          if (matchedUser) {
+            const refTag = subscriptionId || paymentLinkId || 'Razorpay';
+            const methodLabel = paymentEntity?.method
+              ? `Razorpay ${String(paymentEntity.method).toUpperCase()} (${refTag})`
+              : `Razorpay Subscription (${refTag})`;
+            applyPaidPremiumDetailToUser(
+              d,
+              matchedUser,
+              resolvedPlan,
+              methodLabel,
+              paymentId || `pay_sub_${Date.now()}`,
+              paymentEntity?.vpa
+            );
+            activatedUserEmail = matchedUser.email;
+            activatedUserId = matchedUser.id;
+          }
+        });
+
+        if (activatedUserEmail && activatedUserId) {
+          db.addNotification({
+            userId: activatedUserId,
+            userEmail: activatedUserEmail,
+            title: `Premium Unlocked (${resolvedPlan === '6_months' ? '6 Months · ₹249' : '1 Month · ₹49'})`,
+            message: `Your Razorpay payment (${paymentId || paymentLinkId}) was confirmed and your Premium Pass is now active!`,
+            type: 'payment_success',
+            targetId: paymentId || paymentLinkId,
+          });
+          db.logActivity(
+            'WEBHOOK_PAYMENT_UNLOCKED',
+            activatedUserEmail,
+            'reader',
+            `Activated ${resolvedPlan} pass via Razorpay webhook (${paymentLinkId || paymentId}).`,
+            'purchase',
+            paymentId || paymentLinkId
+          );
+          const latestSnapWebhook = db.getSnapshot();
+          const syncedUser = latestSnapWebhook.users.find(u => u.id === activatedUserId);
+          const syncedPurchase = latestSnapWebhook.purchases[0];
+          const webhookWrites = [
+            ...(syncedUser ? buildUserWriteItems(syncedUser) : []),
+            ...(syncedPurchase ? [buildPurchaseWriteItem(syncedPurchase)] : []),
+          ];
+          if (webhookWrites.length > 0) {
+            mirrorWritesInBackground('razorpay_webhook', webhookWrites);
+          }
+        }
+      }
+    }
+
     return res.json({ status: 'ok', verified: Boolean(signature) });
   };
 
@@ -4274,6 +5327,11 @@ async function startServer() {
 
     if (!updatedUser) return res.status(404).json({ error: 'Reader not found' });
     db.logActivity('ADMIN_UPDATED_READER', 'admin@aathirai.com', 'admin', `Updated reader ${(updatedUser as User).email} (Plan: ${paidPlan || 'unchanged'}, UPI: ${upiId || 'N/A'})`, 'user', req.params.id);
+    mirrorWritesInBackground(
+      'admin_update_reader',
+      buildUserWriteItems(updatedUser as User),
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     return res.json({ success: true, reader: sanitizeUserForClient(updatedUser as User, false) });
   });
 
@@ -4312,6 +5370,7 @@ async function startServer() {
     });
     if (!removedEmail) return res.status(404).json({ error: 'Reader not found' });
     db.logActivity('ADMIN_DELETED_READER', 'admin@aathirai.com', 'admin', `Deleted reader account ${removedEmail}`, 'user', req.params.id);
+    deleteFirestoreDoc(`users/${sanitizeFirestoreId(req.params.id)}`, extractFirebaseIdToken(req.headers.authorization));
     return res.json({ success: true, message: `Deleted reader account ${removedEmail}` });
   });
 
@@ -4328,10 +5387,6 @@ async function startServer() {
         );
         if (matchedUser?.avatar) {
           app.authorAvatar = matchedUser.avatar;
-        } else if (app.authorName.toLowerCase().includes('kavitha')) {
-          app.authorAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80';
-        } else if (app.authorName.toLowerCase().includes('rajesh')) {
-          app.authorAvatar = 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&h=200&q=80';
         } else {
           app.authorAvatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`;
         }
@@ -4505,6 +5560,17 @@ async function startServer() {
       req.params.id
     );
 
+    if (targetApp) {
+      mirrorWritesInBackground(
+        'admin_author_app_action',
+        [
+          ...(promoObj ? buildUserWriteItems(promoObj) : []),
+          buildAuthorApplicationWriteItem(targetApp as AuthorApplication),
+        ],
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+    }
+
     return res.json({
       success: true,
       application: targetApp,
@@ -4621,6 +5687,11 @@ async function startServer() {
       `Refunded transaction ${(refunded as Purchase).receiptNumber} and issued GST Credit Note ${createdCreditNote ? (createdCreditNote as CreditNoteRecord).creditNoteNumber : ''}`,
       'purchase',
       req.params.id
+    );
+    mirrorWritesInBackground(
+      'admin_refund_purchase',
+      [buildPurchaseWriteItem(refunded as Purchase)],
+      extractFirebaseIdToken(req.headers.authorization)
     );
     return res.json({
       success: true,
@@ -4826,6 +5897,14 @@ async function startServer() {
       'business_profile'
     );
 
+    if (updatedSettings) {
+      mirrorWritesInBackground(
+        'admin_gst_settings',
+        [buildGstSettingsWriteItem(updatedSettings)],
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+    }
+
     return res.json({
       success: true,
       gstSettings: updatedSettings,
@@ -4942,10 +6021,156 @@ async function startServer() {
     return res.json({ success: true });
   });
 
-  app.get('/api/admin/migration-status', (req, res) => {
+  // -------------------------------------------------------------
+  // COMPANY AD PLACEMENT & IN-COMIC CHARACTER PROMOTION REQUESTS
+  // -------------------------------------------------------------
+
+  app.post('/api/ads/request', (req, res) => {
+    const {
+      companyName,
+      contactName,
+      contactEmail,
+      contactPhone = '',
+      placementType = 'character_promotion',
+      targetComicId = '',
+      targetComicTitle = 'Any Popular Comic Series',
+      budgetRange = '₹15,000 – ₹50,000',
+      description,
+      submittedByUserId,
+    } = req.body || {};
+
+    const cleanCompany = String(companyName || '').trim();
+    const cleanContact = String(contactName || '').trim();
+    const cleanEmail = String(contactEmail || '').trim();
+    const cleanDesc = String(description || '').trim();
+
+    if (!cleanCompany || !cleanContact || !cleanEmail || !cleanEmail.includes('@') || cleanDesc.length < 5) {
+      return res.status(400).json({
+        error: 'Please enter Company Name, Contact Name, valid Email, and Campaign Description (at least 5 characters).',
+      });
+    }
+
+    const safePlacementType: 'character_promotion' | 'sponsored_page' | 'episode_sponsor' =
+      placementType === 'sponsored_page' || placementType === 'episode_sponsor'
+        ? placementType
+        : 'character_promotion';
+
+    const nowIso = new Date().toISOString();
+    const newAdRequest = {
+      id: `adreq_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+      companyName: cleanCompany.slice(0, 120),
+      contactName: cleanContact.slice(0, 80),
+      contactEmail: cleanEmail.slice(0, 120),
+      contactPhone: String(contactPhone || '').trim().slice(0, 32),
+      placementType: safePlacementType,
+      targetComicId: String(targetComicId || '').trim() || undefined,
+      targetComicTitle: String(targetComicTitle || 'Any Popular Comic Series').trim().slice(0, 140),
+      budgetRange: String(budgetRange || 'Custom Campaign').trim().slice(0, 64),
+      description: cleanDesc.slice(0, 1000),
+      status: 'pending' as const,
+      submittedByUserId: String(submittedByUserId || 'guest_sponsor').trim() || 'guest_sponsor',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const adminUsers = db.getSnapshot().users.filter(u => u.role === 'admin');
+    db.mutate(d => {
+      if (!Array.isArray(d.adRequests)) d.adRequests = [];
+      d.adRequests.unshift(newAdRequest);
+
+      for (const adminUser of adminUsers) {
+        d.notifications.unshift({
+          id: `notif_ad_${Date.now()}_${adminUser.id}`,
+          userId: adminUser.id,
+          userEmail: adminUser.email,
+          type: 'system',
+          title: `New Company Ad Request: ${newAdRequest.companyName}`,
+          message: `${newAdRequest.companyName} (${newAdRequest.contactEmail}) requested "${safePlacementType === 'character_promotion' ? 'In-Comic Character Promotion' : safePlacementType}" for ${newAdRequest.targetComicTitle}.`,
+          read: false,
+          targetId: newAdRequest.id,
+          createdAt: nowIso,
+        });
+      }
+    });
+
+    db.logActivity(
+      'AD_REQUEST_SUBMITTED',
+      cleanEmail,
+      'reader',
+      `Company "${newAdRequest.companyName}" submitted a ${safePlacementType} ad request.`,
+      'ad_request',
+      newAdRequest.id
+    );
+
+    mirrorWritesInBackground(
+      'ad_request_create',
+      [buildAdRequestWriteItem(newAdRequest)],
+      extractFirebaseIdToken(req.headers.authorization)
+    );
+
+    return res.json({
+      success: true,
+      adRequest: newAdRequest,
+      adminEmail: 'aathiraicomic@gmail.com',
+      message: 'Your company ad request was submitted! Our team at aathiraicomic@gmail.com will review your character promotion brief shortly.',
+    });
+  });
+
+  app.get('/api/admin/ad-requests', (_req, res) => {
+    const adRequests = [...(db.getSnapshot().adRequests || [])].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    return res.json({ adRequests });
+  });
+
+  app.put('/api/admin/ad-requests/:id', (req, res) => {
+    const { status, adminNote } = req.body || {};
+    const allowedStatuses = new Set(['pending', 'contacted', 'approved', 'rejected']);
+    let updatedReq: any = null;
+
+    db.mutate(d => {
+      if (!Array.isArray(d.adRequests)) d.adRequests = [];
+      const item = d.adRequests.find(a => a.id === req.params.id);
+      if (item) {
+        if (status && allowedStatuses.has(status)) {
+          item.status = status;
+        }
+        if (adminNote !== undefined) {
+          item.adminNote = String(adminNote).trim().slice(0, 400);
+        }
+        item.updatedAt = new Date().toISOString();
+        updatedReq = item;
+      }
+    });
+
+    if (!updatedReq) {
+      return res.status(404).json({ error: 'Ad request not found.' });
+    }
+
+    db.logActivity(
+      'AD_REQUEST_UPDATED',
+      'aathiraicomic@gmail.com',
+      'admin',
+      `Updated ad request from "${updatedReq.companyName}" to status: ${updatedReq.status}`,
+      'ad_request',
+      updatedReq.id
+    );
+
+    mirrorWritesInBackground(
+      'ad_request_update',
+      [buildAdRequestWriteItem(updatedReq)],
+      extractFirebaseIdToken(req.headers.authorization)
+    );
+
+    return res.json({ success: true, adRequest: updatedReq });
+  });
+
+  app.get('/api/admin/migration-status', async (req, res) => {
     const snapshot = db.getSnapshot();
+    const firestoreStatus = await getFirestoreLiveStatus(extractFirebaseIdToken(req.headers.authorization));
     return res.json({
       migrationReport: snapshot.migrationReport || null,
+      firestoreStatus,
       counts: {
         users: snapshot.users.length,
         comics: snapshot.comics.length,
@@ -4953,6 +6178,36 @@ async function startServer() {
         paymentTransactions: (snapshot.paymentTransactions || []).length,
         notifications: (snapshot.notifications || []).length,
       },
+    });
+  });
+
+  app.get('/api/admin/firestore/status', async (req, res) => {
+    const status = await getFirestoreLiveStatus(extractFirebaseIdToken(req.headers.authorization));
+    return res.json({ success: true, ...status });
+  });
+
+  app.post('/api/admin/firestore/sync', async (req, res) => {
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const snapshot = db.getSnapshot();
+    const { success: syncOk, ...syncDetails } = await syncDatabaseSnapshotToFirestore(snapshot, fbToken);
+    if (!syncOk) {
+      return res.status(syncDetails.mode === 'public_api_key' ? 401 : 502).json({
+        success: false,
+        ...syncDetails,
+      });
+    }
+    db.logActivity(
+      'FIRESTORE_FULL_SYNC',
+      'balajiaris05@gmail.com',
+      'admin',
+      `Synced ${syncDetails.written} Firestore documents to ${syncDetails.projectId}/${syncDetails.databaseId} (${syncDetails.mode}).`,
+      'firestore',
+      syncDetails.databaseId
+    );
+    return res.json({
+      success: true,
+      ...syncDetails,
+      message: `Synced ${syncDetails.written} documents across all 15 Firestore collections (${syncDetails.mode}).`,
     });
   });
 
@@ -5014,8 +6269,14 @@ async function startServer() {
     db.mutate(d => {
       d.settings = { ...d.settings, ...req.body };
     });
+    const updatedSettings = db.getSnapshot().settings;
+    mirrorWritesInBackground(
+      'admin_platform_settings',
+      [buildPlatformSettingsWriteItem(updatedSettings)],
+      extractFirebaseIdToken(req.headers.authorization)
+    );
     db.logActivity('SETTINGS_UPDATED', 'admin@aathirai.com', 'admin', 'Updated website settings and pricing.', 'settings', 'global');
-    return res.json({ success: true, settings: db.getSnapshot().settings });
+    return res.json({ success: true, settings: updatedSettings });
   });
 
   app.get('/api/admin/logs', (req, res) => {
@@ -5023,13 +6284,259 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------
+  // DYNAMIC SEARCH ENGINE OPTIMIZATION (/robots.txt, /sitemap.xml, SSR META)
+  // -------------------------------------------------------------
+
+  const getPublicBaseUrl = (req: express.Request) => {
+    if (process.env.APP_URL) return process.env.APP_URL.replace(/\/+$/, '');
+    const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    const proto = protoHeader.split(',')[0].trim();
+    const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'aathiraicomic.app';
+    return `${proto}://${host}`.replace(/\/+$/, '');
+  };
+
+  const escapeXml = (str: string) =>
+    String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+
+  const escapeHtmlAttr = (str: string) =>
+    String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+  app.get('/robots.txt', (req, res) => {
+    const baseUrl = getPublicBaseUrl(req);
+    res.type('text/plain').send(
+      [
+        'User-agent: *',
+        'Allow: /',
+        'Allow: /books',
+        'Allow: /comic/',
+        'Allow: /authors',
+        'Allow: /about',
+        'Allow: /premium',
+        'Disallow: /api/admin/',
+        'Disallow: /api/admin-auth/',
+        'Disallow: /admin',
+        '',
+        `Sitemap: ${baseUrl}/sitemap.xml`,
+      ].join('\n')
+    );
+  });
+
+  app.get('/sitemap.xml', (req, res) => {
+    const baseUrl = getPublicBaseUrl(req);
+    const liveComics = db
+      .getSnapshot()
+      .comics.filter(c => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested');
+
+    const standardGenres = [
+      'Action',
+      'Fantasy',
+      'Mythology',
+      'Sci-Fi',
+      'Cyberpunk',
+      'Romance',
+      'Slice of Life',
+      'Horror',
+    ];
+    const allGenres = Array.from(
+      new Set([...standardGenres, ...liveComics.flatMap(c => c.genre || []).filter(Boolean)])
+    );
+
+    const staticEntries = [
+      { loc: `${baseUrl}/`, changefreq: 'daily', priority: '1.0' },
+      { loc: `${baseUrl}/books`, changefreq: 'daily', priority: '0.95' },
+      { loc: `${baseUrl}/books?q=tamil+comic`, changefreq: 'daily', priority: '0.9' },
+      { loc: `${baseUrl}/books?q=indian+comic`, changefreq: 'daily', priority: '0.9' },
+      { loc: `${baseUrl}/books?q=aathirai+comic`, changefreq: 'daily', priority: '0.9' },
+      { loc: `${baseUrl}/books?q=general+comic`, changefreq: 'daily', priority: '0.85' },
+      { loc: `${baseUrl}/authors`, changefreq: 'weekly', priority: '0.8' },
+      { loc: `${baseUrl}/premium`, changefreq: 'weekly', priority: '0.75' },
+      { loc: `${baseUrl}/about`, changefreq: 'monthly', priority: '0.6' },
+    ];
+
+    const genreEntries = allGenres.map(g => ({
+      loc: `${baseUrl}/books?genre=${encodeURIComponent(g)}`,
+      changefreq: 'daily',
+      priority: '0.85',
+    }));
+
+    const comicEntries = liveComics.map(c => ({
+      loc: `${baseUrl}/comic/${encodeURIComponent(c.slug || c.id)}`,
+      lastmod: (c.updatedAt || c.createdAt || new Date().toISOString()).split('T')[0],
+      changefreq: 'weekly',
+      priority: '0.9',
+    }));
+
+    const allUrls = [...staticEntries, ...genreEntries, ...comicEntries];
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${allUrls
+      .map(
+        (u: any) =>
+          `  <url>\n    <loc>${escapeXml(u.loc)}</loc>${
+            u.lastmod ? `\n    <lastmod>${escapeXml(u.lastmod)}</lastmod>` : ''
+          }\n    <changefreq>${u.changefreq}</changefreq>\n    <priority>${u.priority}</priority>\n  </url>`
+      )
+      .join('\n')}\n</urlset>\n`;
+
+    res.type('application/xml').send(xml);
+  });
+
+  // -------------------------------------------------------------
   // VITE DEV SERVER OR STATIC PRODUCTION BUILD
   // -------------------------------------------------------------
 
   if (process.env.NODE_ENV === 'production') {
-    app.use(express.static('dist'));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve('dist', 'index.html'));
+    app.use(express.static('dist', { index: false }));
+    app.get('*', (req, res) => {
+      const distIndexPath = path.resolve('dist', 'index.html');
+      try {
+        let html = fs.readFileSync(distIndexPath, 'utf8');
+        const baseUrl = getPublicBaseUrl(req);
+        const reqPath = req.path || '/';
+        const liveComics = db
+          .getSnapshot()
+          .comics.filter(c => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested');
+        const allGenres = Array.from(new Set(liveComics.flatMap(c => c.genre || []).filter(Boolean)));
+        const allTitles = liveComics.map(c => c.title).filter(Boolean);
+
+        let pageTitle = 'Aathirai_Comic – Tamil Comics, Indian Comics & Webtoons';
+        let pageDesc =
+          'Read Tamil comics, Indian comics, webtoons, and manga on Aathirai_Comic. Explore action, mythology, fantasy, and general comics free or premium.';
+        let matchedComic: Comic | undefined;
+
+        if (reqPath.startsWith('/comic/')) {
+          const slug = decodeURIComponent(reqPath.slice('/comic/'.length)).replace(/\/+$/, '');
+          matchedComic = liveComics.find(
+            c => (c.slug && c.slug.toLowerCase() === slug.toLowerCase()) || c.id === slug
+          );
+          if (matchedComic) {
+            pageTitle = `${matchedComic.title} – Tamil & Indian Comic | Aathirai_Comic`;
+            pageDesc = `${matchedComic.title} (${(matchedComic.genre || []).join(', ')}) by ${matchedComic.authorName}. Read on Aathirai_Comic.`;
+          }
+        } else if (reqPath === '/books') {
+          const qParam = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+          const genreParam = typeof req.query.genre === 'string' ? req.query.genre.trim() : '';
+          if (qParam) {
+            pageTitle = `${qParam} – Tamil & Indian Comics | Aathirai_Comic`;
+            pageDesc = `Browse "${qParam}" comic books on Aathirai_Comic. Discover Tamil comics, Indian comics, and general comic series.`;
+          } else if (genreParam && genreParam !== 'All') {
+            pageTitle = `${genreParam} Comics – Tamil & Indian Books | Aathirai_Comic`;
+            pageDesc = `Read ${genreParam} comics on Aathirai_Comic. Explore Tamil comics, Indian comics, and serialized webtoons.`;
+          } else {
+            pageTitle = 'Books – Tamil Comics, Indian Comics & All Series | Aathirai_Comic';
+          }
+        }
+
+        const keywords = Array.from(
+          new Set([
+            'Tamil comic',
+            'Tamil comics',
+            'Aathirai comic',
+            'Aathirai_Comic',
+            'Indian comic',
+            'Indian comics',
+            'general comic',
+            'comic book',
+            ...allGenres.map(g => `${g} comics`),
+            ...allGenres,
+            ...allTitles,
+          ])
+        )
+          .slice(0, 45)
+          .join(', ');
+
+        const canonicalUrl = `${baseUrl}${reqPath === '/' ? '/' : reqPath}`;
+        const dynamicJsonLd = matchedComic
+          ? {
+              '@context': 'https://schema.org',
+              '@type': 'Book',
+              name: matchedComic.title,
+              url: canonicalUrl,
+              inLanguage: ['en-IN', 'ta-IN'],
+              genre: matchedComic.genre,
+              description: matchedComic.description,
+              author: { '@type': 'Person', name: matchedComic.authorName },
+              publisher: { '@type': 'Organization', name: 'Aathirai_Comic' },
+            }
+          : {
+              '@context': 'https://schema.org',
+              '@type': 'CollectionPage',
+              name: pageTitle,
+              url: canonicalUrl,
+              inLanguage: ['en-IN', 'ta-IN'],
+              keywords,
+              mainEntity: {
+                '@type': 'ItemList',
+                name: 'Aathirai_Comic – Tamil, Indian & General Comic Books',
+                numberOfItems: liveComics.length,
+                itemListElement: liveComics.slice(0, 50).map((c, idx) => ({
+                  '@type': 'ListItem',
+                  position: idx + 1,
+                  name: c.title,
+                  url: `${baseUrl}/comic/${encodeURIComponent(c.slug || c.id)}`,
+                })),
+              },
+            };
+
+        const noscriptCatalog = liveComics.length > 0
+          ? `<noscript><section><h1>${escapeHtmlAttr(pageTitle)}</h1><p>${escapeHtmlAttr(pageDesc)}</p><ul>${liveComics
+              .slice(0, 50)
+              .map(
+                c =>
+                  `<li><a href="/comic/${encodeURIComponent(c.slug || c.id)}">${escapeHtmlAttr(c.title)}</a> — ${escapeHtmlAttr(
+                    (c.genre || []).join(', ')
+                  )} by ${escapeHtmlAttr(c.authorName)}</li>`
+              )
+              .join('')}</ul></section></noscript>`
+          : `<noscript><section><h1>${escapeHtmlAttr(pageTitle)}</h1><p>${escapeHtmlAttr(pageDesc)}</p></section></noscript>`;
+
+        html = html
+          .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtmlAttr(pageTitle)}</title>`)
+          .replace(
+            /<meta\s+name="description"[\s\S]*?\/>/i,
+            `<meta name="description" content="${escapeHtmlAttr(pageDesc)}" />`
+          )
+          .replace(
+            /<meta\s+name="keywords"[\s\S]*?\/>/i,
+            `<meta name="keywords" content="${escapeHtmlAttr(keywords)}" />`
+          )
+          .replace(
+            /<link\s+rel="canonical"[\s\S]*?\/>/i,
+            `<link rel="canonical" href="${escapeHtmlAttr(canonicalUrl)}" />`
+          )
+          .replace(
+            /<meta\s+property="og:title"[\s\S]*?\/>/i,
+            `<meta property="og:title" content="${escapeHtmlAttr(pageTitle)}" />`
+          )
+          .replace(
+            /<meta\s+property="og:description"[\s\S]*?\/>/i,
+            `<meta property="og:description" content="${escapeHtmlAttr(pageDesc)}" />`
+          )
+          .replace(
+            /<meta\s+name="twitter:title"[\s\S]*?\/>/i,
+            `<meta name="twitter:title" content="${escapeHtmlAttr(pageTitle)}" />`
+          )
+          .replace(
+            /<meta\s+name="twitter:description"[\s\S]*?\/>/i,
+            `<meta name="twitter:description" content="${escapeHtmlAttr(pageDesc)}" />`
+          )
+          .replace(
+            '</head>',
+            `<script id="aathirai-dynamic-jsonld" type="application/ld+json">${JSON.stringify(dynamicJsonLd)}</script>\n</head>`
+          )
+          .replace('</body>', `${noscriptCatalog}\n</body>`);
+
+        return res.type('html').send(html);
+      } catch {
+        return res.sendFile(distIndexPath);
+      }
     });
   } else {
     const vite = await createViteServer({

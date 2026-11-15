@@ -113,6 +113,79 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidEpisodeRecord(data) {
+      return data.keys().hasAll([
+          'episodeId', 'comicId', 'chapterId', 'chapterNumber', 'chapterTitle',
+          'episodeNumber', 'title', 'authorId', 'isPremium', 'priceInr',
+          'pagesCount', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'episodeId', 'comicId', 'chapterId', 'chapterNumber', 'chapterTitle',
+          'episodeNumber', 'title', 'authorId', 'isPremium', 'priceInr',
+          'pagesCount', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.episodeId is string && data.episodeId.size() >= 1 && data.episodeId.size() <= 128 && data.episodeId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.chapterId is string && data.chapterId.size() >= 1 && data.chapterId.size() <= 128 && data.chapterId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.chapterNumber is number && data.chapterNumber >= 1 && data.chapterNumber <= 5000 &&
+        data.chapterTitle is string && data.chapterTitle.size() >= 1 && data.chapterTitle.size() <= 140 &&
+        data.episodeNumber is number && data.episodeNumber >= 1 && data.episodeNumber <= 10000 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.isPremium is bool &&
+        data.priceInr is number && data.priceInr >= 0 && data.priceInr <= 10000 &&
+        data.pagesCount is number && data.pagesCount >= 0 && data.pagesCount <= 500 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'pending' || data.status == 'published' || data.status == 'rejected') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCommentRecord(data) {
+      return data.keys().hasAll([
+          'commentId', 'comicId', 'episodeId', 'userId', 'userName',
+          'content', 'likesCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'commentId', 'comicId', 'episodeId', 'userId', 'userName',
+          'content', 'likesCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.commentId is string && data.commentId.size() >= 1 && data.commentId.size() <= 128 && data.commentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.episodeId is string && data.episodeId.size() >= 1 && data.episodeId.size() <= 128 && data.episodeId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80 &&
+        data.content is string && data.content.size() >= 1 && data.content.size() <= 1000 &&
+        data.likesCount is number && data.likesCount >= 0 && data.likesCount <= 1000000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRatingRecord(data) {
+      return data.keys().hasAll(['ratingId', 'comicId', 'episodeId', 'userId', 'stars', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ratingId', 'comicId', 'episodeId', 'userId', 'stars', 'createdAt', 'updatedAt']) &&
+        data.ratingId is string && data.ratingId.size() >= 1 && data.ratingId.size() <= 128 && data.ratingId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.episodeId is string && data.episodeId.size() >= 1 && data.episodeId.size() <= 128 && data.episodeId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.stars is number && data.stars >= 1 && data.stars <= 5 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidVoteRecord(data) {
+      return data.keys().hasAll(['voteId', 'comicId', 'episodeId', 'userId', 'voteType', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['voteId', 'comicId', 'episodeId', 'userId', 'voteType', 'createdAt', 'updatedAt']) &&
+        data.voteId is string && data.voteId.size() >= 1 && data.voteId.size() <= 128 && data.voteId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.comicId is string && data.comicId.size() >= 1 && data.comicId.size() <= 128 && data.comicId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.episodeId is string && data.episodeId.size() >= 1 && data.episodeId.size() <= 128 && data.episodeId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.voteType is string && data.voteType.size() >= 4 && data.voteType.size() <= 16 &&
+        (data.voteType == 'like' || data.voteType == 'dislike') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidPurchaseRecord(data) {
       return data.keys().hasAll([
           'purchaseId', 'userId', 'comicId', 'itemTitle', 'planType',
@@ -140,6 +213,45 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidNotificationRecord(data) {
+      return data.keys().hasAll([
+          'notificationId', 'userId', 'type', 'title', 'message',
+          'targetId', 'isPaywalled', 'read', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'notificationId', 'userId', 'type', 'title', 'message',
+          'targetId', 'isPaywalled', 'read', 'createdAt', 'updatedAt'
+        ]) &&
+        data.notificationId is string && data.notificationId.size() >= 1 && data.notificationId.size() <= 128 && data.notificationId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.type is string && data.type.size() >= 5 && data.type.size() <= 32 &&
+        (data.type == 'new_comic' || data.type == 'new_episode' || data.type == 'payment_success' || data.type == 'author_approved' || data.type == 'author_rejected' || data.type == 'comic_approved' || data.type == 'comic_rejected' || data.type == 'comment_reply' || data.type == 'system') &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 400 &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
+        data.isPaywalled is bool &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuthorApplicationRecord(data) {
+      return data.keys().hasAll([
+          'applicationId', 'userId', 'penName', 'bio', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'applicationId', 'userId', 'penName', 'bio', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.applicationId is string && data.applicationId.size() >= 1 && data.applicationId.size() <= 128 && data.applicationId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.penName is string && data.penName.size() >= 1 && data.penName.size() <= 80 &&
+        data.bio is string && data.bio.size() >= 3 && data.bio.size() <= 600 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidDeleteRequestRecord(data) {
       return data.keys().hasAll([
           'requestId', 'comicId', 'comicTitle', 'targetType',
@@ -159,6 +271,25 @@ service cloud.firestore {
         data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300 &&
         data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
         (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidContentReportRecord(data) {
+      return data.keys().hasAll([
+          'reportId', 'reporterId', 'targetType', 'targetId', 'reason', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'reportId', 'reporterId', 'targetType', 'targetId', 'reason', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.reportId is string && data.reportId.size() >= 1 && data.reportId.size() <= 128 && data.reportId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.reporterId is string && data.reporterId.size() >= 1 && data.reporterId.size() <= 128 && data.reporterId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.targetType is string && data.targetType.size() >= 5 && data.targetType.size() <= 16 &&
+        (data.targetType == 'comment' || data.targetType == 'comic' || data.targetType == 'episode') &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 && data.targetId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 300 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'pending' || data.status == 'resolved' || data.status == 'dismissed') &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -188,6 +319,55 @@ service cloud.firestore {
         data.defaultSacCode is string && data.defaultSacCode.size() >= 4 && data.defaultSacCode.size() <= 10 &&
         data.applicableGstRate is number && data.applicableGstRate >= 0 && data.applicableGstRate <= 28 &&
         data.updatedByEmail is string && data.updatedByEmail.size() >= 3 && data.updatedByEmail.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPlatformSettingsRecord(data) {
+      return data.keys().hasAll([
+          'settingId', 'merchantUpiId', 'merchantUpiName',
+          'razorpay1MonthUrl', 'razorpay6MonthsUrl', 'updatedByEmail',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'settingId', 'merchantUpiId', 'merchantUpiName',
+          'razorpay1MonthUrl', 'razorpay6MonthsUrl', 'updatedByEmail',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.settingId is string && data.settingId.size() >= 1 && data.settingId.size() <= 128 && data.settingId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.merchantUpiId is string && data.merchantUpiId.size() >= 3 && data.merchantUpiId.size() <= 100 &&
+        data.merchantUpiName is string && data.merchantUpiName.size() >= 2 && data.merchantUpiName.size() <= 100 &&
+        data.razorpay1MonthUrl is string && data.razorpay1MonthUrl.size() >= 8 && data.razorpay1MonthUrl.size() <= 200 &&
+        data.razorpay6MonthsUrl is string && data.razorpay6MonthsUrl.size() >= 8 && data.razorpay6MonthsUrl.size() <= 200 &&
+        data.updatedByEmail is string && data.updatedByEmail.size() >= 3 && data.updatedByEmail.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdRequestRecord(data) {
+      return data.keys().hasAll([
+          'requestId', 'companyName', 'contactName', 'contactEmail', 'contactPhone',
+          'placementType', 'targetComicTitle', 'budgetRange', 'description',
+          'status', 'submittedByUserId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'requestId', 'companyName', 'contactName', 'contactEmail', 'contactPhone',
+          'placementType', 'targetComicTitle', 'budgetRange', 'description',
+          'status', 'submittedByUserId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.requestId is string && data.requestId.size() >= 1 && data.requestId.size() <= 128 && data.requestId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 120 &&
+        data.contactName is string && data.contactName.size() >= 1 && data.contactName.size() <= 80 &&
+        data.contactEmail is string && data.contactEmail.size() >= 3 && data.contactEmail.size() <= 120 &&
+        data.contactPhone is string && data.contactPhone.size() >= 0 && data.contactPhone.size() <= 32 &&
+        data.placementType is string && data.placementType.size() >= 10 && data.placementType.size() <= 32 &&
+        (data.placementType == 'character_promotion' || data.placementType == 'sponsored_page' || data.placementType == 'episode_sponsor') &&
+        data.targetComicTitle is string && data.targetComicTitle.size() >= 1 && data.targetComicTitle.size() <= 140 &&
+        data.budgetRange is string && data.budgetRange.size() >= 1 && data.budgetRange.size() <= 64 &&
+        data.description is string && data.description.size() >= 5 && data.description.size() <= 1000 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 16 &&
+        (data.status == 'pending' || data.status == 'contacted' || data.status == 'approved' || data.status == 'rejected') &&
+        data.submittedByUserId is string && data.submittedByUserId.size() >= 1 && data.submittedByUserId.size() <= 128 && data.submittedByUserId.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -236,11 +416,9 @@ service cloud.firestore {
         incoming().userId == existing().userId &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
-          // Action 1: Owner updates display name only (cannot escalate role)
           (isOwner(userId) &&
             incoming().role == existing().role &&
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt'])) ||
-          // Action 2: Admin updates name or role
           (isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'updatedAt']))
         );
@@ -272,14 +450,12 @@ service cloud.firestore {
           incoming().userId == existing().userId &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time && (
-            // Action 1: Owner updates their own PII, UPI ID, Age, and Paid Detail
             (isOwner(userId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'email', 'phone', 'upiId', 'age',
                 'premiumPlan', 'paymentMethod', 'transactionId', 'amountPaidInr', 'updatedAt'
               ]) &&
               get(/databases/$(database)/documents/users/$(userId)).data.userId == userId) ||
-            // Action 2: Admin updates reader PII, UPI ID, or Paid Plan
             (isAdmin() &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'email', 'phone', 'upiId', 'age',
@@ -292,7 +468,7 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 4. /comics/{comicId}
+    // 4. /comics/{comicId} & /comics/{comicId}/episodes/{episodeId}
     // =========================================================================
     match /comics/{comicId} {
       allow get: if isValidId(comicId) && (existing().status == 'published' || isOwner(existing().authorId) || isAdmin());
@@ -314,14 +490,12 @@ service cloud.firestore {
         incoming().authorId == existing().authorId &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
-          // Action 1: Author updates title, genre, or paywall price while pending
           (isOwner(existing().authorId) &&
             existing().status == 'pending' &&
             incoming().status == existing().status &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'genre', 'accessType', 'fullUnlockPriceInr', 'updatedAt'
             ])) ||
-          // Action 2: Admin moderates status or paywall settings
           (isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'genre', 'accessType', 'fullUnlockPriceInr', 'status', 'updatedAt'
@@ -329,10 +503,159 @@ service cloud.firestore {
         );
 
       allow delete: if isVerifiedUser() && isValidId(comicId) && isAdmin();
+
+      match /episodes/{episodeId} {
+        allow get: if isValidId(comicId) && isValidId(episodeId) &&
+          get(/databases/$(database)/documents/comics/$(comicId)).data.comicId == comicId &&
+          (existing().status == 'published' || isOwner(existing().authorId) || isAdmin());
+        allow list: if resource.data.status == 'published' || (isVerifiedUser() && resource.data.authorId == request.auth.uid) || isAdmin();
+
+        allow create: if isVerifiedUser() &&
+          isValidId(comicId) &&
+          isValidId(episodeId) &&
+          isValidEpisodeRecord(incoming()) &&
+          incoming().comicId == comicId &&
+          incoming().episodeId == episodeId &&
+          (incoming().authorId == request.auth.uid || isAdmin()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          get(/databases/$(database)/documents/comics/$(comicId)).data.authorId == incoming().authorId;
+
+        allow update: if isValidEpisodeRecord(incoming()) &&
+          isVerifiedUser() &&
+          isValidId(comicId) &&
+          isValidId(episodeId) &&
+          incoming().episodeId == existing().episodeId &&
+          incoming().comicId == existing().comicId &&
+          incoming().authorId == existing().authorId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            (isOwner(existing().authorId) &&
+              existing().status == 'pending' &&
+              incoming().status == existing().status &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'chapterId', 'chapterNumber', 'chapterTitle', 'episodeNumber',
+                'title', 'isPremium', 'priceInr', 'pagesCount', 'updatedAt'
+              ])) ||
+            (isAdmin() &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'chapterId', 'chapterNumber', 'chapterTitle', 'episodeNumber',
+                'title', 'isPremium', 'priceInr', 'pagesCount', 'status', 'updatedAt'
+              ]))
+          );
+
+        allow delete: if isVerifiedUser() && isValidId(comicId) && isValidId(episodeId) && isAdmin();
+      }
     }
 
     // =========================================================================
-    // 5. /purchases/{purchaseId}
+    // 5. /comments/{commentId}
+    // =========================================================================
+    match /comments/{commentId} {
+      allow get: if isValidId(commentId) && isSignedIn();
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || resource.data.likesCount >= 0);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(commentId) &&
+        isValidCommentRecord(incoming()) &&
+        incoming().commentId == commentId &&
+        incoming().userId == request.auth.uid &&
+        incoming().likesCount == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/comics/$(incoming().comicId)) &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId));
+
+      allow update: if isValidCommentRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(commentId) &&
+        incoming().commentId == existing().commentId &&
+        incoming().comicId == existing().comicId &&
+        incoming().episodeId == existing().episodeId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isOwner(existing().userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['content', 'updatedAt'])) ||
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['content', 'likesCount', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(commentId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // =========================================================================
+    // 6. /ratings/{ratingId}
+    // =========================================================================
+    match /ratings/{ratingId} {
+      allow get: if isVerifiedUser() && isValidId(ratingId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(ratingId) &&
+        isValidRatingRecord(incoming()) &&
+        incoming().ratingId == ratingId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/comics/$(incoming().comicId)) &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId));
+
+      allow update: if isValidRatingRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(ratingId) &&
+        incoming().ratingId == existing().ratingId &&
+        incoming().comicId == existing().comicId &&
+        incoming().episodeId == existing().episodeId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isOwner(existing().userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['stars', 'updatedAt'])) ||
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['stars', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(ratingId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // =========================================================================
+    // 7. /votes/{voteId}
+    // =========================================================================
+    match /votes/{voteId} {
+      allow get: if isVerifiedUser() && isValidId(voteId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(voteId) &&
+        isValidVoteRecord(incoming()) &&
+        incoming().voteId == voteId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/comics/$(incoming().comicId)) &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId));
+
+      allow update: if isValidVoteRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(voteId) &&
+        incoming().voteId == existing().voteId &&
+        incoming().comicId == existing().comicId &&
+        incoming().episodeId == existing().episodeId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isOwner(existing().userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['voteType', 'updatedAt'])) ||
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['voteType', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(voteId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // =========================================================================
+    // 8. /purchases/{purchaseId}
     // =========================================================================
     match /purchases/{purchaseId} {
       allow get: if isVerifiedUser() && isValidId(purchaseId) && (isOwner(existing().userId) || isAdmin());
@@ -357,7 +680,6 @@ service cloud.firestore {
         incoming().amountInr == existing().amountInr &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
-          // Action: Admin issues refund on a non-refunded purchase (terminal state lock)
           (isAdmin() &&
             existing().status == 'success' &&
             incoming().status == 'refunded' &&
@@ -368,7 +690,76 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 6. /deleteRequests/{requestId}
+    // 9. /notifications/{notificationId}
+    // =========================================================================
+    match /notifications/{notificationId} {
+      allow get: if isVerifiedUser() && isValidId(notificationId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidNotificationRecord(incoming()) &&
+        incoming().notificationId == notificationId &&
+        incoming().read == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isValidNotificationRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(notificationId) &&
+        incoming().notificationId == existing().notificationId &&
+        incoming().userId == existing().userId &&
+        incoming().type == existing().type &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isOwner(existing().userId) &&
+            incoming().read == true &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt'])) ||
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['read', 'title', 'message', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(notificationId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // =========================================================================
+    // 10. /authorApplications/{applicationId}
+    // =========================================================================
+    match /authorApplications/{applicationId} {
+      allow get: if isVerifiedUser() && isValidId(applicationId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(applicationId) &&
+        isValidAuthorApplicationRecord(incoming()) &&
+        incoming().applicationId == applicationId &&
+        (incoming().userId == request.auth.uid || isAdmin()) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().userId));
+
+      allow update: if isValidAuthorApplicationRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(applicationId) &&
+        incoming().applicationId == existing().applicationId &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isOwner(existing().userId) &&
+            existing().status == 'pending' &&
+            incoming().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['penName', 'bio', 'updatedAt'])) ||
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'penName', 'bio', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(applicationId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 11. /deleteRequests/{requestId}
     // =========================================================================
     match /deleteRequests/{requestId} {
       allow get: if isVerifiedUser() && isValidId(requestId) && (isOwner(existing().authorId) || isAdmin());
@@ -392,12 +783,10 @@ service cloud.firestore {
         incoming().authorId == existing().authorId &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
-          // Action 1: Author updates reason while still pending (Terminal State Lock)
           (isOwner(existing().authorId) &&
             existing().status == 'pending' &&
             incoming().status == 'pending' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['reason', 'updatedAt'])) ||
-          // Action 2: Admin approves or rejects delete request
           (isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'updatedAt']))
         );
@@ -406,7 +795,39 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 7. /gstSettings/{settingId} (Admin-Managed Business GST Profile)
+    // 12. /reports/{reportId}
+    // =========================================================================
+    match /reports/{reportId} {
+      allow get: if isVerifiedUser() && isValidId(reportId) && (isOwner(existing().reporterId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.reporterId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(reportId) &&
+        isValidContentReportRecord(incoming()) &&
+        incoming().reportId == reportId &&
+        incoming().reporterId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().reporterId));
+
+      allow update: if isValidContentReportRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(reportId) &&
+        incoming().reportId == existing().reportId &&
+        incoming().reporterId == existing().reporterId &&
+        incoming().targetId == existing().targetId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'updatedAt']))
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(reportId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 13. /gstSettings/{settingId} (Admin-Managed Business GST Profile)
     // =========================================================================
     match /gstSettings/{settingId} {
       allow get: if isValidId(settingId) && isVerifiedUser();
@@ -434,6 +855,65 @@ service cloud.firestore {
         isAdmin();
 
       allow delete: if isVerifiedUser() && isValidId(settingId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 14. /platformSettings/{settingId} (Admin-Managed UPI & Razorpay Config)
+    // =========================================================================
+    match /platformSettings/{settingId} {
+      allow get: if isValidId(settingId) && isVerifiedUser();
+      allow list: if isAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(settingId) &&
+        isValidPlatformSettingsRecord(incoming()) &&
+        incoming().settingId == settingId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isValidPlatformSettingsRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(settingId) &&
+        incoming().settingId == existing().settingId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'merchantUpiId', 'merchantUpiName', 'razorpay1MonthUrl',
+          'razorpay6MonthsUrl', 'updatedByEmail', 'updatedAt'
+        ]) &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(settingId) && isAdmin();
+    }
+
+    // =========================================================================
+    // 15. /adRequests/{requestId} (Company Advertising & Sponsorship Requests)
+    // =========================================================================
+    match /adRequests/{requestId} {
+      allow get: if isVerifiedUser() && isValidId(requestId) && (isOwner(existing().submittedByUserId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.submittedByUserId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(requestId) &&
+        isValidAdRequestRecord(incoming()) &&
+        incoming().requestId == requestId &&
+        (incoming().submittedByUserId == request.auth.uid || isAdmin()) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidAdRequestRecord(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(requestId) &&
+        incoming().requestId == existing().requestId &&
+        incoming().submittedByUserId == existing().submittedByUserId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+
+      allow delete: if isVerifiedUser() && isValidId(requestId) && isAdmin();
     }
   }
 }

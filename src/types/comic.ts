@@ -458,3 +458,21 @@ export interface DeleteRequest {
   reviewedAt?: string;
   adminNote?: string;
 }
+
+export interface AdPlacementRequest {
+  id: string;
+  companyName: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone?: string;
+  placementType: 'character_promotion' | 'sponsored_page' | 'episode_sponsor';
+  targetComicId?: string;
+  targetComicTitle?: string;
+  budgetRange?: string;
+  description: string;
+  status: 'pending' | 'contacted' | 'approved' | 'rejected';
+  adminNote?: string;
+  submittedByUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
