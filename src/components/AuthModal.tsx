@@ -13,6 +13,12 @@ import {
   EyeOff,
   AlertTriangle,
 } from 'lucide-react';
+import {
+  sendFirebaseSmsOtp,
+  verifyFirebaseSmsOtp,
+  clearRecaptchaVerifier,
+  ConfirmationResult,
+} from '../firebase';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -91,6 +97,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [sandboxOtp, setSandboxOtp] = useState<string | null>(null);
+  const [firebaseRegConfirmation, setFirebaseRegConfirmation] = useState<ConfirmationResult | null>(null);
+  const [firebaseResetConfirmation, setFirebaseResetConfirmation] = useState<ConfirmationResult | null>(null);
+  const [verifiedResetPhoneIdToken, setVerifiedResetPhoneIdToken] = useState<string | null>(null);
+  const [smsNotice, setSmsNotice] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      clearRecaptchaVerifier('firebase-recaptcha-modal-reg');
+      clearRecaptchaVerifier('firebase-recaptcha-modal-reset');
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -102,6 +119,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setError(null);
     setSuccessMsg(null);
     setSandboxOtp(null);
+    setSmsNotice(null);
+    setFirebaseRegConfirmation(null);
+    setFirebaseResetConfirmation(null);
+    setVerifiedResetPhoneIdToken(null);
     setOtp('');
   };
 
@@ -225,18 +246,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
           confirmPassword: regConfirmPassword,
           notifyGmail,
           notifyMobile,
+          smsChannel: 'firebase',
           role: 'reader',
         }),
       });
       const data = await res.json();
-      setLoading(false);
       if (res.ok) {
-        setSuccessMsg(
-          `Welcome to Aathirai_Comic! Account created & welcome email sent to ${email}. Verify OTP below.`
-        );
         setSandboxOtp(data.devOtpHint || '');
+        let fbSmsMsg = '';
+        if (phone.trim()) {
+          const fbSms = await sendFirebaseSmsOtp(phone.trim(), 'firebase-recaptcha-modal-reg', '+91');
+          if (fbSms.sent && fbSms.confirmationResult) {
+            setFirebaseRegConfirmation(fbSms.confirmationResult);
+            fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
+            setSmsNotice(fbSmsMsg);
+          } else {
+            setFirebaseRegConfirmation(null);
+            if (fbSms.errorMessage) {
+              setSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
+            }
+          }
+        }
+        setLoading(false);
+        setSuccessMsg(
+          fbSmsMsg
+            ? `Welcome to Aathirai_Comic! ${fbSmsMsg} Confirmation email also sent to ${email}.`
+            : `Welcome to Aathirai_Comic! Account created & welcome email sent to ${email}. Verify OTP below.`
+        );
         setMode('verify-otp');
       } else {
+        setLoading(false);
         setError(data.error || 'Registration failed');
       }
     } catch (err: any) {
@@ -252,6 +291,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
     try {
       const headers = await getAuthHeaders();
+      let fbVerifyError: string | null = null;
+      if (firebaseRegConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseRegConfirmation, otp.trim());
+        if (fbVerify.verified && fbVerify.idToken) {
+          headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+          setFirebaseRegConfirmation(null);
+        } else {
+          fbVerifyError = fbVerify.error || null;
+        }
+      }
+
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers,
@@ -268,6 +318,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
       const data = await res.json();
       setLoading(false);
       if (res.ok) {
+        setSmsNotice(null);
         await login(email.trim() || phone.trim(), {
           phone: phone.trim() || undefined,
           password: regPassword || undefined,
@@ -279,7 +330,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         });
         onClose();
       } else {
-        setError(data.error || 'Invalid OTP code');
+        setError(fbVerifyError || data.error || 'Invalid OTP code');
       }
     } catch (err: any) {
       setLoading(false);
@@ -291,19 +342,49 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setSmsNotice(null);
+    setVerifiedResetPhoneIdToken(null);
     try {
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: resetEmail.trim(), phone: resetPhone.trim() }),
+        body: JSON.stringify({
+          email: resetEmail.trim(),
+          phone: resetPhone.trim(),
+          smsChannel: 'firebase',
+        }),
       });
       const data = await res.json();
-      setLoading(false);
       if (res.ok) {
+        if (data.email && !resetEmail.trim()) setResetEmail(data.email);
+        if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
         setSandboxOtp(data.devOtpHint || '');
-        setSuccessMsg(data.message || `Reset code sent to ${resetEmail}`);
+
+        const targetPhone = (data.phone || resetPhone.trim() || '').trim();
+        let fbSmsMsg = '';
+        if (targetPhone) {
+          const fbSms = await sendFirebaseSmsOtp(
+            targetPhone,
+            'firebase-recaptcha-modal-reset',
+            data.countryCode || '+91'
+          );
+          if (fbSms.sent && fbSms.confirmationResult) {
+            setFirebaseResetConfirmation(fbSms.confirmationResult);
+            fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
+            setSmsNotice(fbSmsMsg);
+          } else {
+            setFirebaseResetConfirmation(null);
+            if (fbSms.errorMessage) {
+              setSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
+            }
+          }
+        }
+
+        setLoading(false);
+        setSuccessMsg(fbSmsMsg || data.message || `Reset code sent to ${data.email || resetEmail}`);
         setResetStep('verify_otp');
       } else {
+        setLoading(false);
         setError(data.error || 'Could not send reset code');
       }
     } catch (err: any) {
@@ -317,9 +398,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setLoading(true);
     setError(null);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      let fbVerifyError: string | null = null;
+      if (firebaseResetConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseResetConfirmation, resetOtp.trim());
+        if (fbVerify.verified && fbVerify.idToken) {
+          headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+          setVerifiedResetPhoneIdToken(fbVerify.idToken);
+          setFirebaseResetConfirmation(null);
+        } else {
+          fbVerifyError = fbVerify.error || null;
+        }
+      }
+
       const res = await fetch('/api/auth/verify-reset-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ email: resetEmail.trim(), phone: resetPhone.trim(), otp: resetOtp.trim() }),
       });
       const data = await res.json();
@@ -328,7 +422,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         setSuccessMsg('OTP Verified! Enter your New Password and Confirm Password.');
         setResetStep('set_new_password');
       } else {
-        setError(data.error || 'Invalid OTP');
+        setError(fbVerifyError || data.error || 'Invalid OTP');
       }
     } catch (err: any) {
       setLoading(false);
@@ -345,9 +439,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setLoading(true);
     setError(null);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (verifiedResetPhoneIdToken) {
+        headers['Authorization'] = `Bearer ${verifiedResetPhoneIdToken}`;
+      }
       const res = await fetch('/api/auth/reset-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: resetEmail.trim(),
           phone: resetPhone.trim(),
@@ -359,6 +457,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
       const data = await res.json();
       setLoading(false);
       if (res.ok) {
+        setVerifiedResetPhoneIdToken(null);
+        setFirebaseResetConfirmation(null);
+        setSmsNotice(null);
         setIsAccountLocked(false);
         setLockedUntilIso(null);
         setRemainingAttempts(3);
@@ -427,6 +528,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
           </div>
         )}
 
+        <div id="firebase-recaptcha-modal-reg" />
+        <div id="firebase-recaptcha-modal-reset" />
+
         {error && (
           <div className="mb-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-medium flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -437,6 +541,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
           <div className="mb-4 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-medium flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             <span>{successMsg}</span>
+          </div>
+        )}
+        {smsNotice && (mode === 'verify-otp' || mode === 'change-password') && (
+          <div className="mb-4 p-3 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-700 dark:text-sky-300 text-xs font-medium flex items-start gap-2">
+            <Phone className="w-4 h-4 shrink-0 mt-0.5 text-sky-500" />
+            <span>{smsNotice}</span>
           </div>
         )}
 

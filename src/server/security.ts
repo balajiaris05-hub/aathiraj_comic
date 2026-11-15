@@ -117,7 +117,14 @@ export function verifySessionToken(token?: string): SessionTokenPayload | null {
  */
 export async function verifyBearerToken(
   rawHeader?: string
-): Promise<{ userId?: string; email?: string; emailVerified?: boolean; firebaseUid?: string } | null> {
+): Promise<{
+  userId?: string;
+  email?: string;
+  emailVerified?: boolean;
+  firebaseUid?: string;
+  phoneNumber?: string;
+  signInProvider?: string;
+} | null> {
   if (!rawHeader || !rawHeader.startsWith('Bearer ')) return null;
   const token = rawHeader.slice(7).trim();
   if (!token) return null;
@@ -152,6 +159,11 @@ export async function verifyBearerToken(
           firebaseUid: payload.user_id || payload.sub,
           email: payload.email ? String(payload.email).toLowerCase() : undefined,
           emailVerified: Boolean(payload.email_verified),
+          phoneNumber: payload.phone_number ? String(payload.phone_number).trim() : undefined,
+          signInProvider:
+            payload.firebase && typeof payload.firebase.sign_in_provider === 'string'
+              ? payload.firebase.sign_in_provider
+              : undefined,
         };
       }
     } catch {

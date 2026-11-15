@@ -14,6 +14,7 @@ import {
   sendReaderWelcomeAndOtpEmail,
   sendPasswordResetOtpEmail,
 } from './src/server/mailer.ts';
+import { getSmsConfigSummary, sendOtpSms } from './src/server/sms.ts';
 import {
   User,
   AuthorApplication,
@@ -110,7 +111,7 @@ async function startServer() {
   // -------------------------------------------------------------
 
   app.post('/api/admin-auth/request-otp', authRateLimiter, async (req, res) => {
-    const { credential, channel = 'email' } = req.body;
+    const { credential, channel = 'email', smsChannel, firebaseSmsSent, firebaseSmsError } = req.body;
     if (!credential) {
       return res.status(400).json({ error: 'Please enter your administrator Gmail or Indian mobile number.' });
     }
@@ -131,7 +132,7 @@ async function startServer() {
     const targetDestination = targetChannel === 'email' ? 'balajiaris05@gmail.com' : '+91 8610950780';
     const maskedDestination = targetChannel === 'email' ? 'b*******05@gmail.com' : '+91 ******0780';
 
-    // Generate cryptographically random 6-digit OTP
+    // Generate cryptographically random 6-digit fallback OTP (also used for Gmail SMTP channel & backup)
     const otp = crypto.randomInt(100000, 999999).toString();
 
     db.mutate(d => {
@@ -147,7 +148,34 @@ async function startServer() {
       sent: false,
       configured: getSmtpConfigSummary().configured,
     };
-    if (targetChannel === 'email') {
+    let smsResult: { sent: boolean; configured: boolean; provider: string; error?: string } = {
+      sent: Boolean(targetChannel === 'sms' && firebaseSmsSent),
+      configured: targetChannel === 'sms' && (Boolean(firebaseSmsSent) || smsChannel === 'firebase')
+        ? true
+        : getSmsConfigSummary().configured,
+      provider:
+        targetChannel === 'sms' && (Boolean(firebaseSmsSent) || smsChannel === 'firebase')
+          ? 'firebase'
+          : getSmsConfigSummary().provider,
+      ...(firebaseSmsError ? { error: String(firebaseSmsError) } : {}),
+    };
+
+    if (targetChannel === 'sms') {
+      if (!firebaseSmsSent) {
+        if (smsChannel !== 'firebase') {
+          smsResult = await sendOtpSms({
+            phone: targetDestination,
+            countryCode: '+91',
+            otp,
+            purpose: 'admin_2fa',
+          });
+        }
+        // Automatic reliable backup to admin Gmail via SMTP when Firebase/carrier SMS is unavailable
+        if (!smsResult.sent) {
+          emailResult = await sendAdminOtpEmail('balajiaris05@gmail.com', otp);
+        }
+      }
+    } else {
       emailResult = await sendAdminOtpEmail(targetDestination, otp);
     }
 
@@ -155,31 +183,46 @@ async function startServer() {
       'ADMIN_OTP_REQUESTED',
       'balajiaris05@gmail.com',
       'admin',
-      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${maskedDestination} (SMTP Sent: ${emailResult.sent}). Valid for 10 minutes.`,
+      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${maskedDestination} (SMS Sent: ${smsResult.sent} [${smsResult.provider}], SMTP Sent: ${emailResult.sent}). Valid for 10 minutes.`,
       'admin_auth',
       'usr_admin'
     );
 
-    const hasDeliveryProvider = Boolean(emailResult.sent || process.env.SMS_API_KEY);
+    const hasDeliveryProvider = Boolean(emailResult.sent || smsResult.sent);
     return res.json({
       success: true,
       emailDelivered: emailResult.sent,
+      smsDelivered: smsResult.sent,
+      smsProvider: smsResult.provider,
       smtpConfigured: emailResult.configured,
-      message: emailResult.sent
-        ? `Security OTP emailed via SMTP to ${maskedDestination}. Valid for 10 minutes.`
-        : hasDeliveryProvider
-          ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
-          : `Development Mode: OTP generated for ${maskedDestination} (${emailResult.error || 'configure SMTP_HOST / SMS_API_KEY for live delivery'}).`,
+      smsConfigured: smsResult.configured,
+      message: smsResult.sent
+        ? smsResult.provider === 'firebase'
+          ? `6-digit SMS OTP dispatched via Firebase Phone Auth to ${maskedDestination}.`
+          : `Security OTP sent via SMS (${smsResult.provider}) to ${maskedDestination}. Valid for 10 minutes.`
+        : emailResult.sent && targetChannel === 'sms'
+          ? `Firebase SMS pending setup (${smsResult.error || 'enable Blaze/Phone Auth in Firebase Console'}) — 6-digit backup OTP delivered via Gmail SMTP to your linked admin email.`
+          : emailResult.sent
+            ? `Security OTP emailed via SMTP to ${maskedDestination}. Valid for 10 minutes.`
+            : hasDeliveryProvider
+              ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
+              : `Development Mode: OTP generated for ${maskedDestination}.`,
       channel: targetChannel,
       destinationMasked: maskedDestination,
-      ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
+      ...(process.env.NODE_ENV !== 'production' && !firebaseSmsSent ? { devOtpHint: otp } : {}),
       expiresInSeconds: 600,
     });
   });
 
-  app.post('/api/admin-auth/verify-otp', authRateLimiter, (req, res) => {
+  app.post('/api/admin-auth/verify-otp', authRateLimiter, async (req, res) => {
     const { credential, otp } = req.body;
-    if (!credential || !otp) {
+    const tokenInfo = await verifyBearerToken(req.headers.authorization);
+    const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
+    const firebasePhoneMatchesAdmin = Boolean(
+      tokenInfo?.phoneNumber && phonesMatch('+91 8610950780', tokenInfo.phoneNumber)
+    );
+
+    if (!credential || (!otp && !hasFirebasePhoneClaim)) {
       return res.status(400).json({ error: 'Credential and OTP are required.' });
     }
 
@@ -192,15 +235,23 @@ async function startServer() {
       return res.status(403).json({ error: 'Access Denied: Unrecognized administrator credentials.' });
     }
 
+    if (hasFirebasePhoneClaim && !firebasePhoneMatchesAdmin) {
+      return res.status(403).json({
+        error: 'Verified Firebase mobile number does not match the registered administrator mobile number.',
+      });
+    }
+
     const snapshot = db.getSnapshot();
     const activeOtp = snapshot.adminOtp;
 
-    if (!activeOtp || Date.now() > activeOtp.expiresAt) {
-      return res.status(400).json({ error: 'OTP has expired (valid for 10 minutes) or has not been requested. Please request a new code.' });
-    }
+    if (!firebasePhoneMatchesAdmin) {
+      if (!activeOtp || Date.now() > activeOtp.expiresAt) {
+        return res.status(400).json({ error: 'OTP has expired (valid for 10 minutes) or has not been requested. Please request a new code.' });
+      }
 
-    if (activeOtp.code !== String(otp).trim()) {
-      return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your verification dispatch.' });
+      if (activeOtp.code !== String(otp || '').trim()) {
+        return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your verification dispatch.' });
+      }
     }
 
     // Clear one-time OTP
@@ -221,10 +272,18 @@ async function startServer() {
       createdAt: '2026-01-01T00:00:00Z',
     };
 
-    db.logActivity('ADMIN_AUTHENTICATED', 'balajiaris05@gmail.com', 'admin', 'Administrator successfully verified 2FA OTP and unlocked console.', 'admin_auth', adminUser.id);
+    db.logActivity(
+      'ADMIN_AUTHENTICATED',
+      'balajiaris05@gmail.com',
+      'admin',
+      `Administrator successfully verified 2FA ${firebasePhoneMatchesAdmin ? 'Firebase SMS OTP' : 'OTP'} and unlocked console.`,
+      'admin_auth',
+      adminUser.id
+    );
 
     return res.json({
       success: true,
+      verifiedVia: firebasePhoneMatchesAdmin ? 'firebase_sms' : 'backend_otp',
       user: sanitizeUserForClient(adminUser as User, true),
       message: 'Admin authentication verified! Console access unlocked.',
     });
@@ -279,6 +338,65 @@ async function startServer() {
       success: true,
       verified: true,
       ...verification,
+    });
+  });
+
+  app.get('/api/admin/sms-status', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    if (authCtx.role !== 'admin') {
+      return res.status(403).json({ error: 'Administrator permission required.' });
+    }
+    return res.json({
+      success: true,
+      sms: getSmsConfigSummary(),
+      firebasePhoneAuth: {
+        enabled: true,
+        provider: 'firebase',
+        projectId: 'aathiraicomic',
+        authDomain: 'aathiraicomic.firebaseapp.com',
+        freeTierInfo: '10 free SMS/day on Firebase Blaze plan, with automatic Gmail SMTP fallback.',
+      },
+    });
+  });
+
+  app.post('/api/admin/sms-test', async (req, res) => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    if (authCtx.role !== 'admin') {
+      return res.status(403).json({ error: 'Administrator permission required.' });
+    }
+
+    const { phone, countryCode, sendTestSms } = req.body || {};
+    const summary = getSmsConfigSummary();
+    if (!sendTestSms) {
+      return res.json({ success: true, sms: summary });
+    }
+    if (!summary.configured) {
+      return res.status(400).json({
+        success: false,
+        sms: summary,
+        error: summary.freeTierInfo,
+      });
+    }
+
+    const targetPhone = (typeof phone === 'string' && phone.trim()) || '+91 8610950780';
+    const testCode = crypto.randomInt(100000, 999999).toString();
+    const smsResult = await sendOtpSms({
+      phone: targetPhone,
+      countryCode: typeof countryCode === 'string' ? countryCode : '+91',
+      otp: testCode,
+      purpose: 'test',
+    });
+
+    return res.status(smsResult.sent ? 200 : 502).json({
+      success: smsResult.sent,
+      sms: summary,
+      smsResult,
     });
   });
 
@@ -1024,11 +1142,26 @@ async function startServer() {
       finalUser.id
     );
 
-    const emailDelivery = await sendReaderWelcomeAndOtpEmail({
-      to: finalUser.email,
-      name: finalUser.name,
-      otp,
-    });
+    const useFirebaseSms = req.body?.smsChannel === 'firebase' || req.body?.smsChannel === undefined;
+    const [emailDelivery, smsDelivery] = await Promise.all([
+      sendReaderWelcomeAndOtpEmail({
+        to: finalUser.email,
+        name: finalUser.name,
+        otp,
+      }),
+      finalUser.phone && notifyMobile !== false && !useFirebaseSms
+        ? sendOtpSms({
+            phone: finalUser.phone,
+            countryCode: finalUser.countryCode,
+            otp,
+            purpose: 'register',
+          })
+        : Promise.resolve({
+            sent: Boolean(req.body?.firebaseSmsSent),
+            configured: useFirebaseSms ? true : getSmsConfigSummary().configured,
+            provider: useFirebaseSms ? ('firebase' as const) : getSmsConfigSummary().provider,
+          }),
+    ]);
 
     mirrorWritesInBackground(
       'auth_register',
@@ -1040,34 +1173,66 @@ async function startServer() {
       success: true,
       storedInBackend: true,
       emailDelivered: emailDelivery.sent,
+      smsDelivered: smsDelivery.sent,
+      smsProvider: smsDelivery.provider,
       smtpConfigured: emailDelivery.configured,
+      smsConfigured: smsDelivery.configured,
       user: sanitizeUserForClient(finalUser, false),
       subscription: reconciled.subStatus,
       razorpayVerified: reconciled.razorpayVerified,
       welcomeEmail: welcomeEmailPayload,
-      message: emailDelivery.sent
-        ? `Account created and stored securely in backend! Welcome & 6-digit OTP email sent to ${cleanEmail} via SMTP.`
-        : `Account created and stored securely in backend! Welcome email recorded for ${cleanEmail} ("Welcome to Aathirai_Comic").`,
+      message:
+        emailDelivery.sent && smsDelivery.sent
+          ? `Account created and stored securely in backend! 6-digit OTP sent to ${cleanEmail} (SMTP) and ${finalUser.phone} (SMS via ${smsDelivery.provider}).`
+          : emailDelivery.sent
+            ? `Account created and stored securely in backend! Welcome & 6-digit OTP email sent to ${cleanEmail} via SMTP.`
+            : smsDelivery.sent
+              ? `Account created and stored securely in backend! 6-digit OTP sent via SMS (${smsDelivery.provider}) to ${finalUser.phone}.`
+              : `Account created and stored securely in backend! Welcome email recorded for ${cleanEmail} ("Welcome to Aathirai_Comic").`,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 
-  app.post('/api/auth/verify-otp', authRateLimiter, (req, res) => {
+  app.post('/api/auth/verify-otp', authRateLimiter, async (req, res) => {
     const { email, phone, countryCode, countryName, otp, dob, notifyGmail, notifyMobile, upiId } = req.body;
     const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
     const phoneKey = getPhoneOtpKey(phone || email, countryCode);
     const snapshot = db.getSnapshot();
+    const tokenInfo = await verifyBearerToken(req.headers.authorization);
+    const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
+
+    const targetUser = snapshot.users.find(user =>
+      (cleanEmail && user.email.toLowerCase() === cleanEmail) ||
+      (phone && phonesMatch(user.phone, phone, countryCode))
+    );
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Reader account not found.' });
+    }
+
+    const firebasePhoneVerified = Boolean(
+      tokenInfo?.phoneNumber &&
+        targetUser.phone &&
+        phonesMatch(targetUser.phone, tokenInfo.phoneNumber, countryCode)
+    );
+
+    if (hasFirebasePhoneClaim && !firebasePhoneVerified) {
+      return res.status(403).json({
+        error: 'Verified Firebase mobile number does not match the registered customer mobile number.',
+      });
+    }
+
     const otpCheck = verifyOtpAgainstKeys(
       snapshot.otps,
       [cleanEmail, phoneKey.length >= 6 ? phoneKey : ''],
       otp
     );
 
-    if (!otpCheck.valid) {
+    if (!firebasePhoneVerified && !otpCheck.valid) {
       return res.status(400).json({
         error: otpCheck.expired
           ? 'Verification OTP has expired (valid for 10 minutes). Please re-register or request a fresh code.'
-          : 'Invalid verification OTP. Please check the 6-digit code sent to your email or mobile.',
+          : 'Invalid verification OTP. Please check the 6-digit code sent to your mobile or email.',
       });
     }
 
@@ -1082,12 +1247,12 @@ async function startServer() {
 
     let updatedUser: User | null = null;
     db.mutate(d => {
-      const u = d.users.find(user =>
-        (cleanEmail && user.email.toLowerCase() === cleanEmail) ||
-        (phone && phonesMatch(user.phone, phone, countryCode))
-      );
+      const u = d.users.find(user => user.id === targetUser.id);
       if (u) {
         u.isVerified = true;
+        if (firebasePhoneVerified && tokenInfo?.firebaseUid && !u.firebaseUid) {
+          u.firebaseUid = tokenInfo.firebaseUid;
+        }
         u.failedLoginAttempts = 0;
         u.lockedUntil = null;
         u.lastLoginAt = new Date().toISOString();
@@ -1133,7 +1298,7 @@ async function startServer() {
       'READER_VERIFIED',
       userWithPremium.email,
       userWithPremium.role,
-      `Reader verified account & Welcome Email confirmed (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'}).`,
+      `Reader verified account via ${firebasePhoneVerified ? 'Firebase SMS OTP' : 'OTP'} (${userWithPremium.email} | Age: ${userWithPremium.age || 'N/A'}).`,
       'user',
       userWithPremium.id
     );
@@ -1146,6 +1311,7 @@ async function startServer() {
 
     return res.json({
       success: true,
+      verifiedVia: firebasePhoneVerified ? 'firebase_sms' : 'backend_otp',
       user: sanitizeUserForClient(userWithPremium, true),
       subscription: subStatus,
       message: `Welcome to Aathirai_Comic! Your account (${userWithPremium.email}) is verified and active.`,
@@ -1587,7 +1753,7 @@ async function startServer() {
   });
 
   app.post('/api/auth/forgot-password', authRateLimiter, async (req, res) => {
-    const { email, phone, countryCode, credential } = req.body;
+    const { email, phone, countryCode, credential, smsChannel, firebaseSmsSent } = req.body;
     const cleanEmail = (email || (credential && String(credential).includes('@') ? credential : '') || '').trim().toLowerCase();
     const rawPhoneInput = (phone || (credential && !String(credential).includes('@') ? credential : '') || '').trim();
     const cleanDigits = rawPhoneInput.replace(/\D/g, '');
@@ -1620,36 +1786,82 @@ async function startServer() {
       if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otpEntry;
     });
 
-    const emailDelivery = await sendPasswordResetOtpEmail({
-      to: matchedUser.email,
-      name: matchedUser.name,
-      otp,
-    });
+    const targetSmsPhone = matchedUser.phone || rawPhoneInput;
+    const useFirebaseSms = smsChannel === 'firebase' || smsChannel === undefined;
+    const [emailDelivery, smsDelivery] = await Promise.all([
+      sendPasswordResetOtpEmail({
+        to: matchedUser.email,
+        name: matchedUser.name,
+        otp,
+      }),
+      targetSmsPhone && !useFirebaseSms
+        ? sendOtpSms({
+            phone: targetSmsPhone,
+            countryCode: matchedUser.countryCode || countryCode,
+            otp,
+            purpose: 'password_reset',
+          })
+        : Promise.resolve({
+            sent: Boolean(firebaseSmsSent),
+            configured: useFirebaseSms ? true : getSmsConfigSummary().configured,
+            provider: useFirebaseSms ? ('firebase' as const) : getSmsConfigSummary().provider,
+          }),
+    ]);
 
     return res.json({
       success: true,
       emailDelivered: emailDelivery.sent,
+      smsDelivered: smsDelivery.sent,
+      smsProvider: smsDelivery.provider,
       smtpConfigured: emailDelivery.configured,
+      smsConfigured: smsDelivery.configured,
       email: matchedUser.email,
       phone: matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '',
       countryCode: matchedUser.countryCode || countryCode || '+91',
-      message: emailDelivery.sent
-        ? `6-digit verification OTP sent via SMTP to ${matchedUser.email}${matchedUser.phone ? ` (linked Mobile ${matchedUser.phone})` : ''}. Valid for 10 minutes.`
-        : `6-digit verification OTP generated for password recovery for ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
+      message:
+        emailDelivery.sent && smsDelivery.sent
+          ? `6-digit verification OTP sent via SMTP (${matchedUser.email}) and SMS (${targetSmsPhone} via ${smsDelivery.provider}). Valid for 10 minutes.`
+          : emailDelivery.sent
+            ? `6-digit verification OTP sent via SMTP to ${matchedUser.email}${matchedUser.phone ? ` (linked Mobile ${matchedUser.phone})` : ''}. Valid for 10 minutes.`
+            : smsDelivery.sent
+              ? `6-digit verification OTP sent via SMS (${smsDelivery.provider}) to ${targetSmsPhone}. Valid for 10 minutes.`
+              : `6-digit verification OTP generated for password recovery for ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
       ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 
-  app.post('/api/auth/verify-reset-otp', authRateLimiter, (req, res) => {
+  app.post('/api/auth/verify-reset-otp', authRateLimiter, async (req, res) => {
     const { email, phone, countryCode, otp } = req.body;
     const cleanEmail = (email || '').trim().toLowerCase();
     const phoneKey = getPhoneOtpKey(phone, countryCode);
     const snapshot = db.getSnapshot();
+    const tokenInfo = await verifyBearerToken(req.headers.authorization);
+    const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
+
     const matchedUser = snapshot.users.find((u: User) => {
       const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
       const phoneMatch = Boolean(phone && phonesMatch(u.phone, phone, countryCode));
       return emailMatch || phoneMatch;
     });
+
+    if (!matchedUser) {
+      return res.status(400).json({
+        error: 'No matching customer account found for this Gmail or Global Mobile Number.',
+      });
+    }
+
+    const firebasePhoneVerified = Boolean(
+      tokenInfo?.phoneNumber &&
+        matchedUser.phone &&
+        phonesMatch(matchedUser.phone, tokenInfo.phoneNumber, countryCode)
+    );
+
+    if (hasFirebasePhoneClaim && !firebasePhoneVerified) {
+      return res.status(403).json({
+        error: 'Verified Firebase mobile number does not match this account’s registered mobile number.',
+      });
+    }
+
     const userPhoneKey = matchedUser?.phone ? getPhoneOtpKey(matchedUser.phone, matchedUser.countryCode) : '';
     const otpCheck = verifyOtpAgainstKeys(
       snapshot.otps,
@@ -1662,25 +1874,28 @@ async function startServer() {
       otp
     );
 
-    if (!matchedUser || !otpCheck.valid) {
+    if (!firebasePhoneVerified && !otpCheck.valid) {
       return res.status(400).json({
         error: otpCheck.expired
           ? 'Reset OTP has expired (valid for 10 minutes). Please request a new OTP.'
-          : 'Invalid 6-digit OTP code. Please check the code sent to your Gmail / Global Mobile Number.',
+          : 'Invalid 6-digit OTP code. Please check the code sent to your Global Mobile Number / Gmail.',
       });
     }
 
     return res.json({
       success: true,
       verified: true,
+      verifiedVia: firebasePhoneVerified ? 'firebase_sms' : 'backend_otp',
       message: 'OTP verified! You may now enter your New Password and Confirm Password.',
     });
   });
 
-  app.post('/api/auth/reset-password', authRateLimiter, (req, res) => {
+  app.post('/api/auth/reset-password', authRateLimiter, async (req, res) => {
     const { email, phone, countryCode, otp, newPassword, confirmPassword } = req.body;
     const cleanEmail = (email || '').trim().toLowerCase();
     const phoneKey = getPhoneOtpKey(phone, countryCode);
+    const tokenInfo = await verifyBearerToken(req.headers.authorization);
+    const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
 
     if (!newPassword || String(newPassword).length < 4) {
       return res.status(400).json({ error: 'Please enter a valid new password (minimum 4 characters).' });
@@ -1700,6 +1915,18 @@ async function startServer() {
       return res.status(404).json({ error: 'Customer account not found.' });
     }
 
+    const firebasePhoneVerified = Boolean(
+      tokenInfo?.phoneNumber &&
+        preMatchedUser.phone &&
+        phonesMatch(preMatchedUser.phone, tokenInfo.phoneNumber, countryCode)
+    );
+
+    if (hasFirebasePhoneClaim && !firebasePhoneVerified) {
+      return res.status(403).json({
+        error: 'Verified Firebase mobile number does not match this customer account.',
+      });
+    }
+
     const userPhoneKey = preMatchedUser.phone ? getPhoneOtpKey(preMatchedUser.phone, preMatchedUser.countryCode) : '';
     const otpCheck = verifyOtpAgainstKeys(
       snapshot.otps,
@@ -1712,7 +1939,7 @@ async function startServer() {
       otp
     );
 
-    if (!otpCheck.valid) {
+    if (!firebasePhoneVerified && !otpCheck.valid) {
       return res.status(400).json({
         error: otpCheck.expired
           ? 'Reset OTP has expired (valid for 10 minutes). Please request a new OTP.'
@@ -1745,7 +1972,7 @@ async function startServer() {
       'PASSWORD_RESET_COMPLETED',
       updatedUser.email,
       updatedUser.role,
-      `Customer reset password via OTP and unlocked account (${updatedUser.email} | Mobile: ${updatedUser.phone || 'N/A'}).`,
+      `Customer reset password via ${firebasePhoneVerified ? 'Firebase SMS OTP' : 'OTP'} and unlocked account (${updatedUser.email} | Mobile: ${updatedUser.phone || 'N/A'}).`,
       'user',
       updatedUser.id
     );
@@ -1758,6 +1985,7 @@ async function startServer() {
 
     return res.json({
       success: true,
+      verifiedVia: firebasePhoneVerified ? 'firebase_sms' : 'backend_otp',
       email: updatedUser.email,
       phone: updatedUser.phone,
       message: 'Your new password has been saved in the backend and your account is unlocked! Returning to Login page...',

@@ -5,6 +5,10 @@ import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import {
   signInWithGoogleAndSyncToFirestore,
   syncReaderAccountToFirestore,
+  sendFirebaseSmsOtp,
+  verifyFirebaseSmsOtp,
+  clearRecaptchaVerifier,
+  ConfirmationResult,
 } from '../firebase';
 import {
   DEFAULT_GST_SETTINGS,
@@ -252,7 +256,6 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [resetCountryCode, setResetCountryCode] = useState('+91');
   const [resetPhone, setResetPhone] = useState('');
   const [resetOtp, setResetOtp] = useState('');
-  const [resetSandboxOtp, setResetSandboxOtp] = useState<string | null>(null);
   const [resetStep, setResetStep] = useState<'request_otp' | 'verify_otp' | 'set_new_password'>('request_otp');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
@@ -269,9 +272,20 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
   const [otp, setOtp] = useState('');
   const [sandboxOtp, setSandboxOtp] = useState<string | null>(null);
+  const [firebaseRegConfirmation, setFirebaseRegConfirmation] = useState<ConfirmationResult | null>(null);
+  const [firebaseResetConfirmation, setFirebaseResetConfirmation] = useState<ConfirmationResult | null>(null);
+  const [verifiedResetPhoneIdToken, setVerifiedResetPhoneIdToken] = useState<string | null>(null);
+  const [smsNotice, setSmsNotice] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSuccess, setAuthSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      clearRecaptchaVerifier('firebase-recaptcha-reader');
+      clearRecaptchaVerifier('firebase-recaptcha-reset');
+    };
+  }, []);
 
   // Profile edit state when logged in
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -601,7 +615,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setResetCountryCode(prefillCountryCode || loginCountryCode || regCountryCode || '+91');
     setResetPhone((prefillPhone ?? loginPhone).trim() || regPhone.trim());
     setResetOtp('');
-    setResetSandboxOtp(null);
+    setFirebaseResetConfirmation(null);
+    setVerifiedResetPhoneIdToken(null);
+    setSmsNotice(null);
     setNewPassword('');
     setConfirmNewPassword('');
     setResetStep('request_otp');
@@ -619,6 +635,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    setSmsNotice(null);
+    setVerifiedResetPhoneIdToken(null);
     const fullResetPhone = resetPhone.trim()
       ? formatPhoneWithCountry(resetPhone, resetCountryCode)
       : '';
@@ -630,21 +648,46 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           email: resetEmail.trim(),
           phone: fullResetPhone,
           countryCode: resetCountryCode,
+          smsChannel: 'firebase',
         }),
       });
       const data = await res.json();
-      setAuthLoading(false);
-      if (res.ok) {
-        if (data.email && !resetEmail.trim()) setResetEmail(data.email);
-        if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
-        setResetSandboxOtp(data.devOtpHint || null);
-        setResetStep('verify_otp');
-        setAuthSuccess(
-          data.message || 'A 6-digit OTP has been sent to your registered Gmail and Global Mobile Number.'
-        );
-      } else {
+      if (!res.ok) {
+        setAuthLoading(false);
         setAuthError(data.error || 'Could not send password reset OTP.');
+        return;
       }
+
+      if (data.email && !resetEmail.trim()) setResetEmail(data.email);
+      if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
+
+      const targetPhoneForSms = (data.phone || fullResetPhone || '').trim();
+      let fbSmsMsg = '';
+      if (targetPhoneForSms) {
+        const fbSms = await sendFirebaseSmsOtp(
+          targetPhoneForSms,
+          'firebase-recaptcha-reset',
+          data.countryCode || resetCountryCode
+        );
+        if (fbSms.sent && fbSms.confirmationResult) {
+          setFirebaseResetConfirmation(fbSms.confirmationResult);
+          fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
+          setSmsNotice(fbSmsMsg);
+        } else {
+          setFirebaseResetConfirmation(null);
+          if (fbSms.errorMessage) {
+            setSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
+          }
+        }
+      }
+
+      setAuthLoading(false);
+      setResetStep('verify_otp');
+      setAuthSuccess(
+        fbSmsMsg
+          ? `${fbSmsMsg} Backup OTP also emailed to ${data.email || resetEmail.trim()}.`
+          : data.message || 'A 6-digit OTP has been sent to your registered Gmail and Global Mobile Number.'
+      );
     } catch (err: any) {
       setAuthLoading(false);
       setAuthError(err.message || 'Network error');
@@ -654,7 +697,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const handleVerifyResetOtpStep = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetOtp.trim()) {
-      setAuthError('Please enter the 6-digit OTP sent to your Gmail or Global Mobile Number.');
+      setAuthError('Please enter the 6-digit OTP sent to your Global Mobile Number or Gmail.');
       return;
     }
     setAuthLoading(true);
@@ -664,9 +707,22 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       ? formatPhoneWithCountry(resetPhone, resetCountryCode)
       : '';
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      let fbVerifyError: string | null = null;
+      if (firebaseResetConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseResetConfirmation, resetOtp.trim());
+        if (fbVerify.verified && fbVerify.idToken) {
+          headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+          setVerifiedResetPhoneIdToken(fbVerify.idToken);
+          setFirebaseResetConfirmation(null);
+        } else {
+          fbVerifyError = fbVerify.error || null;
+        }
+      }
+
       const res = await fetch('/api/auth/verify-reset-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: resetEmail.trim(),
           phone: fullResetPhone,
@@ -678,9 +734,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setAuthLoading(false);
       if (res.ok && data.verified) {
         setResetStep('set_new_password');
-        setAuthSuccess('OTP verified! Please enter your New Password and Confirm Password below.');
+        setAuthSuccess(
+          data.verifiedVia === 'firebase_sms'
+            ? 'Firebase SMS OTP verified! Please enter your New Password and Confirm Password below.'
+            : 'OTP verified! Please enter your New Password and Confirm Password below.'
+        );
       } else {
-        setAuthError(data.error || 'Invalid OTP. Please check and try again.');
+        setAuthError(fbVerifyError || data.error || 'Invalid OTP. Please check and try again.');
       }
     } catch (err: any) {
       setAuthLoading(false);
@@ -705,9 +765,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       ? formatPhoneWithCountry(resetPhone, resetCountryCode)
       : '';
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (verifiedResetPhoneIdToken) {
+        headers['Authorization'] = `Bearer ${verifiedResetPhoneIdToken}`;
+      }
       const res = await fetch('/api/auth/reset-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: resetEmail.trim(),
           phone: fullResetPhone,
@@ -721,6 +785,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       setAuthLoading(false);
       if (res.ok && data.success) {
         // Unlock local login state and return to Returning Customer Login page
+        setVerifiedResetPhoneIdToken(null);
+        setFirebaseResetConfirmation(null);
+        setSmsNotice(null);
         setIsAccountLocked(false);
         setLockedUntilIso(null);
         setRemainingAttempts(3);
@@ -824,6 +891,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
+    setSmsNotice(null);
     const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === regCountryCode);
     const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
     try {
@@ -844,11 +912,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           confirmPassword: regConfirmPassword,
           notifyGmail,
           notifyMobile,
+          smsChannel: 'firebase',
           role: 'reader',
         }),
       });
       const data = await res.json();
-      setAuthLoading(false);
       if (res.ok) {
         if (data.user) {
           await syncReaderAccountToFirestore({
@@ -865,11 +933,35 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           setWelcomeEmailNotice(data.welcomeEmail);
         }
         setSandboxOtp(data.devOtpHint || null);
+
+        let fbSmsMsg = '';
+        if (notifyMobile && fullRegPhone) {
+          const fbSms = await sendFirebaseSmsOtp(
+            fullRegPhone,
+            'firebase-recaptcha-reader',
+            regCountryCode
+          );
+          if (fbSms.sent && fbSms.confirmationResult) {
+            setFirebaseRegConfirmation(fbSms.confirmationResult);
+            fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
+            setSmsNotice(fbSmsMsg);
+          } else {
+            setFirebaseRegConfirmation(null);
+            if (fbSms.errorMessage) {
+              setSmsNotice(`${fbSms.errorMessage} Backup OTP sent to ${regEmail.trim()} via Gmail SMTP.`);
+            }
+          }
+        }
+
+        setAuthLoading(false);
         setAuthSuccess(
-          `Welcome to Aathirai_Comic! Account, DOB (${registerDobResult.dob}), & Global Mobile (${fullRegPhone}) stored securely in backend database. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
+          fbSmsMsg
+            ? `Welcome to Aathirai_Comic! ${fbSmsMsg} Confirmation email also sent to ${regEmail.trim()}. Please verify OTP below.`
+            : `Welcome to Aathirai_Comic! Account, DOB (${registerDobResult.dob}), & Global Mobile (${fullRegPhone}) stored securely in backend database. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
         );
         setAuthTab('verify-otp');
       } else {
+        setAuthLoading(false);
         setAuthError(data.error || 'Registration failed');
       }
     } catch (err: any) {
@@ -891,6 +983,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
     try {
       const headers = await getAuthHeaders();
+      let fbVerifyError: string | null = null;
+      if (firebaseRegConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseRegConfirmation, otp.trim());
+        if (fbVerify.verified && fbVerify.idToken) {
+          headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+          setFirebaseRegConfirmation(null);
+        } else {
+          fbVerifyError = fbVerify.error || null;
+        }
+      }
+
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers,
@@ -909,6 +1012,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       const data = await res.json();
       setAuthLoading(false);
       if (res.ok) {
+        setSmsNotice(null);
         await login(regEmail.trim() || fullRegPhone, {
           phone: fullRegPhone || undefined,
           countryCode: regCountryCode,
@@ -922,7 +1026,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         });
         setViewSection('profile_dashboard');
       } else {
-        setAuthError(data.error || 'Invalid OTP');
+        setAuthError(fbVerifyError || data.error || 'Invalid OTP');
       }
     } catch (err: any) {
       setAuthLoading(false);
@@ -1271,6 +1375,10 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 </button>
               </div>
 
+              {/* Invisible Firebase reCAPTCHA containers for SMS OTP */}
+              <div id="firebase-recaptcha-reader" />
+              <div id="firebase-recaptcha-reset" />
+
               {authError && (
                 <div className="mb-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -1282,6 +1390,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                 <div className="mb-4 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 shrink-0" />
                   <span>{authSuccess}</span>
+                </div>
+              )}
+
+              {smsNotice && (authTab === 'verify-otp' || authTab === 'change-password') && (
+                <div className="mb-4 p-3 rounded-xl bg-sky-500/10 border border-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-medium flex items-start gap-2">
+                  <Phone className="w-4 h-4 shrink-0 mt-0.5 text-sky-500" />
+                  <span>{smsNotice}</span>
                 </div>
               )}
 
@@ -1962,23 +2077,6 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       ← Back to Login
                     </button>
                   </div>
-
-                  {resetSandboxOtp && (resetStep === 'verify_otp' || resetStep === 'set_new_password') && (
-                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between">
-                      <span>
-                        Password Reset OTP Sent to Gmail &amp; Mobile: <strong className="font-mono text-sm">{resetSandboxOtp}</strong>
-                      </span>
-                      {resetStep === 'verify_otp' && (
-                        <button
-                          type="button"
-                          onClick={() => setResetOtp(resetSandboxOtp)}
-                          className="underline font-bold cursor-pointer"
-                        >
-                          Auto-fill OTP
-                        </button>
-                      )}
-                    </div>
-                  )}
 
                   {/* Step A: Enter Gmail / Global Mobile Number to Request OTP */}
                   {resetStep === 'request_otp' && (

@@ -14,7 +14,15 @@ import {
   AdPlacementRequest,
 } from '../types/comic';
 import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
-import { firebaseConfig, syncAllPlatformDataToFirestore, syncGstSettingsToFirestore } from '../firebase';
+import {
+  firebaseConfig,
+  syncAllPlatformDataToFirestore,
+  syncGstSettingsToFirestore,
+  sendFirebaseSmsOtp,
+  verifyFirebaseSmsOtp,
+  clearRecaptchaVerifier,
+  ConfirmationResult,
+} from '../firebase';
 import { upsertComicAndEpisodesInFirestore, upsertAdRequestInFirestore, fetchAdRequestsFromFirestore } from '../services/firestoreBackend';
 import {
   INDIAN_STATES_AND_UTS,
@@ -211,6 +219,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [otpSuccessMessage, setOtpSuccessMessage] = useState<string | null>(null);
   const [mockOtpPreview, setMockOtpPreview] = useState<string | null>(null);
   const [otpDestinationMasked, setOtpDestinationMasked] = useState<string>('');
+  const [firebaseAdminConfirmation, setFirebaseAdminConfirmation] = useState<ConfirmationResult | null>(null);
+  const [adminSmsNotice, setAdminSmsNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      clearRecaptchaVerifier('firebase-recaptcha-admin');
+    };
+  }, []);
 
   // Delete Comic Confirmation Modal State
   const [comicToDelete, setComicToDelete] = useState<Comic | null>(null);
@@ -338,6 +354,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setOtpLoading(true);
     setOtpError(null);
     setOtpSuccessMessage(null);
+    setAdminSmsNotice(null);
 
     try {
       const res = await fetch('/api/admin-auth/request-otp', {
@@ -346,20 +363,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         body: JSON.stringify({
           credential: adminCredentialInput.trim(),
           channel: adminChannelChoice,
+          smsChannel: adminChannelChoice === 'sms' ? 'firebase' : undefined,
         }),
       });
 
       const data = await res.json();
-      setOtpLoading(false);
 
       if (!res.ok) {
+        setOtpLoading(false);
         setOtpError(data.error || 'Access Denied: Unrecognized credentials.');
         return;
       }
 
+      let finalMessage = data.message;
+      if (adminChannelChoice === 'sms') {
+        const fbSms = await sendFirebaseSmsOtp('+91 8610950780', 'firebase-recaptcha-admin', '+91');
+        if (fbSms.sent && fbSms.confirmationResult) {
+          setFirebaseAdminConfirmation(fbSms.confirmationResult);
+          setAdminSmsNotice('Real SMS OTP sent to +91 ******0780 via Firebase Phone Auth.');
+          finalMessage = `6-digit SMS OTP dispatched via Firebase Phone Auth to ${data.destinationMasked || '+91 ******0780'}. Backup OTP also sent to admin Gmail.`;
+        } else {
+          setFirebaseAdminConfirmation(null);
+          if (fbSms.errorMessage) {
+            setAdminSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
+          }
+        }
+      } else {
+        setFirebaseAdminConfirmation(null);
+      }
+
+      setOtpLoading(false);
       setOtpStep('enter_otp');
       setOtpDestinationMasked(data.destinationMasked || '');
-      setOtpSuccessMessage(data.message);
+      setOtpSuccessMessage(finalMessage);
       setMockOtpPreview(data.devOtpHint || null);
     } catch (err: any) {
       setOtpLoading(false);
@@ -376,9 +412,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setOtpError(null);
 
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      let fbVerifyError: string | null = null;
+      if (firebaseAdminConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseAdminConfirmation, adminOtpInput.trim());
+        if (fbVerify.verified && fbVerify.idToken) {
+          headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+          setFirebaseAdminConfirmation(null);
+        } else {
+          fbVerifyError = fbVerify.error || null;
+        }
+      }
+
       const res = await fetch('/api/admin-auth/verify-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           credential: adminCredentialInput.trim(),
           otp: adminOtpInput.trim(),
@@ -389,10 +437,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setOtpLoading(false);
 
       if (!res.ok) {
-        setOtpError(data.error || 'Invalid 6-digit verification code.');
+        setOtpError(fbVerifyError || data.error || 'Invalid 6-digit verification code.');
         return;
       }
 
+      setAdminSmsNotice(null);
       sessionStorage.removeItem('aathirai_admin_unlocked');
       setIsAdminUnlocked(true);
       if (data.user) {
@@ -420,6 +469,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setOtpError(null);
     setOtpSuccessMessage(null);
     setMockOtpPreview(null);
+    setFirebaseAdminConfirmation(null);
+    setAdminSmsNotice(null);
   };
 
   // Comic deletion handler with modal confirmation
@@ -1203,6 +1254,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             For platform integrity, administrator access is protected with 2-Factor Authentication (OTP). Enter your registered admin credentials to receive your verification code.
           </p>
 
+          {/* Invisible Firebase reCAPTCHA container for Admin SMS 2FA */}
+          <div id="firebase-recaptcha-admin" />
+
           {otpError && (
             <div className="p-3.5 mb-5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2">
               <ShieldAlert className="w-4 h-4 shrink-0" />
@@ -1214,6 +1268,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="p-3.5 mb-5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{otpSuccessMessage}</span>
+            </div>
+          )}
+
+          {adminSmsNotice && (
+            <div className="p-3.5 mb-5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-medium flex items-start gap-2">
+              <Phone className="w-4 h-4 shrink-0 mt-0.5 text-sky-500" />
+              <span>{adminSmsNotice}</span>
             </div>
           )}
 
