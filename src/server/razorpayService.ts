@@ -305,7 +305,7 @@ export async function findCapturedRazorpayPaymentForCustomer(params: {
   }
 
   try {
-    // 2. Scan recent captured payments from Razorpay Payments API
+    // 2. Scan recent captured payments from Razorpay Payments API (match by customer Gmail or Mobile Number)
     const paymentsRes = await fetch('https://api.razorpay.com/v1/payments?count=100', {
       headers: { Authorization: authHeader },
       signal: AbortSignal.timeout(8000),
@@ -314,27 +314,150 @@ export async function findCapturedRazorpayPaymentForCustomer(params: {
     if (paymentsRes.ok) {
       const json = (await paymentsRes.json().catch(() => ({}))) as { items?: any[] };
       const items = Array.isArray(json.items) ? json.items : [];
-      const matching = items.find((item) => {
-        if (!isEntityPaidAndActive(item)) return false;
-        const itemEmail = String(item.email || item.notes?.email || '').trim().toLowerCase();
-        const itemPhone = String(item.contact || item.notes?.phone || '').trim();
-        const emailOk = Boolean(cleanEmail && itemEmail && itemEmail === cleanEmail);
-        const phoneOk = Boolean(cleanPhone && itemPhone && phonesTailMatch(itemPhone, cleanPhone));
-        return emailOk || phoneOk;
-      });
+      const activeMatches = items
+        .filter((item) => {
+          if (!isEntityPaidAndActive(item)) return false;
+          const itemEmails = [
+            item.email,
+            item.notes?.email,
+            item.notes?.customer_email,
+          ]
+            .filter(Boolean)
+            .map((e: any) => String(e).trim().toLowerCase());
+          const itemPhones = [
+            item.contact,
+            item.notes?.phone,
+            item.notes?.customer_phone,
+            item.notes?.mobile,
+          ]
+            .filter(Boolean)
+            .map((p: any) => String(p).trim());
 
-      if (matching) {
+          const emailOk = Boolean(cleanEmail && itemEmails.includes(cleanEmail));
+          const phoneOk = Boolean(
+            cleanPhone && itemPhones.some((p) => phonesTailMatch(p, cleanPhone))
+          );
+          return emailOk || phoneOk;
+        })
+        .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0));
+
+      if (activeMatches.length > 0) {
         return {
           checkedRazorpayApi: true,
           configuredWithRealKeys: true,
           verified: true,
           source: 'razorpay_api',
-          payment: toVerifiedPaymentObject(matching),
+          payment: toVerifiedPaymentObject(activeMatches[0]),
         };
       }
     }
 
-    // 3. Also check known Razorpay Subscription Invoices for external rzp.io payment links
+    // 3. Check active Razorpay Subscriptions (`/v1/subscriptions`) matching customer Gmail or Mobile Number
+    const customerCache = new Map<string, { email?: string; contact?: string } | null>();
+    const fetchCustomerDetails = async (customerId: string) => {
+      if (customerCache.has(customerId)) return customerCache.get(customerId) || null;
+      try {
+        const custRes = await fetch(
+          `https://api.razorpay.com/v1/customers/${encodeURIComponent(customerId)}`,
+          {
+            headers: { Authorization: authHeader },
+            signal: AbortSignal.timeout(5000),
+          }
+        );
+        if (!custRes.ok) {
+          customerCache.set(customerId, null);
+          return null;
+        }
+        const custData = (await custRes.json().catch(() => null)) as any;
+        const details = custData
+          ? {
+              email: custData.email ? String(custData.email).trim().toLowerCase() : undefined,
+              contact: custData.contact ? String(custData.contact).trim() : undefined,
+            }
+          : null;
+        customerCache.set(customerId, details);
+        return details;
+      } catch {
+        customerCache.set(customerId, null);
+        return null;
+      }
+    };
+
+    try {
+      const subsRes = await fetch('https://api.razorpay.com/v1/subscriptions?count=100', {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (subsRes.ok) {
+        const subsJson = (await subsRes.json().catch(() => ({}))) as { items?: any[] };
+        const subs = Array.isArray(subsJson.items) ? subsJson.items : [];
+        const activeSubs = subs.filter((sub) => {
+          const st = String(sub.status || '').toLowerCase();
+          if (st !== 'active' && st !== 'authenticated') return false;
+          const currentEndSec = Number(sub.current_end || sub.end_at || 0);
+          if (currentEndSec > 0 && currentEndSec * 1000 <= Date.now()) return false;
+          if (Number(sub.paid_count || 0) <= 0 && st !== 'active') return false;
+          return true;
+        });
+
+        let customerLookups = 0;
+        for (const sub of activeSubs) {
+          const noteEmail = String(sub.notes?.email || sub.notes?.customer_email || '').trim().toLowerCase();
+          const notePhone = String(sub.notes?.phone || sub.notes?.customer_phone || sub.notes?.mobile || '').trim();
+          let emailOk = Boolean(cleanEmail && noteEmail && noteEmail === cleanEmail);
+          let phoneOk = Boolean(cleanPhone && notePhone && phonesTailMatch(notePhone, cleanPhone));
+
+          if (!emailOk && !phoneOk && sub.customer_id && customerLookups < 15) {
+            customerLookups++;
+            const cust = await fetchCustomerDetails(String(sub.customer_id));
+            if (cust) {
+              emailOk = Boolean(cleanEmail && cust.email && cust.email === cleanEmail);
+              phoneOk = Boolean(cleanPhone && cust.contact && phonesTailMatch(cust.contact, cleanPhone));
+            }
+          }
+
+          if (emailOk || phoneOk) {
+            const plan = resolvePlanFromRazorpayEntity({
+              plan_id: sub.plan_id,
+              subscription_id: sub.id,
+            });
+            const startSec = Number(sub.current_start || sub.charge_at || sub.created_at || 0);
+            const paidMs = startSec > 0 ? startSec * 1000 : Date.now();
+            const durationMs = plan === '6_months' ? 180 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+            const endSec = Number(sub.current_end || 0);
+            const expiresMs = endSec > 0 ? endSec * 1000 : paidMs + durationMs;
+            if (expiresMs > Date.now()) {
+              const amountPaise = plan === '6_months' ? 24900 : 4900;
+              return {
+                checkedRazorpayApi: true,
+                configuredWithRealKeys: true,
+                verified: true,
+                source: 'razorpay_api',
+                payment: {
+                  paymentId: String(sub.id),
+                  subscriptionId: String(sub.id),
+                  status: 'captured',
+                  captured: true,
+                  amountPaise,
+                  amountInr: Number((amountPaise / 100).toFixed(2)),
+                  currency: 'INR',
+                  email: cleanEmail || noteEmail || undefined,
+                  contact: cleanPhone || notePhone || undefined,
+                  method: `Razorpay Subscription (${sub.id})`,
+                  plan,
+                  paidAt: new Date(paidMs).toISOString(),
+                  expiresAt: new Date(expiresMs).toISOString(),
+                },
+              };
+            }
+          }
+        }
+      }
+    } catch {
+      // continue checking known subscription invoices below
+    }
+
+    // 4. Also check known Razorpay Subscription Invoices for external rzp.io payment links
     for (const subId of KNOWN_SUBSCRIPTION_IDS) {
       try {
         const invRes = await fetch(

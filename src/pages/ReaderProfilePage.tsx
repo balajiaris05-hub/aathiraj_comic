@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Comic, Purchase, GstBusinessSettings } from '../types/comic';
-import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import {
   signInWithGoogleAndSyncToFirestore,
   syncReaderAccountToFirestore,
@@ -40,7 +39,13 @@ import {
   AlertTriangle,
   Download,
   Camera,
+  ExternalLink,
 } from 'lucide-react';
+
+const RAZORPAY_PROFILE_PLAN_LINKS = {
+  '1_month': 'https://rzp.io/rzp/eMyTbngF',
+  '6_months': 'https://rzp.io/rzp/E077NNn',
+} as const;
 
 interface ReaderProfilePageProps {
   comics: Comic[];
@@ -252,10 +257,23 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const regAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Change / Forgot Password state
+  // Change / Forgot Password state (Single unified Gmail / Mobile input + DB check + 30s Resend timer)
+  const [resetCredential, setResetCredential] = useState('');
+  const [resetMethod, setResetMethod] = useState<'gmail' | 'mobile'>('gmail');
   const [resetEmail, setResetEmail] = useState('');
   const [resetCountryCode, setResetCountryCode] = useState('+91');
   const [resetPhone, setResetPhone] = useState('');
+  const [resetDbVerified, setResetDbVerified] = useState<'verified' | 'not_found' | null>(null);
+  const [resetVerifiedRecord, setResetVerifiedRecord] = useState<{
+    name?: string;
+    email?: string;
+    phone?: string;
+    countryCode?: string;
+    userId?: string;
+  } | null>(null);
+  const [resetTargetChannel, setResetTargetChannel] = useState<'email' | 'sms'>('email');
+  const [resetResendCooldown, setResetResendCooldown] = useState(0);
+  const resetOtpInputRef = useRef<HTMLInputElement | null>(null);
   const [resetOtp, setResetOtp] = useState('');
   const [resetStep, setResetStep] = useState<'request_otp' | 'verify_otp' | 'set_new_password'>('request_otp');
   const [newPassword, setNewPassword] = useState('');
@@ -320,6 +338,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     }
   }, [authTab, resetStep, mobileOtpSent, mobileOtpVerified]);
 
+  useEffect(() => {
+    if (resetResendCooldown <= 0) return;
+    const timer = window.setTimeout(() => {
+      setResetResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [resetResendCooldown]);
+
   // Profile edit state when logged in
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editName, setEditName] = useState(user?.name || '');
@@ -341,18 +367,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [lastVerifiedAt, setLastVerifiedAt] = useState<string>(new Date().toLocaleTimeString());
   const [purchases, setPurchases] = useState<Purchase[]>([]);
 
-  // Checkout Modal for 1 Month (₹49) or 6 Months (₹249)
-  const [checkoutPlan, setCheckoutPlan] = useState<{
-    open: boolean;
-    planId: '1_month' | '6_months';
-    title: string;
-    amountInr: number;
-  }>({
-    open: false,
-    planId: '1_month',
-    title: '1 Month Reader Premium Pass (₹49)',
-    amountInr: 49,
-  });
+  // Real-time Razorpay Payment verification state for profile plans
+  const [awaitingPlanPaymentInfo, setAwaitingPlanPaymentInfo] = useState<string | null>(null);
+  const [profileRazorpayId, setProfileRazorpayId] = useState('');
 
   useEffect(() => {
     if (user) {
@@ -644,9 +661,25 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   };
 
   const openChangePasswordTab = (prefillEmail?: string, prefillPhone?: string, prefillCountryCode?: string) => {
-    setResetEmail((prefillEmail ?? credential).trim() || regEmail.trim());
+    const cleanPrefillEmail = (prefillEmail || '').trim();
+    const cleanPrefillPhone = (prefillPhone || '').trim();
+    const loginCred = credential.trim();
+    const useMobileInitial =
+      (!cleanPrefillEmail && Boolean(cleanPrefillPhone)) ||
+      (loginMethod === 'mobile' && loginCred && !loginCred.includes('@'));
+    const initialCred = useMobileInitial
+      ? cleanPrefillPhone || loginCred || regPhone.trim()
+      : cleanPrefillEmail || (loginCred.includes('@') ? loginCred : '') || regEmail.trim();
+
+    setResetMethod(useMobileInitial ? 'mobile' : 'gmail');
+    setResetCredential(initialCred);
+    setResetEmail(cleanPrefillEmail || (initialCred.includes('@') ? initialCred : ''));
     setResetCountryCode(prefillCountryCode || loginCountryCode || regCountryCode || '+91');
-    setResetPhone((prefillPhone ?? loginPhone).trim() || regPhone.trim());
+    setResetPhone(cleanPrefillPhone || (!initialCred.includes('@') ? initialCred : ''));
+    setResetDbVerified(null);
+    setResetVerifiedRecord(null);
+    setResetTargetChannel(useMobileInitial ? 'sms' : 'email');
+    setResetResendCooldown(0);
     setResetOtp('');
     setFirebaseResetConfirmation(null);
     setVerifiedResetPhoneIdToken(null);
@@ -659,72 +692,201 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     setAuthTab('change-password');
   };
 
-  const handleRequestPasswordResetOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!resetEmail.trim() && !resetPhone.trim()) {
-      setAuthError('Please enter your registered Gmail address or Global Mobile Number to receive the OTP.');
+  const dispatchPasswordResetOtp = async (isResend: boolean) => {
+    if (isResend && resetResendCooldown > 0) {
       return;
     }
+
+    const { isEmail, emailValue, fullPhone } = parseUnifiedLoginInput(
+      resetCredential,
+      resetMethod,
+      resetCountryCode
+    );
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (isEmail) {
+      if (!emailValue || !emailRegex.test(emailValue)) {
+        setAuthError('Please enter a valid registered Gmail address (or switch to Mobile Number).');
+        return;
+      }
+    } else if (!fullPhone) {
+      setAuthError('Please enter a valid registered Mobile Number (or switch to Gmail).');
+      return;
+    }
+
+    const channel: 'email' | 'sms' = isEmail ? 'email' : 'sms';
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccess(null);
     setSmsNotice(null);
     setVerifiedResetPhoneIdToken(null);
-    const fullResetPhone = resetPhone.trim()
-      ? formatPhoneWithCountry(resetPhone, resetCountryCode)
-      : '';
+
     try {
-      const res = await fetch('/api/auth/forgot-password', {
+      // Step 1: Verify the entered single input is stored in backend & database BEFORE sending OTP
+      const verifyRes = await fetch('/api/auth/verify-identity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: resetEmail.trim(),
-          phone: fullResetPhone,
+          credential: resetCredential.trim(),
+          email: emailValue,
+          phone: fullPhone,
           countryCode: resetCountryCode,
-          smsChannel: 'firebase',
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const verifyData = await verifyRes.json();
+
+      if (!verifyRes.ok || !verifyData.verified) {
         setAuthLoading(false);
-        setAuthError(data.error || 'Could not send password reset OTP.');
+        setResetDbVerified('not_found');
+        setResetVerifiedRecord(null);
+        setAuthError(
+          verifyData.error ||
+            (channel === 'email'
+              ? `Gmail "${emailValue}" is not stored in the backend database. Please check or register first.`
+              : `Mobile Number "${fullPhone}" is not stored in the backend database. Please check or register first.`)
+        );
         return;
       }
 
-      if (data.email && !resetEmail.trim()) setResetEmail(data.email);
-      if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
+      const verifiedEmail = (verifyData.email || emailValue || '').trim();
+      const verifiedPhone = (verifyData.phone || fullPhone || '').trim();
+      const verifiedCode = (verifyData.countryCode || resetCountryCode || '+91').trim();
+      setResetDbVerified('verified');
+      setResetVerifiedRecord({
+        name: verifyData.name,
+        email: verifiedEmail,
+        phone: verifiedPhone,
+        countryCode: verifiedCode,
+        userId: verifyData.userId,
+      });
+      setResetEmail(verifiedEmail);
+      setResetPhone(verifiedPhone);
+      setResetCountryCode(verifiedCode);
 
-      const targetPhoneForSms = (data.phone || fullResetPhone || '').trim();
-      let fbSmsMsg = '';
-      if (targetPhoneForSms) {
-        const fbSms = await sendFirebaseSmsOtp(
-          targetPhoneForSms,
-          'firebase-recaptcha-reset',
-          data.countryCode || resetCountryCode
-        );
-        if (fbSms.sent && fbSms.confirmationResult) {
-          setFirebaseResetConfirmation(fbSms.confirmationResult);
-          fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
-          setSmsNotice(fbSmsMsg);
-        } else {
-          setFirebaseResetConfirmation(null);
-          if (fbSms.errorMessage) {
-            setSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
-          }
+      // Step 2: Send OTP specifically to the entered & verified input
+      if (channel === 'email') {
+        const res = await fetch('/api/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            credential: resetCredential.trim(),
+            email: emailValue || verifiedEmail,
+            targetChannel: 'email',
+          }),
+        });
+        const data = await res.json();
+        setAuthLoading(false);
+
+        if (!res.ok || !data.emailDelivered) {
+          setAuthError(data.error || 'Could not send OTP to this Gmail address.');
+          return;
         }
+
+        setFirebaseResetConfirmation(null);
+        setResetTargetChannel('email');
+        if (isResend) setResetOtp('');
+        setResetStep('verify_otp');
+        setResetResendCooldown(30);
+        setAuthSuccess(
+          data.message ||
+            `Verified in Backend Database! 6-digit OTP ${isResend ? 'resent' : 'sent'} to Gmail (${emailValue || verifiedEmail}).`
+        );
+        setTimeout(() => {
+          resetOtpInputRef.current?.focus();
+        }, 40);
+        return;
       }
 
+      // channel === 'sms'
+      const smsInitRes = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: resetCredential.trim(),
+          phone: fullPhone || verifiedPhone,
+          countryCode: resetCountryCode,
+          targetChannel: 'sms',
+          smsChannel: 'firebase',
+        }),
+      });
+      const smsInitData = await smsInitRes.json();
+      if (!smsInitRes.ok) {
+        setAuthLoading(false);
+        setAuthError(smsInitData.error || 'Could not send SMS OTP to this mobile number.');
+        return;
+      }
+
+      const targetSmsNumber = (smsInitData.phone || fullPhone || verifiedPhone).trim();
+      const targetSmsCountry = smsInitData.countryCode || resetCountryCode;
+      const fbSms = await sendFirebaseSmsOtp(
+        targetSmsNumber,
+        'firebase-recaptcha-reset',
+        targetSmsCountry
+      );
+
+      if (fbSms.sent && fbSms.confirmationResult) {
+        setAuthLoading(false);
+        setFirebaseResetConfirmation(fbSms.confirmationResult);
+        setResetTargetChannel('sms');
+        if (isResend) setResetOtp('');
+        setResetStep('verify_otp');
+        setResetResendCooldown(30);
+        const smsMsg = `Verified in Backend Database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${fbSms.phoneE164}.`;
+        setSmsNotice(smsMsg);
+        setAuthSuccess(smsMsg);
+        setTimeout(() => {
+          resetOtpInputRef.current?.focus();
+        }, 40);
+        return;
+      }
+
+      // Attempt configured backend SMS provider if Firebase SMS failed
+      const backendSmsRes = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: resetCredential.trim(),
+          phone: targetSmsNumber,
+          countryCode: targetSmsCountry,
+          targetChannel: 'sms',
+          smsChannel: 'backend',
+        }),
+      });
+      const backendSmsData = await backendSmsRes.json();
       setAuthLoading(false);
-      setResetStep('verify_otp');
-      setAuthSuccess(
-        fbSmsMsg
-          ? `${fbSmsMsg} Backup OTP also emailed to ${data.email || resetEmail.trim()}.`
-          : data.message || 'A 6-digit OTP has been sent to your registered Gmail and Global Mobile Number.'
+
+      if (backendSmsRes.ok && backendSmsData.smsDelivered) {
+        setFirebaseResetConfirmation(null);
+        setResetTargetChannel('sms');
+        if (isResend) setResetOtp('');
+        setResetStep('verify_otp');
+        setResetResendCooldown(30);
+        const smsMsg =
+          backendSmsData.message ||
+          `Verified in Backend Database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${targetSmsNumber}.`;
+        setSmsNotice(smsMsg);
+        setAuthSuccess(smsMsg);
+        setTimeout(() => {
+          resetOtpInputRef.current?.focus();
+        }, 40);
+        return;
+      }
+
+      setFirebaseResetConfirmation(null);
+      setAuthError(
+        fbSms.errorMessage ||
+          backendSmsData.error ||
+          'Could not deliver SMS OTP to this mobile number. Please check your number or use your registered Gmail.'
       );
     } catch (err: any) {
       setAuthLoading(false);
-      setAuthError(err.message || 'Network error');
+      setAuthError(err.message || 'Network error while verifying database and sending OTP.');
     }
+  };
+
+  const handleRequestPasswordResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await dispatchPasswordResetOtp(false);
   };
 
   const handleVerifyResetOtpStep = async (e: React.FormEvent) => {
@@ -766,6 +928,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       const data = await res.json();
       setAuthLoading(false);
       if (res.ok && data.verified) {
+        setResetResendCooldown(0);
         setResetStep('set_new_password');
         setAuthSuccess(
           data.verifiedVia === 'firebase_sms'
@@ -1575,13 +1738,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     {(authTab === 'login'
                       ? verifiedCustomerEmail || (credential.includes('@') ? credential : '')
                       : authTab === 'change-password'
-                      ? resetEmail
+                      ? resetEmail || (resetCredential.includes('@') ? resetCredential : '')
                       : regEmail) || 'Your Gmail address'}{' '}
                     &amp;{' '}
                     {(authTab === 'login'
                       ? verifiedCustomerPhone || (!credential.includes('@') && loginMethod === 'mobile' ? credential : '')
                       : authTab === 'change-password'
-                      ? resetPhone
+                      ? resetPhone || (!resetCredential.includes('@') && resetMethod === 'mobile' ? resetCredential : '')
                       : regPhone) || 'your mobile number'}{' '}
                     linked for reader account &amp; new comic alerts.
                   </p>
@@ -2439,79 +2602,162 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     </button>
                   </div>
 
-                  {/* Step A: Enter Gmail / Global Mobile Number to Request OTP */}
+                  {/* Step A: Single Unified Gmail / Mobile Number Input -> Verify Stored in Backend DB -> Send OTP */}
                   {resetStep === 'request_otp' && (
                     <form onSubmit={handleRequestPasswordResetOtp} className="space-y-4">
                       <p className="text-xs text-slate-600 dark:text-slate-400">
-                        Enter either your registered <strong>Gmail Address</strong> or your <strong>Global Mobile Number</strong> (stored in the backend database) to receive a 6-digit password recovery OTP.
+                        Enter either your registered <strong>Gmail Address</strong> or your <strong>Mobile Number</strong>. We verify that it is stored in our backend &amp; database first, then send a 6-digit OTP directly to your input.
                       </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                            Registered Gmail Address
+
+                      <div>
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                            Gmail Address or Mobile Number <span className="text-rose-500">*</span>
                           </label>
-                          <div className="relative">
-                            <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                          <div className="inline-flex rounded-lg bg-slate-200/80 dark:bg-slate-800 p-0.5 border border-slate-300 dark:border-slate-700">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setResetMethod('gmail');
+                                setResetDbVerified(null);
+                                setResetVerifiedRecord(null);
+                                setAuthError(null);
+                              }}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                                resetMethod === 'gmail'
+                                  ? 'bg-rose-600 text-white shadow-sm'
+                                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                              }`}
+                            >
+                              <Mail className="w-3 h-3" />
+                              <span>Gmail</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setResetMethod('mobile');
+                                setResetDbVerified(null);
+                                setResetVerifiedRecord(null);
+                                setAuthError(null);
+                              }}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                                resetMethod === 'mobile'
+                                  ? 'bg-rose-600 text-white shadow-sm'
+                                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                              }`}
+                            >
+                              <Phone className="w-3 h-3" />
+                              <span>Mobile Number</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex items-stretch gap-2">
+                          {resetMethod === 'mobile' && (
+                            <select
+                              aria-label="Recovery Country Code"
+                              value={resetCountryCode}
+                              onChange={(e) => {
+                                setResetCountryCode(e.target.value);
+                                setResetDbVerified(null);
+                                setResetVerifiedRecord(null);
+                              }}
+                              className="w-28 shrink-0 px-2.5 py-3 text-xs font-mono font-bold rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                            >
+                              {GLOBAL_COUNTRIES.map((c) => (
+                                <option key={`reset-${c.iso}-${c.code}`} value={c.code}>
+                                  {c.iso} ({c.code})
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <div className="relative flex-1 min-w-0">
+                            {resetMethod === 'gmail' ? (
+                              <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                            ) : (
+                              <Phone className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                            )}
                             <input
-                              type="email"
-                              required={!resetPhone.trim()}
-                              placeholder="Enter your Gmail address"
-                              value={resetEmail}
-                              onChange={(e) => setResetEmail(e.target.value)}
+                              type={resetMethod === 'gmail' ? 'text' : 'tel'}
+                              required
+                              placeholder={
+                                resetMethod === 'gmail'
+                                  ? 'Enter your registered Gmail address or mobile number'
+                                  : `Enter your registered mobile number (${resetCountryCode}) or Gmail`
+                              }
+                              value={resetCredential}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const trimmedVal = val.trim();
+                                if (trimmedVal.includes('@') || /[a-zA-Z]/.test(trimmedVal)) {
+                                  setResetMethod('gmail');
+                                } else if (/^[+\d\s\-()]{3,}$/.test(trimmedVal)) {
+                                  setResetMethod('mobile');
+                                }
+                                setResetCredential(val);
+                                setResetDbVerified(null);
+                                setResetVerifiedRecord(null);
+                                setAuthError(null);
+                              }}
                               className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                             />
                           </div>
                         </div>
 
-                        <div>
-                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                            Registered Global Mobile Number
-                          </label>
-                          <div className="flex items-stretch gap-1.5">
-                            <select
-                              aria-label="Recovery Country Code"
-                              value={resetCountryCode}
-                              onChange={(e) => setResetCountryCode(e.target.value)}
-                              className="w-36 shrink-0 px-2 py-3 text-xs font-mono font-bold rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
-                            >
-                              {GLOBAL_COUNTRIES.map((c) => (
-                                <option key={`reset-${c.iso}-${c.code}`} value={c.code}>
-                                  {c.country} ({c.code})
-                                </option>
-                              ))}
-                            </select>
-                            <input
-                              type="tel"
-                              required={!resetEmail.trim()}
-                              placeholder={`Mobile number (${resetCountryCode})`}
-                              value={resetPhone}
-                              onChange={(e) => setResetPhone(e.target.value)}
-                              className="w-full min-w-0 px-3 py-3 text-sm font-mono rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                            />
-                          </div>
-                        </div>
+                        <span className="block text-[10px] text-slate-500 mt-1.5">
+                          Single input for Gmail or Mobile Number — verified in backend &amp; database before sending OTP
+                        </span>
                       </div>
+
+                      {resetDbVerified === 'not_found' && (
+                        <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-xs font-semibold text-rose-600 dark:text-rose-400 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />
+                          <span>Not found in backend database. OTP was not sent.</span>
+                        </div>
+                      )}
 
                       <button
                         type="submit"
                         disabled={authLoading}
-                        className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
+                        className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
                       >
-                        {authLoading ? 'Sending OTP...' : 'Send Verification OTP to Mobile Number / Gmail'}
+                        {authLoading
+                          ? 'Verifying Database & Sending OTP...'
+                          : `Verify in Database & Send OTP to ${resetMethod === 'gmail' ? 'Gmail' : 'Mobile Number'}`}
                       </button>
                     </form>
                   )}
 
-                  {/* Step B: Verify OTP sent to Gmail / Mobile before changing password */}
+                  {/* Step B: Verify OTP sent to Gmail / Mobile before changing password + 30s Resend OTP */}
                   {resetStep === 'verify_otp' && (
                     <form onSubmit={handleVerifyResetOtpStep} className="space-y-4">
+                      {resetVerifiedRecord && (
+                        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 font-bold min-w-0">
+                            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
+                            <span className="truncate">
+                              DB Verified ({resetVerifiedRecord.name || 'Customer'}) · OTP sent to{' '}
+                              {resetTargetChannel === 'email'
+                                ? resetEmail || resetCredential
+                                : resetPhone || formatPhoneWithCountry(resetCredential, resetCountryCode)}
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-mono uppercase shrink-0">
+                            {resetTargetChannel === 'email' ? 'Gmail OTP' : 'SMS OTP'}
+                          </span>
+                        </div>
+                      )}
+
                       <div>
                         <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                          Enter 6-Digit OTP Sent to Gmail / Global Mobile <span className="text-rose-500">*</span>
+                          Enter 6-Digit OTP Sent to{' '}
+                          {resetTargetChannel === 'email' ? 'Gmail' : 'Mobile Number'}{' '}
+                          <span className="text-rose-500">*</span>
                         </label>
                         <div className="relative">
                           <KeyRound className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                           <input
+                            ref={resetOtpInputRef}
                             type="text"
                             name="otp"
                             inputMode="numeric"
@@ -2530,10 +2776,44 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="submit"
                         disabled={authLoading}
-                        className="w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
+                        className="w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
                       >
                         {authLoading ? 'Verifying OTP...' : 'Verify OTP to Enter New Password'}
                       </button>
+
+                      <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
+                        <button
+                          type="button"
+                          disabled={authLoading || resetResendCooldown > 0}
+                          onClick={() => dispatchPasswordResetOtp(true)}
+                          className={`w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-extrabold uppercase tracking-wider border transition-all flex items-center justify-center gap-1.5 ${
+                            authLoading || resetResendCooldown > 0
+                              ? 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                              : 'bg-white dark:bg-slate-900 border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 cursor-pointer'
+                          }`}
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${authLoading ? 'animate-spin' : ''}`} />
+                          <span>
+                            {resetResendCooldown > 0
+                              ? `Resend OTP in ${resetResendCooldown}s`
+                              : 'Resend OTP'}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setResetStep('request_otp');
+                            setResetOtp('');
+                            setResetResendCooldown(0);
+                            setAuthError(null);
+                            setAuthSuccess(null);
+                            setSmsNotice(null);
+                          }}
+                          className="text-xs font-bold text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                        >
+                          Change Gmail / Mobile Number
+                        </button>
+                      </div>
                     </form>
                   )}
 
@@ -3040,28 +3320,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={hasActivePremium}
-                      onClick={() => {
-                        if (hasActivePremium) return;
-                        setCheckoutPlan({
-                          open: true,
-                          planId: '1_month',
-                          title: '1 Month Reader Premium Pass (₹49)',
-                          amountInr: 49,
-                        });
-                      }}
-                      className={`w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors ${
-                        hasActivePremium
-                          ? user.premiumPlan === '1_month'
+                    {hasActivePremium ? (
+                      <button
+                        type="button"
+                        disabled
+                        className={`w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors ${
+                          user.premiumPlan === '1_month'
                             ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
                             : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
-                          : 'bg-rose-600 hover:bg-rose-500 text-white cursor-pointer'
-                      }`}
-                    >
-                      {hasActivePremium
-                        ? user.premiumPlan === '1_month'
+                        }`}
+                      >
+                        {user.premiumPlan === '1_month'
                           ? `✓ Active Until ${
                               user.premiumExpiresAt
                                 ? new Date(user.premiumExpiresAt).toLocaleDateString()
@@ -3071,9 +3340,24 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               user.premiumExpiresAt
                                 ? new Date(user.premiumExpiresAt).toLocaleDateString()
                                 : ''
-                            })`
-                        : 'Pay ₹49 for 1 Month Pass'}
-                    </button>
+                            })`}
+                      </button>
+                    ) : (
+                      <a
+                        href={RAZORPAY_PROFILE_PLAN_LINKS['1_month']}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() =>
+                          setAwaitingPlanPaymentInfo(
+                            `Razorpay payment page opened for 1 Month Pass (₹49). Use your registered email (${user.email}) or phone during payment, then verify status below.`
+                          )
+                        }
+                        className="w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors bg-rose-600 hover:bg-rose-500 text-white cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        <span>Subscribe 1 Month Pass — ₹49</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
                   </div>
 
                   {/* Plan 2: 6 Months ₹249 */}
@@ -3110,28 +3394,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={hasActivePremium}
-                      onClick={() => {
-                        if (hasActivePremium) return;
-                        setCheckoutPlan({
-                          open: true,
-                          planId: '6_months',
-                          title: '6 Months Reader Premium Pass (₹249)',
-                          amountInr: 249,
-                        });
-                      }}
-                      className={`w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors ${
-                        hasActivePremium
-                          ? user.premiumPlan === '6_months'
+                    {hasActivePremium ? (
+                      <button
+                        type="button"
+                        disabled
+                        className={`w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors ${
+                          user.premiumPlan === '6_months'
                             ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
                             : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
-                          : 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer'
-                      }`}
-                    >
-                      {hasActivePremium
-                        ? user.premiumPlan === '6_months'
+                        }`}
+                      >
+                        {user.premiumPlan === '6_months'
                           ? `✓ Active Until ${
                               user.premiumExpiresAt
                                 ? new Date(user.premiumExpiresAt).toLocaleDateString()
@@ -3141,11 +3414,93 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               user.premiumExpiresAt
                                 ? new Date(user.premiumExpiresAt).toLocaleDateString()
                                 : ''
-                            })`
-                        : 'Pay ₹249 for 6 Months Pass'}
-                    </button>
+                            })`}
+                      </button>
+                    ) : (
+                      <a
+                        href={RAZORPAY_PROFILE_PLAN_LINKS['6_months']}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() =>
+                          setAwaitingPlanPaymentInfo(
+                            `Razorpay payment page opened for 6 Months Pass (₹249). Use your registered email (${user.email}) or phone during payment, then verify status below.`
+                          )
+                        }
+                        className="w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        <span>Subscribe 6 Months Pass — ₹249</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
                   </div>
                 </div>
+
+                {awaitingPlanPaymentInfo && !hasActivePremium && (
+                  <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-700 dark:text-sky-300 text-xs font-semibold space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span>{awaitingPlanPaymentInfo}</span>
+                      <button
+                        type="button"
+                        onClick={handleLiveVerifyGmail}
+                        disabled={verifyingStatus}
+                        className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                      >
+                        {verifyingStatus ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
+                      </button>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-sky-500/20">
+                      <input
+                        type="text"
+                        placeholder="Optional: Paste Razorpay Payment ID (pay_...)"
+                        value={profileRazorpayId}
+                        onChange={(e) => setProfileRazorpayId(e.target.value)}
+                        className="flex-1 px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-950 border border-sky-500/30 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!profileRazorpayId.trim() || !user) return;
+                          setVerifyingStatus(true);
+                          setProfileError(null);
+                          setProfileMessage(null);
+                          try {
+                            const headers = await getAuthHeaders();
+                            const params = new URLSearchParams({
+                              userId: user.id,
+                              email: user.email,
+                              phone: user.phone || '',
+                              paymentId: profileRazorpayId.trim(),
+                            });
+                            const res = await fetch(`/api/payments/verify-access?${params.toString()}`, {
+                              cache: 'no-store',
+                              headers,
+                            });
+                            const data = await res.json();
+                            await handleLiveVerifyGmail();
+                            if (res.ok && data.hasAccess && data.hasActiveSubscription) {
+                              setAwaitingPlanPaymentInfo(null);
+                              setProfileRazorpayId('');
+                              setProfileMessage('Razorpay Payment verified & Premium Pass unlocked!');
+                            } else {
+                              setProfileError(
+                                data.razorpayError ||
+                                  `No captured Razorpay payment found yet for ID ${profileRazorpayId.trim()}.`
+                              );
+                            }
+                          } catch {
+                            setProfileError('Could not reach payment verification server.');
+                          } finally {
+                            setVerifyingStatus(false);
+                          }
+                        }}
+                        disabled={verifyingStatus || !profileRazorpayId.trim()}
+                        className="px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-sky-500 text-white dark:text-slate-950 font-extrabold text-[11px] disabled:opacity-50 cursor-pointer shrink-0"
+                      >
+                        Verify Razorpay ID
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Section 2: Paywalled Comics Instant Access Verification */}
@@ -3384,22 +3739,6 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         </>
       )}
 
-      {/* Razorpay Checkout Modal */}
-      {checkoutPlan.open && (
-        <RazorpayCheckoutModal
-          isOpen={checkoutPlan.open}
-          onClose={() => setCheckoutPlan({ ...checkoutPlan, open: false })}
-          comicId="premium_pass"
-          comicTitle="Aathirai_Comic All-Access Subscription"
-          itemTitle={checkoutPlan.title}
-          itemType="subscription"
-          subscriptionPlan={checkoutPlan.planId}
-          amountInr={checkoutPlan.amountInr}
-          onPaymentSuccess={() => {
-            handleLiveVerifyGmail();
-          }}
-        />
-      )}
     </div>
   );
 };

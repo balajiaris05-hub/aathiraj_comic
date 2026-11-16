@@ -294,17 +294,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         return;
       }
 
-      // 3. In explicit TEST MODE, authorize test order via server-side test gateway endpoint
-      if (orderMode === 'test' && orderData.testGatewayAuth) {
-        await verifyOnBackend({
-          razorpayOrderId: orderData.orderId,
-          razorpayPaymentId: orderData.testGatewayAuth.paymentId,
-          razorpaySignature: orderData.testGatewayAuth.signature,
-        });
-        return;
-      }
-
-      throw new Error('Razorpay checkout could not be initialized in the current environment.');
+      throw new Error('Live Razorpay checkout could not be initialized in the current environment.');
     } catch (err: any) {
       setIsProcessing(false);
       setError(err.message || 'Payment processing failed. Please try another method.');
@@ -331,10 +321,6 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
                   <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
                     LIVE MODE · INR
                   </span>
-                ) : paymentMode === 'test' ? (
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
-                    TEST MODE · SANDBOX
-                  </span>
                 ) : (
                   <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
                     UNCONFIGURED
@@ -357,15 +343,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           </button>
         </div>
 
-        {/* EXPLICIT TEST / UNCONFIGURED MODE BANNERS */}
-        {paymentMode === 'test' && (
-          <div className="px-6 py-2.5 bg-amber-500/15 border-b border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs font-bold flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>
-              TEST MODE ACTIVE: No real money will be charged. Transactions are recorded in the test environment with HMAC-SHA256 verification.
-            </span>
-          </div>
-        )}
+        {/* UNCONFIGURED MODE BANNER */}
 
         {paymentMode === 'unconfigured' && (
           <div className="px-6 py-3 bg-rose-500/15 border-b border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-2">

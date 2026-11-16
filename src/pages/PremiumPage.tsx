@@ -3,19 +3,10 @@ import { useAuth } from '../context/AuthContext';
 import {
   Sparkles,
   Check,
-  IndianRupee,
-  ShieldCheck,
-  Mail,
-  Phone,
   CheckCircle2,
-  Clock,
-  RefreshCw,
   Lock,
-  Unlock,
-  UserCheck,
   ExternalLink
 } from 'lucide-react';
-import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 
 const RAZORPAY_PLAN_LINKS = {
   '1_month': {
@@ -44,32 +35,8 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
   onClearRedirectNotice,
 }) => {
   const { user, hasActivePremium, refreshUser, getAuthHeaders } = useAuth();
-  const [selectedPlan, setSelectedPlan] = useState<{
-    open: boolean;
-    planKey: '1_month' | '6_months';
-    title: string;
-    amountInr: number;
-  }>({
-    open: false,
-    planKey: '1_month',
-    title: '1 Month Premium Pass (30 Days)',
-    amountInr: 49,
-  });
 
   const [verifyingGmail, setVerifyingGmail] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<{
-    verifiedAt?: string;
-    hasActiveSubscription?: boolean;
-    activePlan?: '1_month' | '6_months' | null;
-    expiresAt?: string;
-    activeReceipt?: string;
-    transactionId?: string | null;
-    paymentMethod?: string | null;
-    verifiedGmail?: string | null;
-    razorpayVerified?: boolean;
-    verificationSource?: string;
-    razorpayApiConfigured?: boolean;
-  } | null>(null);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
   const [awaitingPaymentInfo, setAwaitingPaymentInfo] = useState<string | null>(null);
   const [razorpayPaymentIdInput, setRazorpayPaymentIdInput] = useState('');
@@ -122,13 +89,12 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
 
       if (res.ok && isMountedRef.current) {
         const data = await res.json();
-        setVerificationResult(data);
         await refreshUser();
-        if (data.hasAccess) {
+        if (data.hasAccess && data.hasActiveSubscription) {
           setAwaitingPaymentInfo(null);
           if (data.razorpayVerified) {
             setBannerMsg(
-              `Razorpay Payment Verified (${data.transactionId || data.activeReceipt || 'Active Pass'})! All paywalled comics are unlocked for ${user.email}.`
+              `Razorpay Payment Verified (${data.transactionId || data.activeReceipt || 'Active Pass'})! All paywalled comics are unlocked for ${user.email || user.phone}.`
             );
           }
         } else if (payIdParam) {
@@ -147,35 +113,19 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
   };
 
   useEffect(() => {
-    if (user?.email) {
+    if (user && (user.email || user.phone)) {
       handleVerifyGmailAccess();
     }
-  }, [user?.id, user?.email]);
+  }, [user?.id, user?.email, user?.phone]);
 
   useEffect(() => {
-    if (!awaitingPaymentInfo || !user?.email) return;
+    if (!awaitingPaymentInfo || !user || (!user.email && !user.phone)) return;
     const onFocus = () => {
       handleVerifyGmailAccess();
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [awaitingPaymentInfo, user?.id, user?.email]);
-
-  const openPlanCheckout = (planKey: '1_month' | '6_months', title: string, amountInr: number) => {
-    if (!user) {
-      openAuthModal();
-      return;
-    }
-    if (hasActivePremium) {
-      return;
-    }
-    setSelectedPlan({
-      open: true,
-      planKey,
-      title,
-      amountInr,
-    });
-  };
+  }, [awaitingPaymentInfo, user?.id, user?.email, user?.phone]);
 
   return (
     <div className="max-w-5xl mx-auto space-y-10 pb-24">
@@ -214,100 +164,6 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
         <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-2xl mx-auto leading-relaxed">
           Connect your reader Gmail &amp; mobile number to unlock all paywalled comics, chapters, and episodes. Every time you open a paywalled comic, your Gmail payment status is verified automatically.
         </p>
-      </div>
-
-      {/* Connected Reader Gmail & Real-Time Payment Verification Card */}
-      <div className="p-5 sm:p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4 max-w-4xl mx-auto">
-        <div className="flex items-start gap-3.5">
-          <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
-            hasActivePremium
-              ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/30'
-              : 'bg-rose-500/10 text-rose-500 border border-rose-500/30'
-          }`}>
-            {hasActivePremium ? <Unlock className="w-5 h-5" /> : <Mail className="w-5 h-5" />}
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-extrabold uppercase tracking-wider text-slate-900 dark:text-white">
-                {user ? 'Connected Reader Account (Gmail Verified)' : 'Reader Account Not Signed In'}
-              </span>
-              {user && (
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                  hasActivePremium
-                    ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
-                    : 'bg-amber-500/10 text-amber-500 border-amber-500/30'
-                }`}>
-                  {hasActivePremium
-                    ? `✓ ACTIVE PREMIUM (${user.premiumPlan === '6_months' ? '6 Months · ₹249' : '1 Month · ₹49'})`
-                    : 'FREE READER (NO ACTIVE PASS)'}
-                </span>
-              )}
-            </div>
-
-            {user ? (
-              <div className="text-xs text-slate-600 dark:text-slate-300 space-y-0.5">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="flex items-center gap-1 font-mono font-semibold text-rose-600 dark:text-rose-400">
-                    <Mail className="w-3.5 h-3.5" /> {user.email}
-                  </span>
-                  {user.phone && (
-                    <span className="flex items-center gap-1 font-mono text-slate-500">
-                      <Phone className="w-3.5 h-3.5" /> {user.phone}
-                    </span>
-                  )}
-                </div>
-                {hasActivePremium && user.premiumExpiresAt ? (
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1 pt-0.5 flex-wrap">
-                    <Clock className="w-3 h-3 shrink-0" />
-                    <span>
-                      Razorpay Payment Verified · Valid until {new Date(user.premiumExpiresAt).toLocaleDateString()} ({verificationResult?.transactionId ? `Razorpay ID: ${verificationResult.transactionId}` : verificationResult?.activeReceipt ? `Receipt: ${verificationResult.activeReceipt}` : 'Verified in Backend DB'})
-                    </span>
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-slate-500">
-                    Subscribe to the ₹49 (1 Month) or ₹249 (6 Months) plan below to unlock all paywalled comics on <strong className="text-slate-800 dark:text-slate-200">{user.email}</strong>.
-                  </p>
-                )}
-              </div>
-            ) : (
-              <p className="text-xs text-slate-500">
-                Please log in with your Gmail or Mobile Number so your Premium subscription is linked and tracked.
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 self-end md:self-center shrink-0">
-          {user ? (
-            <>
-              <button
-                type="button"
-                onClick={() => handleVerifyGmailAccess()}
-                disabled={verifyingGmail}
-                className="py-2 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${verifyingGmail ? 'animate-spin text-rose-500' : ''}`} />
-                <span>{verifyingGmail ? 'Verifying Razorpay...' : 'Verify Payment Status'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setCurrentTab('reader_profile')}
-                className="py-2 px-3.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <UserCheck className="w-3.5 h-3.5 text-amber-400" />
-                <span>Reader Profile</span>
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setCurrentTab('reader_login')}
-              className="py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider cursor-pointer shadow-md"
-            >
-              Reader Login / Register
-            </button>
-          )}
-        </div>
       </div>
 
       {verifyNotice && (
@@ -463,13 +319,6 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                   <span>Subscribe 1 Month Premium — ₹49</span>
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
-                <button
-                  type="button"
-                  onClick={() => openPlanCheckout('1_month', '1 Month Premium Pass (30 Days)', 49)}
-                  className="w-full text-[11px] font-semibold text-slate-500 hover:text-rose-500 dark:text-slate-400 dark:hover:text-rose-400 transition-colors cursor-pointer py-1"
-                >
-                  Or pay via In-App Checkout
-                </button>
               </>
             )}
           </div>
@@ -569,40 +418,12 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                   <span>Subscribe 6 Months Premium — ₹249</span>
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
-                <button
-                  type="button"
-                  onClick={() => openPlanCheckout('6_months', '6 Months Premium Pass (180 Days)', 249)}
-                  className="w-full text-[11px] font-semibold text-slate-400 hover:text-amber-400 transition-colors cursor-pointer py-1"
-                >
-                  Or pay via In-App Checkout
-                </button>
               </>
             )}
           </div>
         </div>
 
       </div>
-
-      {/* RAZORPAY CHECKOUT MODAL */}
-      {selectedPlan.open && (
-        <RazorpayCheckoutModal
-          isOpen={selectedPlan.open}
-          onClose={() => setSelectedPlan({ ...selectedPlan, open: false })}
-          comicId="global_subscription"
-          comicTitle={`Aathirai ${selectedPlan.planKey === '6_months' ? '6 Months' : '1 Month'} Premium Pass`}
-          itemTitle={selectedPlan.title}
-          itemType="subscription"
-          subscriptionPlan={selectedPlan.planKey}
-          amountInr={selectedPlan.amountInr}
-          onPaymentSuccess={async () => {
-            await refreshUser();
-            await handleVerifyGmailAccess();
-            setBannerMsg(
-              `Success! Your ${selectedPlan.planKey === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'} Premium Pass is now linked to ${user?.email} and verified for all paywalled comics!`
-            );
-          }}
-        />
-      )}
 
     </div>
   );

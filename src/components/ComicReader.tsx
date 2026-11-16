@@ -25,8 +25,8 @@ import {
   Heart,
   Bookmark,
   Columns2,
+  ExternalLink,
 } from 'lucide-react';
-import { RazorpayCheckoutModal } from './RazorpayCheckoutModal';
 
 interface ComicReaderProps {
   episodeId: string;
@@ -112,18 +112,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   const [editingContent, setEditingContent] = useState('');
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
 
-  // Payment checkout modal state (1 Month ₹49 or 6 Months ₹249)
-  const [checkoutPlan, setCheckoutPlan] = useState<{
-    open: boolean;
-    planKey: '1_month' | '6_months';
-    title: string;
-    amountInr: number;
-  }>({
-    open: false,
-    planKey: '1_month',
-    title: '1 Month Premium Pass (30 Days)',
-    amountInr: 49,
-  });
+  const [awaitingPaymentInfo, setAwaitingPaymentInfo] = useState<string | null>(null);
 
   const readerContainerRef = useRef<HTMLDivElement>(null);
 
@@ -764,63 +753,81 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
-                <div className="p-4 rounded-2xl bg-slate-950 border border-rose-500/40 space-y-3 flex flex-col justify-between">
-                  <div>
-                    <span className="text-[10px] uppercase font-bold text-rose-400 block">1 Month Premium</span>
-                    <div className="text-2xl font-black text-white font-mono mt-0.5">
-                      ₹49 <span className="text-xs font-normal text-slate-400">/ 30 days</span>
+              <div className="space-y-3 text-left">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="p-4 rounded-2xl bg-slate-950 border border-rose-500/40 space-y-3 flex flex-col justify-between">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-rose-400 block">1 Month Premium</span>
+                      <div className="text-2xl font-black text-white font-mono mt-0.5">
+                        ₹49 <span className="text-xs font-normal text-slate-400">/ 30 days</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Unlocks all paywalled comics for 1 month on {user.email}.
+                      </p>
                     </div>
-                    <p className="text-[11px] text-slate-400 mt-1">
-                      Unlocks all paywalled comics for 1 month on {user.email}.
-                    </p>
+                    <a
+                      href="https://rzp.io/rzp/eMyTbngF"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() =>
+                        setAwaitingPaymentInfo(
+                          `Razorpay payment page opened for 1 Month Pass (₹49). Use your registered email (${user.email}) or phone, then click Re-Verify above.`
+                        )
+                      }
+                      className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center flex items-center justify-center gap-1.5"
+                    >
+                      <span>Subscribe ₹49 (1 Month)</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCheckoutPlan({
-                        open: true,
-                        planKey: '1_month',
-                        title: '1 Month Premium Pass (30 Days)',
-                        amountInr: 49,
-                      })
-                    }
-                    className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center"
-                  >
-                    Pay ₹49 (1 Month)
-                  </button>
+
+                  <div className="p-4 rounded-2xl bg-gradient-to-b from-amber-500/15 to-slate-950 border-2 border-amber-500/60 space-y-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] uppercase font-bold text-amber-400">6 Months Premium</span>
+                        <span className="text-[9px] font-bold bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded">
+                          Best Value
+                        </span>
+                      </div>
+                      <div className="text-2xl font-black text-white font-mono mt-0.5">
+                        ₹249 <span className="text-xs font-normal text-slate-300">/ 180 days</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 mt-1">
+                        Unlocks all paywalled comics for 6 months on {user.email}.
+                      </p>
+                    </div>
+                    <a
+                      href="https://rzp.io/rzp/E077NNn"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() =>
+                        setAwaitingPaymentInfo(
+                          `Razorpay payment page opened for 6 Months Pass (₹249). Use your registered email (${user.email}) or phone, then click Re-Verify above.`
+                        )
+                      }
+                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center flex items-center justify-center gap-1.5"
+                    >
+                      <span>Subscribe ₹249 (6 Months)</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-gradient-to-b from-amber-500/15 to-slate-950 border-2 border-amber-500/60 space-y-3 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] uppercase font-bold text-amber-400">6 Months Premium</span>
-                      <span className="text-[9px] font-bold bg-amber-500 text-slate-950 px-1.5 py-0.5 rounded">
-                        Best Value
-                      </span>
-                    </div>
-                    <div className="text-2xl font-black text-white font-mono mt-0.5">
-                      ₹249 <span className="text-xs font-normal text-slate-300">/ 180 days</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300 mt-1">
-                      Unlocks all paywalled comics for 6 months on {user.email}.
-                    </p>
+                {awaitingPaymentInfo && (
+                  <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-300 text-[11px] font-semibold flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span>{awaitingPaymentInfo}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await refreshUser();
+                        await fetchEpisode();
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                    >
+                      Verify Payment Now
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCheckoutPlan({
-                        open: true,
-                        planKey: '6_months',
-                        title: '6 Months Premium Pass (180 Days)',
-                        amountInr: 249,
-                      })
-                    }
-                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center"
-                  >
-                    Pay ₹249 (6 Months)
-                  </button>
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -1304,25 +1311,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         )}
       </div>
 
-      {/* RAZORPAY CHECKOUT MODAL IF PURCHASE CLICKED */}
-      {checkoutPlan.open && (
-        <RazorpayCheckoutModal
-          isOpen={checkoutPlan.open}
-          onClose={() => setCheckoutPlan({ ...checkoutPlan, open: false })}
-          comicId="global_subscription"
-          comicTitle={`Aathirai ${checkoutPlan.planKey === '6_months' ? '6 Months' : '1 Month'} Premium Pass`}
-          chapterId={chapter.id}
-          episodeId={episode.id}
-          itemTitle={checkoutPlan.title}
-          itemType="subscription"
-          subscriptionPlan={checkoutPlan.planKey}
-          amountInr={checkoutPlan.amountInr}
-          onPaymentSuccess={async () => {
-            await refreshUser();
-            await fetchEpisode();
-          }}
-        />
-      )}
+
     </div>
   );
 };

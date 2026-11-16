@@ -1370,7 +1370,14 @@ async function startServer() {
       phone: (registeredUser as User).phone,
       firebaseIdToken: fbToken,
     });
-    const finalUser = reconciled.subStatus.matchedUser || (registeredUser as User);
+    const matchedUser = reconciled.subStatus.matchedUser || (registeredUser as User);
+    const finalUser: User = {
+      ...matchedUser,
+      premiumPlan: reconciled.subStatus.activePlan,
+      premiumStartedAt: reconciled.subStatus.startedAt,
+      premiumExpiresAt: reconciled.subStatus.expiresAt,
+      premiumPaymentDetail: reconciled.subStatus.premiumPaymentDetail,
+    };
 
     db.addNotification({
       userId: finalUser.id,
@@ -1509,14 +1516,18 @@ async function startServer() {
       return res.status(404).json({ error: 'Reader account not found.' });
     }
 
-    const subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const reconciled = await reconcileCustomerRazorpayPremium({
       userId: (updatedUser as User).id,
       email: (updatedUser as User).email,
       phone: (updatedUser as User).phone,
+      firebaseIdToken: fbToken,
     });
+    const subStatus = reconciled.subStatus;
+    const latestUser = subStatus.matchedUser || (updatedUser as User);
 
     const userWithPremium: User = {
-      ...(updatedUser as User),
+      ...latestUser,
       premiumPlan: subStatus.activePlan,
       premiumStartedAt: subStatus.startedAt,
       premiumExpiresAt: subStatus.expiresAt,
@@ -1982,29 +1993,60 @@ async function startServer() {
   });
 
   app.post('/api/auth/forgot-password', authRateLimiter, async (req, res) => {
-    const { email, phone, countryCode, credential, smsChannel, firebaseSmsSent } = req.body;
-    const cleanEmail = (email || (credential && String(credential).includes('@') ? credential : '') || '').trim().toLowerCase();
-    const rawPhoneInput = (phone || (credential && !String(credential).includes('@') ? credential : '') || '').trim();
+    const { email, phone, countryCode, credential, targetChannel, smsChannel, firebaseSmsSent } = req.body;
+    const rawCred = typeof credential === 'string' ? credential.trim() : '';
+    const cleanEmail = (email || (rawCred.includes('@') ? rawCred : '') || '').trim().toLowerCase();
+    const rawPhoneInput = (phone || (rawCred && !rawCred.includes('@') ? rawCred : '') || '').trim();
     const cleanDigits = rawPhoneInput.replace(/\D/g, '');
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (!cleanEmail && cleanDigits.length < 6) {
-      return res.status(400).json({ error: 'Please enter your registered Gmail address or Global Mobile Number to receive the password reset OTP.' });
+    const resolvedChannel: 'email' | 'sms' =
+      targetChannel === 'email'
+        ? 'email'
+        : targetChannel === 'sms'
+          ? 'sms'
+          : cleanEmail
+            ? 'email'
+            : 'sms';
+
+    if (resolvedChannel === 'email') {
+      if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+        return res.status(400).json({
+          existsInDatabase: false,
+          error: 'Please enter a valid registered Gmail address.',
+        });
+      }
+    } else if (cleanDigits.length < 6) {
+      return res.status(400).json({
+        existsInDatabase: false,
+        error: 'Please select your country code and enter a valid registered Mobile Number.',
+      });
     }
 
     const snapshot = db.getSnapshot();
     const matchedUser = snapshot.users.find((u: User) => {
-      const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
-      const phoneMatch = Boolean(cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode));
-      return emailMatch || phoneMatch;
+      if (resolvedChannel === 'email') {
+        return Boolean(cleanEmail && u.email && u.email.toLowerCase() === cleanEmail);
+      }
+      return Boolean(cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode));
     });
 
     if (!matchedUser) {
-      return res.status(404).json({ error: 'No customer account found in the database matching that Gmail address or Global Mobile Number.' });
+      const formattedInputPhone = rawPhoneInput ? formatGlobalPhone(rawPhoneInput, countryCode) : '';
+      return res.status(404).json({
+        existsInDatabase: false,
+        error:
+          resolvedChannel === 'email'
+            ? `Gmail address "${cleanEmail}" is not stored in the backend database. Please check your Gmail or register first.`
+            : `Mobile Number "${formattedInputPhone || rawPhoneInput}" is not stored in the backend database. Please check your number or register first.`,
+      });
     }
 
     const otp = crypto.randomInt(100000, 999999).toString();
-    const targetEmail = matchedUser.email.toLowerCase();
-    const targetPhoneKey = getPhoneOtpKey(matchedUser.phone || rawPhoneInput, matchedUser.countryCode || countryCode);
+    const targetEmail = (matchedUser.email || cleanEmail).toLowerCase();
+    const targetSmsPhone = matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '';
+    const targetCountryCode = matchedUser.countryCode || countryCode || '+91';
+    const targetPhoneKey = getPhoneOtpKey(targetSmsPhone, targetCountryCode);
     const inputPhoneKey = getPhoneOtpKey(rawPhoneInput, countryCode);
 
     db.mutate(d => {
@@ -2015,46 +2057,93 @@ async function startServer() {
       if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otpEntry;
     });
 
-    const targetSmsPhone = matchedUser.phone || rawPhoneInput;
-    const useFirebaseSms = smsChannel === 'firebase' || smsChannel === undefined;
-    const [emailDelivery, smsDelivery] = await Promise.all([
-      sendPasswordResetOtpEmail({
+    if (resolvedChannel === 'email') {
+      const emailDelivery = await sendPasswordResetOtpEmail({
         to: matchedUser.email,
         name: matchedUser.name,
         otp,
-      }),
-      targetSmsPhone && !useFirebaseSms
-        ? sendOtpSms({
-            phone: targetSmsPhone,
-            countryCode: matchedUser.countryCode || countryCode,
-            otp,
-            purpose: 'password_reset',
-          })
-        : Promise.resolve({
-            sent: Boolean(firebaseSmsSent),
-            configured: useFirebaseSms ? true : getSmsConfigSummary().configured,
-            provider: useFirebaseSms ? ('firebase' as const) : getSmsConfigSummary().provider,
-          }),
-    ]);
+      });
+
+      if (!emailDelivery.sent) {
+        return res.status(emailDelivery.configured ? 502 : 503).json({
+          success: false,
+          existsInDatabase: true,
+          targetChannel: 'email',
+          emailDelivered: false,
+          smtpConfigured: emailDelivery.configured,
+          error:
+            emailDelivery.error ||
+            'Unable to send password reset OTP to this Gmail address. Please check SMTP configuration or try again.',
+        });
+      }
+
+      const senderEmail = emailDelivery.from || 'aathiraicomic@gmail.com';
+      return res.json({
+        success: true,
+        existsInDatabase: true,
+        targetChannel: 'email',
+        emailDelivered: true,
+        smsDelivered: false,
+        from: senderEmail,
+        smtpConfigured: emailDelivery.configured,
+        email: matchedUser.email,
+        phone: targetSmsPhone,
+        countryCode: targetCountryCode,
+        message: `Verified in backend database. 6-digit password reset OTP sent from ${senderEmail} to ${matchedUser.email}. Check Inbox, Spam, or Updates. Valid for 10 minutes.`,
+      });
+    }
+
+    // resolvedChannel === 'sms'
+    const useFirebaseSms = smsChannel === 'firebase' || smsChannel === undefined;
+    if (useFirebaseSms) {
+      return res.json({
+        success: true,
+        existsInDatabase: true,
+        targetChannel: 'sms',
+        emailDelivered: false,
+        smsDelivered: Boolean(firebaseSmsSent),
+        smsProvider: 'firebase',
+        smsConfigured: true,
+        email: matchedUser.email,
+        phone: targetSmsPhone,
+        countryCode: targetCountryCode,
+        message: `Verified in backend database. Sending 6-digit SMS OTP to ${targetSmsPhone}. Valid for 10 minutes.`,
+      });
+    }
+
+    const smsDelivery = await sendOtpSms({
+      phone: targetSmsPhone,
+      countryCode: targetCountryCode,
+      otp,
+      purpose: 'password_reset',
+    });
+
+    if (!smsDelivery.sent) {
+      return res.status(smsDelivery.configured ? 502 : 503).json({
+        success: false,
+        existsInDatabase: true,
+        targetChannel: 'sms',
+        smsDelivered: false,
+        smsConfigured: smsDelivery.configured,
+        smsProvider: smsDelivery.provider,
+        error:
+          smsDelivery.error ||
+          'SMS OTP delivery failed for this mobile number. Please check your number or use Gmail recovery.',
+      });
+    }
 
     return res.json({
       success: true,
-      emailDelivered: emailDelivery.sent,
-      smsDelivered: smsDelivery.sent,
+      existsInDatabase: true,
+      targetChannel: 'sms',
+      emailDelivered: false,
+      smsDelivered: true,
       smsProvider: smsDelivery.provider,
-      smtpConfigured: emailDelivery.configured,
       smsConfigured: smsDelivery.configured,
       email: matchedUser.email,
-      phone: matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '',
-      countryCode: matchedUser.countryCode || countryCode || '+91',
-      message:
-        emailDelivery.sent && smsDelivery.sent
-          ? `6-digit verification OTP sent via SMTP (${matchedUser.email}) and SMS (${targetSmsPhone} via ${smsDelivery.provider}). Valid for 10 minutes.`
-          : emailDelivery.sent
-            ? `6-digit verification OTP sent via SMTP to ${matchedUser.email}${matchedUser.phone ? ` (linked Mobile ${matchedUser.phone})` : ''}. Valid for 10 minutes.`
-            : smsDelivery.sent
-              ? `6-digit verification OTP sent via SMS (${smsDelivery.provider}) to ${targetSmsPhone}. Valid for 10 minutes.`
-              : `6-digit verification OTP generated for password recovery for ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
+      phone: targetSmsPhone,
+      countryCode: targetCountryCode,
+      message: `Verified in backend database. 6-digit SMS OTP sent to ${targetSmsPhone} (${smsDelivery.provider}). Valid for 10 minutes.`,
     });
   });
 
@@ -5237,13 +5326,6 @@ async function startServer() {
 
     const orderId = orderResult.orderId;
 
-    // When in TEST mode, also provide a deterministic test payment token & server-computed HMAC-SHA256 signature
-    const testPaymentId = rzpStatus.isTestMode ? 'pay_test_' + crypto.randomBytes(8).toString('hex') : undefined;
-    const testSignature =
-      rzpStatus.isTestMode && testPaymentId
-        ? computeRazorpayOrderSignature(orderId, testPaymentId)
-        : undefined;
-
     return res.json({
       success: true,
       mode: rzpStatus.mode.toUpperCase(),
@@ -5257,20 +5339,6 @@ async function startServer() {
       gstBreakdown,
       currency: 'INR',
       keyId: rzpStatus.keyId,
-      ...(rzpStatus.isTestMode
-        ? {
-            testOrderCredentials: {
-              razorpayOrderId: orderId,
-              razorpayPaymentId: testPaymentId,
-              razorpaySignature: testSignature,
-            },
-            testGatewayAuth: {
-              orderId,
-              paymentId: testPaymentId,
-              signature: testSignature,
-            },
-          }
-        : {}),
       paymentMethods: [
         'UPI (Google Pay, PhonePe, Paytm, BHIM)',
         'RuPay, Visa, Mastercard Debit & Credit Cards',

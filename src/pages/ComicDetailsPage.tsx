@@ -16,9 +16,9 @@ import {
   Mail,
   RefreshCw,
   Bookmark,
-  Heart
+  Heart,
+  ExternalLink
 } from 'lucide-react';
-import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 
 interface ComicDetailsPageProps {
   comic: Comic;
@@ -48,21 +48,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
   const [verifiedPlan, setVerifiedPlan] = useState<string | null>(null);
   const [verifiedExpiresAt, setVerifiedExpiresAt] = useState<string | null>(null);
 
-  const [checkoutItem, setCheckoutItem] = useState<{
-    open: boolean;
-    type: 'full_comic' | 'chapter' | 'episode' | 'subscription';
-    subscriptionPlan?: '1_month' | '6_months';
-    chapterId?: string;
-    episodeId?: string;
-    title: string;
-    amountInr: number;
-  }>({
-    open: false,
-    type: 'subscription',
-    subscriptionPlan: '1_month',
-    title: '',
-    amountInr: 49,
-  });
+  const [awaitingPaymentInfo, setAwaitingPaymentInfo] = useState<string | null>(null);
 
   const verifyReaderGmailPaywall = async () => {
     if (!user) {
@@ -344,45 +330,60 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
 
             {comic.accessType === 'premium' && !isUnlockedForReader && (
               <>
-                <button
-                  onClick={() => {
-                    if (!user) {
-                      openAuthModal();
-                      return;
-                    }
-                    setCheckoutItem({
-                      open: true,
-                      type: 'subscription',
-                      subscriptionPlan: '1_month',
-                      title: '1 Month Reader Premium Pass (₹49)',
-                      amountInr: 49,
-                    });
-                  }}
-                  className="py-3 px-5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer border border-slate-700"
-                >
-                  <Sparkles className="w-4 h-4 text-rose-500" />
-                  <span>1 Month Pass (₹49)</span>
-                </button>
+                {!user ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={openAuthModal}
+                      className="py-3 px-5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer border border-slate-700"
+                    >
+                      <Sparkles className="w-4 h-4 text-rose-500" />
+                      <span>1 Month Pass (₹49)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openAuthModal}
+                      className="py-3 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer"
+                    >
+                      <IndianRupee className="w-4 h-4" />
+                      <span>6 Months Pass (₹249)</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <a
+                      href="https://rzp.io/rzp/eMyTbngF"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() =>
+                        setAwaitingPaymentInfo(
+                          `Razorpay payment page opened for 1 Month Pass (₹49). Complete payment using your registered email (${user.email}) or phone, then click Verify Payment Status.`
+                        )
+                      }
+                      className="py-3 px-5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer border border-slate-700"
+                    >
+                      <Sparkles className="w-4 h-4 text-rose-500" />
+                      <span>Subscribe 1 Month (₹49)</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
 
-                <button
-                  onClick={() => {
-                    if (!user) {
-                      openAuthModal();
-                      return;
-                    }
-                    setCheckoutItem({
-                      open: true,
-                      type: 'subscription',
-                      subscriptionPlan: '6_months',
-                      title: '6 Months Reader Premium Pass (₹249)',
-                      amountInr: 249,
-                    });
-                  }}
-                  className="py-3 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer"
-                >
-                  <IndianRupee className="w-4 h-4" />
-                  <span>6 Months Pass (₹249)</span>
-                </button>
+                    <a
+                      href="https://rzp.io/rzp/E077NNn"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() =>
+                        setAwaitingPaymentInfo(
+                          `Razorpay payment page opened for 6 Months Pass (₹249). Complete payment using your registered email (${user.email}) or phone, then click Verify Payment Status.`
+                        )
+                      }
+                      className="py-3 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer"
+                    >
+                      <IndianRupee className="w-4 h-4" />
+                      <span>Subscribe 6 Months (₹249)</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </>
+                )}
               </>
             )}
 
@@ -553,24 +554,21 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
         </div>
       </div>
 
-      {/* RAZORPAY CHECKOUT MODAL */}
-      {checkoutItem.open && (
-        <RazorpayCheckoutModal
-          isOpen={checkoutItem.open}
-          onClose={() => setCheckoutItem({ ...checkoutItem, open: false })}
-          comicId={checkoutItem.type === 'subscription' ? 'premium_pass' : comic.id}
-          comicTitle={checkoutItem.type === 'subscription' ? 'Aathirai_Comic All-Access Subscription' : comic.title}
-          chapterId={checkoutItem.chapterId}
-          episodeId={checkoutItem.episodeId}
-          itemTitle={checkoutItem.title}
-          itemType={checkoutItem.type}
-          subscriptionPlan={checkoutItem.subscriptionPlan}
-          amountInr={checkoutItem.amountInr}
-          onPaymentSuccess={async () => {
-            await refreshUser();
-            await verifyReaderGmailPaywall();
-          }}
-        />
+      {awaitingPaymentInfo && user && !isUnlockedForReader && (
+        <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-700 dark:text-sky-300 text-xs font-semibold flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <span>{awaitingPaymentInfo}</span>
+          <button
+            type="button"
+            onClick={async () => {
+              await refreshUser();
+              await verifyReaderGmailPaywall();
+            }}
+            disabled={verifyingGmail}
+            className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shrink-0 cursor-pointer"
+          >
+            {verifyingGmail ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
+          </button>
+        </div>
       )}
     </div>
   );

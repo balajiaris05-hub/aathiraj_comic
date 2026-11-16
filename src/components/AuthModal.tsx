@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import {
   sendFirebaseSmsOtp,
@@ -45,6 +46,33 @@ const DOB_MONTHS = [
   { value: '12', label: 'Dec' },
 ];
 const DOB_YEARS = Array.from({ length: 82 }, (_, i) => String(2021 - i));
+
+const MODAL_COUNTRY_CODES = [
+  { code: '+91', iso: 'IN', country: 'India' },
+  { code: '+1', iso: 'US', country: 'USA / Canada' },
+  { code: '+44', iso: 'UK', country: 'United Kingdom' },
+  { code: '+65', iso: 'SG', country: 'Singapore' },
+  { code: '+60', iso: 'MY', country: 'Malaysia' },
+  { code: '+971', iso: 'AE', country: 'UAE' },
+  { code: '+61', iso: 'AU', country: 'Australia' },
+  { code: '+94', iso: 'LK', country: 'Sri Lanka' },
+  { code: '+49', iso: 'DE', country: 'Germany' },
+  { code: '+33', iso: 'FR', country: 'France' },
+  { code: '+81', iso: 'JP', country: 'Japan' },
+];
+
+function formatModalPhone(rawPhone: string, countryCode: string): string {
+  const trimmed = rawPhone.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('+')) return trimmed;
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return '';
+  const codeDigits = countryCode.replace(/\D/g, '');
+  if (codeDigits && digits.startsWith(codeDigits) && digits.length > codeDigits.length + 5) {
+    return `+${codeDigits} ${digits.slice(codeDigits.length)}`;
+  }
+  return `${countryCode} ${digits}`;
+}
 
 function calculateAgeFromDob(day: string, month: string, year: string): number {
   const y = Number(year) || 2002;
@@ -86,9 +114,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
   const [name, setName] = useState('');
   const [otp, setOtp] = useState('');
 
-  // Change password state
+  // Change password state (Single Email / Mobile selector + DB check + 30s Resend OTP)
+  const [resetMethod, setResetMethod] = useState<'email' | 'mobile'>('email');
+  const [resetCredential, setResetCredential] = useState('');
+  const [resetCountryCode, setResetCountryCode] = useState('+91');
   const [resetEmail, setResetEmail] = useState('');
   const [resetPhone, setResetPhone] = useState('');
+  const [resetDbVerified, setResetDbVerified] = useState<'verified' | 'not_found' | null>(null);
+  const [resetVerifiedName, setResetVerifiedName] = useState('');
+  const [resetTargetChannel, setResetTargetChannel] = useState<'email' | 'sms'>('email');
+  const [resetResendCooldown, setResetResendCooldown] = useState(0);
   const [resetOtp, setResetOtp] = useState('');
   const [resetStep, setResetStep] = useState<'request_otp' | 'verify_otp' | 'set_new_password'>('request_otp');
   const [newPassword, setNewPassword] = useState('');
@@ -141,6 +176,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     }
   }, [isOpen, mode, resetStep, mobileOtpSent, mobileOtpVerified]);
 
+  React.useEffect(() => {
+    if (resetResendCooldown <= 0) return;
+    const timer = window.setTimeout(() => {
+      setResetResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [resetResendCooldown]);
+
   if (!isOpen) return null;
 
   const hasSelectedDob = Boolean(dobDay && dobMonth && dobYear);
@@ -173,6 +216,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setFirebaseRegConfirmation(null);
     setFirebaseResetConfirmation(null);
     setVerifiedResetPhoneIdToken(null);
+    setResetDbVerified(null);
+    setResetVerifiedName('');
+    setResetResendCooldown(0);
     setOtp('');
     resetEmailOtpState();
     resetMobileOtpState();
@@ -534,58 +580,183 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     }
   };
 
-  const handleRequestResetOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const dispatchModalResetOtp = async (isResend: boolean) => {
+    if (isResend && resetResendCooldown > 0) return;
+
+    const trimmed = resetCredential.trim();
+    const isEmailInput =
+      resetMethod === 'email' || trimmed.includes('@') || /[a-zA-Z]/.test(trimmed);
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (isEmailInput) {
+      if (!trimmed || !emailRegex.test(trimmed)) {
+        setError('Please enter a valid registered Email / Gmail address.');
+        return;
+      }
+    } else if (trimmed.replace(/\D/g, '').length < 6) {
+      setError('Please enter a valid registered Mobile Number.');
+      return;
+    }
+
+    const channel: 'email' | 'sms' = isEmailInput ? 'email' : 'sms';
+    const fullPhone = !isEmailInput ? formatModalPhone(trimmed, resetCountryCode) : '';
+
     setLoading(true);
     setError(null);
+    setSuccessMsg(null);
     setSmsNotice(null);
     setVerifiedResetPhoneIdToken(null);
+
     try {
-      const res = await fetch('/api/auth/forgot-password', {
+      // Step 1: Verify input exists in database & backend BEFORE sending OTP
+      const verifyRes = await fetch('/api/auth/verify-identity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: resetEmail.trim(),
-          phone: resetPhone.trim(),
+          credential: trimmed,
+          email: isEmailInput ? trimmed : '',
+          phone: fullPhone,
+          countryCode: resetCountryCode,
+        }),
+      });
+      const verifyData = await verifyRes.json();
+
+      if (!verifyRes.ok || !verifyData.verified) {
+        setLoading(false);
+        setResetDbVerified('not_found');
+        setResetVerifiedName('');
+        setError(
+          verifyData.error ||
+            (channel === 'email'
+              ? `Email "${trimmed}" is not stored in the database. Please register first.`
+              : `Mobile Number "${fullPhone}" is not stored in the database. Please register first.`)
+        );
+        return;
+      }
+
+      const verifiedEmail = (verifyData.email || (isEmailInput ? trimmed : '')).trim();
+      const verifiedPhone = (verifyData.phone || fullPhone || '').trim();
+      const verifiedCode = (verifyData.countryCode || resetCountryCode || '+91').trim();
+      setResetDbVerified('verified');
+      setResetVerifiedName(verifyData.name || '');
+      setResetEmail(verifiedEmail);
+      setResetPhone(verifiedPhone);
+      setResetCountryCode(verifiedCode);
+
+      // Step 2: Send OTP strictly to the selected input channel
+      if (channel === 'email') {
+        const res = await fetch('/api/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            credential: trimmed,
+            email: isEmailInput ? trimmed : verifiedEmail,
+            targetChannel: 'email',
+          }),
+        });
+        const data = await res.json();
+        setLoading(false);
+
+        if (!res.ok || !data.emailDelivered) {
+          setError(data.error || 'Could not send OTP to this Email address.');
+          return;
+        }
+
+        setFirebaseResetConfirmation(null);
+        setResetTargetChannel('email');
+        if (isResend) setResetOtp('');
+        setResetStep('verify_otp');
+        setResetResendCooldown(30);
+        setSuccessMsg(
+          data.message ||
+            `Verified in database! 6-digit OTP ${isResend ? 'resent' : 'sent'} to ${trimmed}.`
+        );
+        return;
+      }
+
+      // channel === 'sms'
+      const smsInitRes = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: trimmed,
+          phone: fullPhone || verifiedPhone,
+          countryCode: resetCountryCode,
+          targetChannel: 'sms',
           smsChannel: 'firebase',
         }),
       });
-      const data = await res.json();
-      if (res.ok) {
-        if (data.email && !resetEmail.trim()) setResetEmail(data.email);
-        if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
-
-        const targetPhone = (data.phone || resetPhone.trim() || '').trim();
-        let fbSmsMsg = '';
-        if (targetPhone) {
-          const fbSms = await sendFirebaseSmsOtp(
-            targetPhone,
-            'firebase-recaptcha-modal-reset',
-            data.countryCode || '+91'
-          );
-          if (fbSms.sent && fbSms.confirmationResult) {
-            setFirebaseResetConfirmation(fbSms.confirmationResult);
-            fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
-            setSmsNotice(fbSmsMsg);
-          } else {
-            setFirebaseResetConfirmation(null);
-            if (fbSms.errorMessage) {
-              setSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
-            }
-          }
-        }
-
+      const smsInitData = await smsInitRes.json();
+      if (!smsInitRes.ok) {
         setLoading(false);
-        setSuccessMsg(fbSmsMsg || data.message || `Reset code sent to ${data.email || resetEmail}`);
-        setResetStep('verify_otp');
-      } else {
-        setLoading(false);
-        setError(data.error || 'Could not send reset code');
+        setError(smsInitData.error || 'Could not send SMS OTP to this mobile number.');
+        return;
       }
+
+      const targetPhone = (smsInitData.phone || fullPhone || verifiedPhone).trim();
+      const targetCountry = smsInitData.countryCode || resetCountryCode;
+      const fbSms = await sendFirebaseSmsOtp(
+        targetPhone,
+        'firebase-recaptcha-modal-reset',
+        targetCountry
+      );
+
+      if (fbSms.sent && fbSms.confirmationResult) {
+        setLoading(false);
+        setFirebaseResetConfirmation(fbSms.confirmationResult);
+        setResetTargetChannel('sms');
+        if (isResend) setResetOtp('');
+        setResetStep('verify_otp');
+        setResetResendCooldown(30);
+        const msg = `Verified in database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${fbSms.phoneE164}.`;
+        setSmsNotice(msg);
+        setSuccessMsg(msg);
+        return;
+      }
+
+      const backendSmsRes = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: trimmed,
+          phone: targetPhone,
+          countryCode: targetCountry,
+          targetChannel: 'sms',
+          smsChannel: 'backend',
+        }),
+      });
+      const backendSmsData = await backendSmsRes.json();
+      setLoading(false);
+
+      if (backendSmsRes.ok && backendSmsData.smsDelivered) {
+        setFirebaseResetConfirmation(null);
+        setResetTargetChannel('sms');
+        if (isResend) setResetOtp('');
+        setResetStep('verify_otp');
+        setResetResendCooldown(30);
+        const msg =
+          backendSmsData.message ||
+          `Verified in database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${targetPhone}.`;
+        setSmsNotice(msg);
+        setSuccessMsg(msg);
+        return;
+      }
+
+      setFirebaseResetConfirmation(null);
+      setError(
+        fbSms.errorMessage ||
+          backendSmsData.error ||
+          'Could not deliver SMS OTP to this mobile number. Please check your number or choose Email.'
+      );
     } catch (err: any) {
       setLoading(false);
-      setError(err.message || 'Network error');
+      setError(err.message || 'Network error while verifying database and sending OTP.');
     }
+  };
+
+  const handleRequestResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await dispatchModalResetOtp(false);
   };
 
   const handleVerifyResetOtp = async (e: React.FormEvent) => {
@@ -609,11 +780,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
       const res = await fetch('/api/auth/verify-reset-otp', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ email: resetEmail.trim(), phone: resetPhone.trim(), otp: resetOtp.trim() }),
+        body: JSON.stringify({
+          email: resetEmail.trim(),
+          phone: resetPhone.trim(),
+          countryCode: resetCountryCode,
+          otp: resetOtp.trim(),
+        }),
       });
       const data = await res.json();
       setLoading(false);
       if (res.ok && data.verified) {
+        setResetResendCooldown(0);
         setSuccessMsg('OTP Verified! Enter your New Password and Confirm Password.');
         setResetStep('set_new_password');
       } else {
@@ -644,6 +821,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         body: JSON.stringify({
           email: resetEmail.trim(),
           phone: resetPhone.trim(),
+          countryCode: resetCountryCode,
           otp: resetOtp.trim(),
           newPassword,
           confirmPassword: confirmNewPassword,
@@ -655,10 +833,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         setVerifiedResetPhoneIdToken(null);
         setFirebaseResetConfirmation(null);
         setSmsNotice(null);
+        setResetResendCooldown(0);
         setIsAccountLocked(false);
         setLockedUntilIso(null);
         setRemainingAttempts(3);
-        setCredential(resetEmail.trim());
+        setCredential(resetEmail.trim() || resetPhone.trim() || resetCredential.trim());
         setIdentityVerified(true);
         setLoginPassword('');
         setSuccessMsg('Password updated in backend and account unlocked! Please log in.');
@@ -797,10 +976,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                       onClick={() => {
                         resetState();
                         const cleanInput = credential.trim();
-                        if (cleanInput.includes('@')) {
+                        if (!cleanInput || cleanInput.includes('@')) {
+                          setResetMethod('email');
+                          setResetCredential(cleanInput);
                           setResetEmail(cleanInput);
                           setResetPhone('');
                         } else {
+                          setResetMethod('mobile');
+                          setResetCredential(cleanInput);
                           setResetEmail('');
                           setResetPhone(cleanInput);
                         }
@@ -850,10 +1033,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                 onClick={() => {
                   resetState();
                   const cleanInput = credential.trim();
-                  if (cleanInput.includes('@')) {
+                  if (!cleanInput || cleanInput.includes('@')) {
+                    setResetMethod('email');
+                    setResetCredential(cleanInput);
                     setResetEmail(cleanInput);
                     setResetPhone('');
                   } else {
+                    setResetMethod('mobile');
+                    setResetCredential(cleanInput);
                     setResetEmail('');
                     setResetPhone(cleanInput);
                   }
@@ -1201,45 +1388,136 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
             {resetStep === 'request_otp' && (
               <form onSubmit={handleRequestResetOtp} className="space-y-3">
                 <div>
-                  <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                    Registered Gmail Address
-                  </label>
-                  <input
-                    type="email"
-                    required={!resetPhone.trim()}
-                    placeholder="Enter your Gmail address"
-                    value={resetEmail}
-                    onChange={(e) => setResetEmail(e.target.value)}
-                    className="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  />
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Select Email or Mobile Number <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResetMethod('email');
+                          setResetDbVerified(null);
+                          setError(null);
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                          resetMethod === 'email'
+                            ? 'bg-rose-600 text-white shadow-sm'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                        }`}
+                      >
+                        <Mail className="w-3 h-3" />
+                        <span>Email</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResetMethod('mobile');
+                          setResetDbVerified(null);
+                          setError(null);
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                          resetMethod === 'mobile'
+                            ? 'bg-rose-600 text-white shadow-sm'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                        }`}
+                      >
+                        <Phone className="w-3 h-3" />
+                        <span>Mobile Number</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-stretch gap-2">
+                    {resetMethod === 'mobile' && (
+                      <select
+                        aria-label="Country Code"
+                        value={resetCountryCode}
+                        onChange={(e) => {
+                          setResetCountryCode(e.target.value);
+                          setResetDbVerified(null);
+                        }}
+                        className="w-24 shrink-0 px-2 py-2 text-xs font-mono font-bold rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white cursor-pointer"
+                      >
+                        {MODAL_COUNTRY_CODES.map((c) => (
+                          <option key={`modal-reset-${c.iso}-${c.code}`} value={c.code}>
+                            {c.iso} ({c.code})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <div className="relative flex-1 min-w-0">
+                      {resetMethod === 'email' ? (
+                        <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                      ) : (
+                        <Phone className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                      )}
+                      <input
+                        type={resetMethod === 'email' ? 'email' : 'tel'}
+                        required
+                        placeholder={
+                          resetMethod === 'email'
+                            ? 'Enter your registered Email / Gmail address'
+                            : `Enter your registered Mobile Number (${resetCountryCode})`
+                        }
+                        value={resetCredential}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const trimmedVal = val.trim();
+                          if (trimmedVal.includes('@') || /[a-zA-Z]/.test(trimmedVal)) {
+                            setResetMethod('email');
+                          } else if (/^[+\d\s\-()]{3,}$/.test(trimmedVal)) {
+                            setResetMethod('mobile');
+                          }
+                          setResetCredential(val);
+                          setResetDbVerified(null);
+                          setError(null);
+                        }}
+                        className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Verified against the backend &amp; database before sending the OTP to your chosen input.
+                  </p>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                    Registered Mobile Number (+91)
-                  </label>
-                  <input
-                    type="tel"
-                    placeholder="Enter your mobile number (+91)"
-                    value={resetPhone}
-                    onChange={(e) => setResetPhone(e.target.value)}
-                    className="w-full px-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  />
-                </div>
+
+                {resetDbVerified === 'not_found' && (
+                  <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-medium flex items-center gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Not found in database. OTP was not sent.</span>
+                  </div>
+                )}
+
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-sm cursor-pointer"
+                  className="w-full py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-semibold text-sm cursor-pointer"
                 >
-                  {loading ? 'Sending OTP...' : 'Send OTP to Gmail / Mobile'}
+                  {loading
+                    ? 'Verifying Database & Sending OTP...'
+                    : `Verify in Database & Send OTP to ${resetMethod === 'email' ? 'Email' : 'Mobile'}`}
                 </button>
               </form>
             )}
 
             {resetStep === 'verify_otp' && (
               <form onSubmit={handleVerifyResetOtp} className="space-y-3">
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-medium flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 min-w-0 truncate">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                    <span className="truncate">
+                      DB Verified{resetVerifiedName ? ` (${resetVerifiedName})` : ''} · Sent to{' '}
+                      {resetTargetChannel === 'email'
+                        ? resetEmail || resetCredential
+                        : resetPhone || formatModalPhone(resetCredential, resetCountryCode)}
+                    </span>
+                  </span>
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                    Enter 6-Digit Reset OTP
+                    Enter 6-Digit OTP Sent to {resetTargetChannel === 'email' ? 'Email' : 'Mobile Number'}
                   </label>
                   <input
                     type="text"
@@ -1258,10 +1536,44 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm cursor-pointer"
+                  className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-semibold text-sm cursor-pointer"
                 >
                   {loading ? 'Verifying OTP...' : 'Verify OTP'}
                 </button>
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={loading || resetResendCooldown > 0}
+                    onClick={() => dispatchModalResetOtp(true)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                      loading || resetResendCooldown > 0
+                        ? 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 cursor-not-allowed'
+                        : 'bg-white dark:bg-slate-900 border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 cursor-pointer'
+                    }`}
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                    <span>
+                      {resetResendCooldown > 0
+                        ? `Resend OTP in ${resetResendCooldown}s`
+                        : 'Resend OTP'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetStep('request_otp');
+                      setResetOtp('');
+                      setResetResendCooldown(0);
+                      setError(null);
+                      setSuccessMsg(null);
+                      setSmsNotice(null);
+                    }}
+                    className="text-xs font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                  >
+                    Change Email / Mobile
+                  </button>
+                </div>
               </form>
             )}
 

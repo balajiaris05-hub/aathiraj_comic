@@ -438,9 +438,8 @@ export function getRazorpayEnvironmentStatus(): RazorpayConfigStatus {
   const rawKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
   const rawSecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 
-  // If no env vars are set, use explicit TEST mode credentials unless disabled
-  const effectiveKeyId = rawKeyId || (process.env.RAZORPAY_DISABLE_TEST_FALLBACK === 'true' ? '' : 'rzp_test_AathiraiTestModeKey');
-  const effectiveSecret = rawSecret || (process.env.RAZORPAY_DISABLE_TEST_FALLBACK === 'true' ? '' : 'rzp_test_secret_AathiraiTestSecretKey2026');
+  const effectiveKeyId = rawKeyId;
+  const effectiveSecret = rawSecret;
 
   if (!effectiveKeyId || !effectiveSecret || effectiveKeyId === 'your_razorpay_key_id') {
     return {
@@ -487,8 +486,7 @@ export function getRazorpayEnvironmentStatus(): RazorpayConfigStatus {
 }
 
 export function getRazorpaySecret(): string {
-  const rawSecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
-  return rawSecret || (process.env.RAZORPAY_DISABLE_TEST_FALLBACK === 'true' ? '' : 'rzp_test_secret_AathiraiTestSecretKey2026');
+  return (process.env.RAZORPAY_KEY_SECRET || '').trim();
 }
 
 /**

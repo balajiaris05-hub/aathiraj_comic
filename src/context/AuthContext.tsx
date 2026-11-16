@@ -237,10 +237,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const headers = await getAuthHeaders();
       const [authorRes, statusRes] = await Promise.all([
-        fetch(`/api/author/me?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}`, { headers }),
+        fetch(`/api/author/me?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}`, { headers, cache: 'no-store' }),
         fetch(
           `/api/auth/reader-status?userId=${encodeURIComponent(user.id)}&email=${encodeURIComponent(user.email)}&phone=${encodeURIComponent(user.phone || '')}`,
-          { headers }
+          { headers, cache: 'no-store' }
         ),
       ]);
       const authorData = await authorRes.json();
@@ -368,12 +368,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    if (user?.email || user?.id) {
+    if (user?.email || user?.id || user?.phone) {
       refreshUser();
     } else {
       fetchNotifications(null);
     }
-  }, [user?.id, user?.email, fetchNotifications]);
+  }, [user?.id, user?.email, user?.phone, fetchNotifications]);
 
   const actualDbRole: UserRole = user?.role || 'reader';
   const effectiveUiRole: UserRole = isDevMode && devPreviewRole ? devPreviewRole : actualDbRole;
