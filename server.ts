@@ -11,8 +11,9 @@ import {
   verifySmtpConnection,
   sendEmail,
   sendAdminOtpEmail,
-  sendReaderWelcomeAndOtpEmail,
   sendPasswordResetOtpEmail,
+  sendEmailVerificationOtpEmail,
+  sendReaderAccountWelcomeEmail,
 } from './src/server/mailer.ts';
 import { getSmsConfigSummary, sendOtpSms } from './src/server/sms.ts';
 import {
@@ -41,6 +42,8 @@ import {
   verifyBearerToken,
   resolveAuthenticatedUser,
   validateAndNormalizeDob,
+  createVerificationProofToken,
+  verifyVerificationProofToken,
 } from './src/server/security.ts';
 import {
   hasRealRazorpayApiKeys,
@@ -965,6 +968,234 @@ async function startServer() {
     return { valid: false, expired: sawExpired };
   };
 
+  app.post('/api/auth/send-registration-email-otp', authRateLimiter, async (req, res) => {
+    const { email, name } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const cleanName = typeof name === 'string' ? name.trim() : '';
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid Gmail address.' });
+    }
+
+    const snapshot = db.getSnapshot();
+    const existing = snapshot.users.find(
+      (u: User) => u.email && u.email.toLowerCase() === cleanEmail
+    );
+    if (
+      existing &&
+      (existing.isVerified ||
+        existing.emailVerified ||
+        existing.role === 'admin' ||
+        existing.role === 'author')
+    ) {
+      return res.status(409).json({
+        error:
+          'An account with this Gmail address already exists. Please use Returning Customer Login or Forgot Password.',
+      });
+    }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpKey = `reg_email:${cleanEmail}`;
+    db.mutate(d => {
+      d.otps[otpKey] = createOtpEntry(otp);
+    });
+
+    const emailDelivery = await sendEmailVerificationOtpEmail({
+      to: cleanEmail,
+      name: cleanName || 'Reader',
+      otp,
+    });
+
+    if (!emailDelivery.sent) {
+      db.mutate(d => {
+        delete d.otps[otpKey];
+      });
+      return res.status(emailDelivery.configured ? 502 : 503).json({
+        success: false,
+        emailDelivered: false,
+        smtpConfigured: emailDelivery.configured,
+        from: emailDelivery.from,
+        error:
+          emailDelivery.error ||
+          'Unable to send OTP to this Gmail address. Please check SMTP configuration or try again.',
+      });
+    }
+
+    const senderEmail = emailDelivery.from || 'aathiraicomic@gmail.com';
+    return res.json({
+      success: true,
+      emailDelivered: true,
+      email: cleanEmail,
+      from: senderEmail,
+      accepted: emailDelivery.accepted,
+      message: `6-digit OTP sent from ${senderEmail} to ${cleanEmail}. Check Inbox, Spam, or Updates and enter the code below.`,
+    });
+  });
+
+  app.post('/api/auth/verify-registration-email-otp', authRateLimiter, async (req, res) => {
+    const { email, otp } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid Gmail address.' });
+    }
+
+    const otpKey = `reg_email:${cleanEmail}`;
+    const snapshot = db.getSnapshot();
+    const otpCheck = verifyOtpAgainstKeys(snapshot.otps, [otpKey], otp);
+
+    if (!otpCheck.valid) {
+      return res.status(400).json({
+        error: otpCheck.expired
+          ? 'Gmail OTP expired (valid for 10 minutes). Please click Resend OTP.'
+          : 'Invalid 6-digit Gmail OTP code. Please check your inbox and try again.',
+      });
+    }
+
+    db.mutate(d => {
+      delete d.otps[otpKey];
+    });
+
+    const emailVerificationToken = createVerificationProofToken('reg_email', cleanEmail);
+    return res.json({
+      success: true,
+      verified: true,
+      email: cleanEmail,
+      emailVerificationToken,
+      message: `Gmail address (${cleanEmail}) verified!`,
+    });
+  });
+
+  app.post('/api/auth/send-registration-mobile-otp', authRateLimiter, async (req, res) => {
+    const { phone, countryCode, smsChannel } = req.body;
+    const formattedPhone = formatGlobalPhone(phone, countryCode);
+    const cleanDigits = formattedPhone.replace(/\D/g, '');
+    const phoneKey = getPhoneOtpKey(phone, countryCode);
+
+    if (cleanDigits.length < 6 || phoneKey.length < 6) {
+      return res.status(400).json({
+        error: 'Please select your country and enter a valid Mobile Number.',
+      });
+    }
+
+    const snapshot = db.getSnapshot();
+    const existing = snapshot.users.find(
+      (u: User) =>
+        phonesMatch(u.phone, phone, countryCode) &&
+        (u.isVerified ||
+          u.emailVerified ||
+          u.role === 'admin' ||
+          u.role === 'author')
+    );
+
+    if (existing) {
+      return res.status(409).json({
+        error:
+          'An account with this Mobile Number already exists. Please use Returning Customer Login or Forgot Password.',
+      });
+    }
+
+    const useFirebaseSms = smsChannel === 'firebase' || smsChannel === undefined;
+    if (useFirebaseSms) {
+      return res.json({
+        success: true,
+        available: true,
+        phone: formattedPhone,
+        countryCode: countryCode ? String(countryCode).trim() : '+91',
+        provider: 'firebase',
+      });
+    }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpKey = `reg_mobile:${phoneKey}`;
+    db.mutate(d => {
+      d.otps[otpKey] = createOtpEntry(otp);
+    });
+
+    const smsDelivery = await sendOtpSms({
+      phone: formattedPhone,
+      countryCode,
+      otp,
+      purpose: 'register',
+    });
+
+    if (!smsDelivery.sent) {
+      return res.status(smsDelivery.configured ? 502 : 503).json({
+        success: false,
+        smsDelivered: false,
+        smsConfigured: smsDelivery.configured,
+        provider: smsDelivery.provider,
+        error:
+          smsDelivery.error ||
+          'SMS OTP delivery failed. Please check mobile number and SMS configuration.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      available: true,
+      smsDelivered: true,
+      phone: formattedPhone,
+      provider: smsDelivery.provider,
+      message: `6-digit SMS OTP sent to ${formattedPhone}.`,
+    });
+  });
+
+  app.post('/api/auth/verify-registration-mobile-otp', authRateLimiter, async (req, res) => {
+    const { phone, countryCode, otp } = req.body;
+    const formattedPhone = formatGlobalPhone(phone, countryCode);
+    const cleanDigits = formattedPhone.replace(/\D/g, '');
+    const phoneKey = getPhoneOtpKey(phone, countryCode);
+
+    if (cleanDigits.length < 6) {
+      return res.status(400).json({ error: 'Please enter a valid Mobile Number.' });
+    }
+
+    const tokenInfo = await verifyBearerToken(req.headers.authorization);
+    const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
+    const firebasePhoneVerified = Boolean(
+      tokenInfo?.phoneNumber && phonesMatch(formattedPhone, tokenInfo.phoneNumber, countryCode)
+    );
+
+    if (hasFirebasePhoneClaim && !firebasePhoneVerified) {
+      return res.status(403).json({
+        error: 'Verified Firebase mobile number does not match the entered mobile number.',
+      });
+    }
+
+    if (!firebasePhoneVerified) {
+      const otpKey = `reg_mobile:${phoneKey}`;
+      const snapshot = db.getSnapshot();
+      const otpCheck = verifyOtpAgainstKeys(snapshot.otps, [otpKey], otp);
+      if (!otpCheck.valid) {
+        return res.status(400).json({
+          error: otpCheck.expired
+            ? 'Mobile SMS OTP expired (valid for 10 minutes). Please click Resend OTP.'
+            : 'Invalid 6-digit Mobile OTP code. Please check the SMS sent to your device.',
+        });
+      }
+      db.mutate(d => {
+        delete d.otps[otpKey];
+      });
+    }
+
+    const mobileVerificationToken = createVerificationProofToken(
+      'reg_mobile',
+      tokenInfo?.phoneNumber || formattedPhone
+    );
+
+    return res.json({
+      success: true,
+      verified: true,
+      verifiedVia: firebasePhoneVerified ? 'firebase_sms' : 'backend_otp',
+      phone: formattedPhone,
+      mobileVerificationToken,
+      message: `Mobile Number (${formattedPhone}) verified!`,
+    });
+  });
+
   app.post('/api/auth/register', authRateLimiter, async (req, res) => {
     const {
       name,
@@ -980,6 +1211,8 @@ async function startServer() {
       upiId,
       bio,
       avatar,
+      emailVerificationToken,
+      mobileVerificationToken,
     } = req.body;
     const cleanName = typeof name === 'string' ? name.trim() : '';
     const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
@@ -1010,14 +1243,36 @@ async function startServer() {
       return res.status(400).json({ error: 'Password and Confirm Password do not match.' });
     }
 
+    // Strict Pre-Creation Dual-OTP Enforcement: Both Gmail and Mobile OTPs must be verified BEFORE creating the account
+    const isEmailVerifiedProof = verifyVerificationProofToken(
+      emailVerificationToken,
+      'reg_email',
+      cleanEmail
+    );
+    if (!isEmailVerifiedProof) {
+      return res.status(400).json({
+        error: 'Please send and verify the 6-digit OTP sent to your Gmail address before creating your account.',
+      });
+    }
+
+    const tokenInfo = await verifyBearerToken(req.headers.authorization);
+    const firebasePhoneVerified = Boolean(
+      tokenInfo?.phoneNumber && phonesMatch(formattedPhone, tokenInfo.phoneNumber, countryCode)
+    );
+    const isMobileVerifiedProof =
+      firebasePhoneVerified ||
+      verifyVerificationProofToken(mobileVerificationToken, 'reg_mobile', formattedPhone);
+    if (!isMobileVerifiedProof) {
+      return res.status(400).json({
+        error: 'Please send and verify the 6-digit SMS OTP sent to your Mobile Number before creating your account.',
+      });
+    }
+
     const nowIso = new Date().toISOString();
     const hashedPass = hashPassword(String(password));
 
     let registeredUser: User | null = null;
     let duplicateConflict = false;
-    const otp = crypto.randomInt(100000, 999999).toString();
-    const otpKey = cleanEmail.toLowerCase();
-    const phoneKey = getPhoneOtpKey(phone, countryCode);
 
     db.mutate(d => {
       const existing = d.users.find((u: User) =>
@@ -1035,7 +1290,7 @@ async function startServer() {
           duplicateConflict = true;
           return;
         }
-        // Only allow updating an unverified pending reader registration before OTP confirmation
+        // Finalize any legacy unverified placeholder record now that both OTPs are verified
         existing.name = cleanName;
         existing.email = cleanEmail;
         existing.phone = formattedPhone;
@@ -1046,6 +1301,11 @@ async function startServer() {
         if (avatar) existing.avatar = String(avatar);
         existing.passwordHash = hashedPass;
         delete existing.password;
+        existing.isVerified = true;
+        existing.emailVerified = true;
+        if (tokenInfo?.firebaseUid && !existing.firebaseUid) {
+          existing.firebaseUid = tokenInfo.firebaseUid;
+        }
         existing.failedLoginAttempts = 0;
         existing.lockedUntil = null;
         existing.welcomeEmailSent = true;
@@ -1058,6 +1318,7 @@ async function startServer() {
       } else {
         const newUser: User = {
           id: 'usr_' + Date.now(),
+          firebaseUid: tokenInfo?.firebaseUid || undefined,
           name: cleanName,
           email: cleanEmail,
           passwordHash: hashedPass,
@@ -1074,7 +1335,8 @@ async function startServer() {
           countryCode: countryCode ? String(countryCode).trim() : '+91',
           countryName: countryName ? String(countryName).trim() : 'India',
           role: 'reader',
-          isVerified: false,
+          isVerified: true,
+          emailVerified: true,
           bookmarks: [],
           favorites: [],
           readingHistory: [],
@@ -1088,12 +1350,6 @@ async function startServer() {
         };
         d.users.push(newUser);
         registeredUser = newUser;
-      }
-
-      const otpEntry = createOtpEntry(otp);
-      d.otps[otpKey] = otpEntry;
-      if (phoneKey.length >= 6) {
-        d.otps[phoneKey] = otpEntry;
       }
     });
 
@@ -1120,7 +1376,7 @@ async function startServer() {
       userId: finalUser.id,
       userEmail: finalUser.email,
       title: 'Welcome to Aathirai_Comic!',
-      message: `Hello ${finalUser.name}, your reader account is registered. Explore Indian comics, bookmark your favorite series, and enjoy smooth reading modes.`,
+      message: `Hello ${finalUser.name}, your Gmail & Mobile Number are verified and your reader account is active.`,
       type: 'system',
       targetId: finalUser.id,
     });
@@ -1128,7 +1384,7 @@ async function startServer() {
     const welcomeEmailPayload = {
       to: finalUser.email,
       subject: 'Welcome to Aathirai_Comic! Your Customer Account Has Been Created',
-      body: `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your customer account (${finalUser.email} / ${finalUser.phone || 'Mobile Linked'}) has been created and stored in our database.`,
+      body: `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your verified customer account (${finalUser.email} / ${finalUser.phone || 'Mobile Linked'}) has been created and stored in our database.`,
       sentAt: nowIso,
     };
 
@@ -1136,31 +1392,15 @@ async function startServer() {
       'READER_REGISTERED',
       finalUser.email,
       finalUser.role,
-      `Customer registered & Welcome Email sent to ${finalUser.email}: ${finalUser.name} | DOB verified | Age: ${finalUser.age || 'N/A'} | Mobile: ${finalUser.phone || 'N/A'}.`,
+      `Customer registered after dual Gmail + Mobile OTP verification: ${finalUser.name} | DOB verified | Age: ${finalUser.age || 'N/A'} | Mobile: ${finalUser.phone || 'N/A'}.`,
       'user',
       finalUser.id
     );
 
-    const useFirebaseSms = req.body?.smsChannel === 'firebase' || req.body?.smsChannel === undefined;
-    const [emailDelivery, smsDelivery] = await Promise.all([
-      sendReaderWelcomeAndOtpEmail({
-        to: finalUser.email,
-        name: finalUser.name,
-        otp,
-      }),
-      finalUser.phone && notifyMobile !== false && !useFirebaseSms
-        ? sendOtpSms({
-            phone: finalUser.phone,
-            countryCode: finalUser.countryCode,
-            otp,
-            purpose: 'register',
-          })
-        : Promise.resolve({
-            sent: Boolean(req.body?.firebaseSmsSent),
-            configured: useFirebaseSms ? true : getSmsConfigSummary().configured,
-            provider: useFirebaseSms ? ('firebase' as const) : getSmsConfigSummary().provider,
-          }),
-    ]);
+    const welcomeDelivery = await sendReaderAccountWelcomeEmail({
+      to: finalUser.email,
+      name: finalUser.name,
+    });
 
     mirrorWritesInBackground(
       'auth_register',
@@ -1171,23 +1411,14 @@ async function startServer() {
     return res.json({
       success: true,
       storedInBackend: true,
-      emailDelivered: emailDelivery.sent,
-      smsDelivered: smsDelivery.sent,
-      smsProvider: smsDelivery.provider,
-      smtpConfigured: emailDelivery.configured,
-      smsConfigured: smsDelivery.configured,
-      user: sanitizeUserForClient(finalUser, false),
+      verified: true,
+      emailDelivered: welcomeDelivery.sent,
+      smtpConfigured: welcomeDelivery.configured,
+      user: sanitizeUserForClient(finalUser, true),
       subscription: reconciled.subStatus,
       razorpayVerified: reconciled.razorpayVerified,
       welcomeEmail: welcomeEmailPayload,
-      message:
-        emailDelivery.sent && smsDelivery.sent
-          ? `Account created and stored securely in backend! 6-digit OTP sent to ${cleanEmail} (SMTP) and ${finalUser.phone} (SMS via ${smsDelivery.provider}).`
-          : emailDelivery.sent
-            ? `Account created and stored securely in backend! Welcome & 6-digit OTP email sent to ${cleanEmail} via SMTP.`
-            : smsDelivery.sent
-              ? `Account created and stored securely in backend! 6-digit OTP sent via SMS (${smsDelivery.provider}) to ${finalUser.phone}.`
-              : `Account created and stored securely in backend! Welcome email recorded for ${cleanEmail} ("Welcome to Aathirai_Comic").`,
+      message: `Gmail (${cleanEmail}) & Mobile (${finalUser.phone}) verified — customer account created and active!`,
     });
   });
 

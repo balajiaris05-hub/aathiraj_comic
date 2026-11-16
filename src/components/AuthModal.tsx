@@ -31,18 +31,18 @@ type AuthMode = 'login' | 'register' | 'verify-otp' | 'change-password';
 
 const DOB_DAYS = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, '0'));
 const DOB_MONTHS = [
-  { value: '01', label: '01 - Jan' },
-  { value: '02', label: '02 - Feb' },
-  { value: '03', label: '03 - Mar' },
-  { value: '04', label: '04 - Apr' },
-  { value: '05', label: '05 - May' },
-  { value: '06', label: '06 - Jun' },
-  { value: '07', label: '07 - Jul' },
-  { value: '08', label: '08 - Aug' },
-  { value: '09', label: '09 - Sep' },
-  { value: '10', label: '10 - Oct' },
-  { value: '11', label: '11 - Nov' },
-  { value: '12', label: '12 - Dec' },
+  { value: '01', label: 'Jan' },
+  { value: '02', label: 'Feb' },
+  { value: '03', label: 'Mar' },
+  { value: '04', label: 'Apr' },
+  { value: '05', label: 'May' },
+  { value: '06', label: 'Jun' },
+  { value: '07', label: 'Jul' },
+  { value: '08', label: 'Aug' },
+  { value: '09', label: 'Sep' },
+  { value: '10', label: 'Oct' },
+  { value: '11', label: 'Nov' },
+  { value: '12', label: 'Dec' },
 ];
 const DOB_YEARS = Array.from({ length: 82 }, (_, i) => String(2021 - i));
 
@@ -60,7 +60,7 @@ function calculateAgeFromDob(day: string, month: string, year: string): number {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFullReaderPage }) => {
-  const { login, getAuthHeaders } = useAuth();
+  const { login, setAuthenticatedUser, getAuthHeaders } = useAuth();
   const [mode, setMode] = useState<AuthMode>('login');
   const [credential, setCredential] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -102,6 +102,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
   const [verifiedResetPhoneIdToken, setVerifiedResetPhoneIdToken] = useState<string | null>(null);
   const [smsNotice, setSmsNotice] = useState<string | null>(null);
 
+  // Separate pre-registration Gmail & Mobile OTP state
+  const [emailOtpInput, setEmailOtpInput] = useState('');
+  const [emailOtpSent, setEmailOtpSent] = useState(false);
+  const [emailOtpSending, setEmailOtpSending] = useState(false);
+  const [emailOtpVerifying, setEmailOtpVerifying] = useState(false);
+  const [emailOtpVerified, setEmailOtpVerified] = useState(false);
+  const [emailVerificationToken, setEmailVerificationToken] = useState('');
+  const [emailOtpNotice, setEmailOtpNotice] = useState<string | null>(null);
+  const [emailOtpError, setEmailOtpError] = useState<string | null>(null);
+
+  const [mobileOtpInput, setMobileOtpInput] = useState('');
+  const [mobileOtpSent, setMobileOtpSent] = useState(false);
+  const [mobileOtpSending, setMobileOtpSending] = useState(false);
+  const [mobileOtpVerifying, setMobileOtpVerifying] = useState(false);
+  const [mobileOtpVerified, setMobileOtpVerified] = useState(false);
+  const [mobileVerificationToken, setMobileVerificationToken] = useState('');
+  const [mobileOtpNotice, setMobileOtpNotice] = useState<string | null>(null);
+  const [mobileOtpError, setMobileOtpError] = useState<string | null>(null);
+
   React.useEffect(() => {
     return () => {
       clearRecaptchaVerifier('firebase-recaptcha-modal-reg');
@@ -114,16 +133,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     if (mode === 'verify-otp') {
       return listenForDeviceSmsOtp((code) => setOtp(code));
     }
+    if (mode === 'register' && mobileOtpSent && !mobileOtpVerified) {
+      return listenForDeviceSmsOtp((code) => setMobileOtpInput(code));
+    }
     if (mode === 'change-password' && resetStep === 'verify_otp') {
       return listenForDeviceSmsOtp((code) => setResetOtp(code));
     }
-  }, [isOpen, mode, resetStep]);
+  }, [isOpen, mode, resetStep, mobileOtpSent, mobileOtpVerified]);
 
   if (!isOpen) return null;
 
   const hasSelectedDob = Boolean(dobDay && dobMonth && dobYear);
   const calculatedAge = hasSelectedDob ? calculateAgeFromDob(dobDay, dobMonth, dobYear) : 22;
   const formattedDob = hasSelectedDob ? `${dobDay}/${dobMonth}/${dobYear}` : '';
+
+  const resetEmailOtpState = () => {
+    setEmailOtpSent(false);
+    setEmailOtpVerified(false);
+    setEmailOtpInput('');
+    setEmailVerificationToken('');
+    setEmailOtpNotice(null);
+    setEmailOtpError(null);
+  };
+
+  const resetMobileOtpState = () => {
+    setMobileOtpSent(false);
+    setMobileOtpVerified(false);
+    setMobileOtpInput('');
+    setMobileVerificationToken('');
+    setFirebaseRegConfirmation(null);
+    setMobileOtpNotice(null);
+    setMobileOtpError(null);
+  };
 
   const resetState = () => {
     setError(null);
@@ -133,6 +174,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     setFirebaseResetConfirmation(null);
     setVerifiedResetPhoneIdToken(null);
     setOtp('');
+    resetEmailOtpState();
+    resetMobileOtpState();
   };
 
   const handleVerifyIdentity = async (e: React.FormEvent) => {
@@ -219,14 +262,177 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     }
   };
 
+  const handleSendModalEmailOtp = async () => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setEmailOtpError('Enter a valid Gmail address first.');
+      return;
+    }
+    setEmailOtpSending(true);
+    setEmailOtpError(null);
+    setEmailOtpNotice(null);
+    setError(null);
+    try {
+      const res = await fetch('/api/auth/send-registration-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, name: name.trim() }),
+      });
+      const data = await res.json();
+      setEmailOtpSending(false);
+      if (res.ok && data.success) {
+        setEmailOtpSent(true);
+        setEmailOtpVerified(false);
+        setEmailVerificationToken('');
+        setEmailOtpNotice(data.message || `6-digit OTP sent to ${cleanEmail}.`);
+      } else {
+        setEmailOtpError(data.error || 'Could not send Gmail OTP.');
+      }
+    } catch (err: any) {
+      setEmailOtpSending(false);
+      setEmailOtpError(err?.message || 'Network error');
+    }
+  };
+
+  const handleVerifyModalEmailOtp = async () => {
+    const cleanCode = emailOtpInput.trim();
+    if (cleanCode.length < 4) {
+      setEmailOtpError('Enter the 6-digit Gmail OTP.');
+      return;
+    }
+    setEmailOtpVerifying(true);
+    setEmailOtpError(null);
+    try {
+      const res = await fetch('/api/auth/verify-registration-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), otp: cleanCode }),
+      });
+      const data = await res.json();
+      setEmailOtpVerifying(false);
+      if (res.ok && data.verified && data.emailVerificationToken) {
+        setEmailOtpVerified(true);
+        setEmailVerificationToken(data.emailVerificationToken);
+        setEmailOtpNotice(data.message || 'Gmail verified.');
+        setError(null);
+      } else {
+        setEmailOtpError(data.error || 'Invalid Gmail OTP.');
+      }
+    } catch (err: any) {
+      setEmailOtpVerifying(false);
+      setEmailOtpError(err?.message || 'Network error');
+    }
+  };
+
+  const handleSendModalMobileOtp = async () => {
+    const cleanPhone = phone.trim();
+    if (cleanPhone.replace(/\D/g, '').length < 6) {
+      setMobileOtpError('Enter a valid mobile number first.');
+      return;
+    }
+    setMobileOtpSending(true);
+    setMobileOtpError(null);
+    setMobileOtpNotice(null);
+    setError(null);
+    try {
+      const res = await fetch('/api/auth/send-registration-mobile-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPhone, countryCode: '+91', smsChannel: 'firebase' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMobileOtpSending(false);
+        setMobileOtpError(data.error || 'Could not send SMS OTP.');
+        return;
+      }
+      if (data.provider === 'firebase') {
+        const fbSms = await sendFirebaseSmsOtp(cleanPhone, 'firebase-recaptcha-modal-reg', '+91');
+        setMobileOtpSending(false);
+        if (fbSms.sent && fbSms.confirmationResult) {
+          setFirebaseRegConfirmation(fbSms.confirmationResult);
+          setMobileOtpSent(true);
+          setMobileOtpVerified(false);
+          setMobileVerificationToken('');
+          setMobileOtpNotice(`6-digit SMS OTP sent to ${fbSms.phoneE164}.`);
+        } else {
+          setFirebaseRegConfirmation(null);
+          setMobileOtpError(fbSms.errorMessage || 'Failed to send SMS OTP.');
+        }
+        return;
+      }
+      setMobileOtpSending(false);
+      if (data.smsDelivered) {
+        setMobileOtpSent(true);
+        setMobileOtpVerified(false);
+        setMobileVerificationToken('');
+        setMobileOtpNotice(data.message || `6-digit SMS OTP sent to ${cleanPhone}.`);
+      } else {
+        setMobileOtpError(data.error || 'Could not deliver SMS OTP.');
+      }
+    } catch (err: any) {
+      setMobileOtpSending(false);
+      setMobileOtpError(err?.message || 'Network error');
+    }
+  };
+
+  const handleVerifyModalMobileOtp = async () => {
+    const cleanCode = mobileOtpInput.trim();
+    if (cleanCode.length < 4) {
+      setMobileOtpError('Enter the 6-digit SMS OTP.');
+      return;
+    }
+    setMobileOtpVerifying(true);
+    setMobileOtpError(null);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (firebaseRegConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseRegConfirmation, cleanCode);
+        if (!fbVerify.verified || !fbVerify.idToken) {
+          setMobileOtpVerifying(false);
+          setMobileOtpError(fbVerify.error || 'Incorrect SMS OTP.');
+          return;
+        }
+        headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+      }
+      const res = await fetch('/api/auth/verify-registration-mobile-otp', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ phone: phone.trim(), countryCode: '+91', otp: cleanCode }),
+      });
+      const data = await res.json();
+      setMobileOtpVerifying(false);
+      if (res.ok && data.verified && data.mobileVerificationToken) {
+        setMobileOtpVerified(true);
+        setMobileVerificationToken(data.mobileVerificationToken);
+        setFirebaseRegConfirmation(null);
+        setMobileOtpNotice(data.message || 'Mobile verified.');
+        setError(null);
+      } else {
+        setMobileOtpError(data.error || 'Invalid SMS OTP.');
+      }
+    } catch (err: any) {
+      setMobileOtpVerifying(false);
+      setMobileOtpError(err?.message || 'Network error');
+    }
+  };
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() && !phone.trim()) {
-      setError('Please provide your Gmail address.');
+    if (!email.trim() || !phone.trim()) {
+      setError('Please enter both Gmail address and Mobile Number.');
       return;
     }
     if (!dobDay || !dobMonth || !dobYear) {
-      setError('Please select your Date of Birth (Date, Month, and Year).');
+      setError('Please select your Date of Birth (DD / MM / YYYY).');
+      return;
+    }
+    if (!emailOtpVerified || !emailVerificationToken) {
+      setError('Please send and verify the OTP for your Gmail address before creating your account.');
+      return;
+    }
+    if (!mobileOtpVerified || !mobileVerificationToken) {
+      setError('Please send and verify the SMS OTP for your Mobile Number before creating your account.');
       return;
     }
     if (!regPassword || regPassword.length < 4) {
@@ -255,35 +461,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
           confirmPassword: regConfirmPassword,
           notifyGmail,
           notifyMobile,
-          smsChannel: 'firebase',
+          emailVerificationToken,
+          mobileVerificationToken,
           role: 'reader',
         }),
       });
       const data = await res.json();
-      if (res.ok) {
-        let fbSmsMsg = '';
-        if (phone.trim()) {
-          const fbSms = await sendFirebaseSmsOtp(phone.trim(), 'firebase-recaptcha-modal-reg', '+91');
-          if (fbSms.sent && fbSms.confirmationResult) {
-            setFirebaseRegConfirmation(fbSms.confirmationResult);
-            fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
-            setSmsNotice(fbSmsMsg);
-          } else {
-            setFirebaseRegConfirmation(null);
-            if (fbSms.errorMessage) {
-              setSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
-            }
-          }
-        }
-        setLoading(false);
-        setSuccessMsg(
-          fbSmsMsg
-            ? `Welcome to Aathirai_Comic! ${fbSmsMsg} Confirmation email also sent to ${email}.`
-            : `Welcome to Aathirai_Comic! Account created & welcome email sent to ${email}. Verify OTP below.`
-        );
-        setMode('verify-otp');
+      setLoading(false);
+      if (res.ok && data.user) {
+        setAuthenticatedUser(data.user);
+        onClose();
       } else {
-        setLoading(false);
         setError(data.error || 'Registration failed');
       }
     } catch (err: any) {
@@ -713,89 +901,200 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Date of Birth (Date / Month / Year) <span className="text-rose-500">*</span>
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Date of Birth <span className="text-rose-500">*</span>
                 </label>
-                <span className="text-[11px] font-mono font-bold text-rose-600 dark:text-rose-400">
-                  {hasSelectedDob ? `Age: ${calculatedAge} yrs` : 'Select DOB'}
-                </span>
+                {hasSelectedDob && (
+                  <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                    {calculatedAge} yrs
+                  </span>
+                )}
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <select
+                  aria-label="Date of Birth Day"
                   required
                   value={dobDay}
                   onChange={(e) => setDobDay(e.target.value)}
-                  className={`w-full px-2 py-2 text-xs font-mono font-bold rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 ${
+                  className={`w-full px-2 py-2 text-xs font-mono rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 ${
                     !dobDay ? 'text-slate-400 dark:text-slate-500' : ''
                   }`}
                 >
-                  <option value="" disabled>Date (DD)</option>
+                  <option value="" disabled>DD</option>
                   {DOB_DAYS.map((d) => (
-                    <option key={d} value={d}>Date: {d}</option>
+                    <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
                 <select
+                  aria-label="Date of Birth Month"
                   required
                   value={dobMonth}
                   onChange={(e) => setDobMonth(e.target.value)}
-                  className={`w-full px-2 py-2 text-xs font-mono font-bold rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 ${
+                  className={`w-full px-2 py-2 text-xs font-mono rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 ${
                     !dobMonth ? 'text-slate-400 dark:text-slate-500' : ''
                   }`}
                 >
-                  <option value="" disabled>Month (MM)</option>
+                  <option value="" disabled>MM</option>
                   {DOB_MONTHS.map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
                 <select
+                  aria-label="Date of Birth Year"
                   required
                   value={dobYear}
                   onChange={(e) => setDobYear(e.target.value)}
-                  className={`w-full px-2 py-2 text-xs font-mono font-bold rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 ${
+                  className={`w-full px-2 py-2 text-xs font-mono rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 ${
                     !dobYear ? 'text-slate-400 dark:text-slate-500' : ''
                   }`}
                 >
-                  <option value="" disabled>Year (YYYY)</option>
+                  <option value="" disabled>YYYY</option>
                   {DOB_YEARS.map((y) => (
-                    <option key={y} value={y}>Year: {y}</option>
+                    <option key={y} value={y}>{y}</option>
                   ))}
                 </select>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                  Gmail Address <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="email"
-                    required
-                    placeholder="Enter your Gmail address"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Gmail Address <span className="text-rose-500">*</span>
+                  </label>
+                  {emailOtpVerified && (
+                    <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                      Verified ✓
+                    </span>
+                  )}
                 </div>
+                <div className="flex items-stretch gap-1.5">
+                  <div className="relative flex-1 min-w-0">
+                    <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="email"
+                      required
+                      placeholder="Enter your Gmail address"
+                      value={email}
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        resetEmailOtpState();
+                      }}
+                      className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSendModalEmailOtp}
+                    disabled={emailOtpSending || !email.trim()}
+                    className={`px-2.5 py-2 rounded-lg text-xs font-bold shrink-0 cursor-pointer ${
+                      emailOtpVerified
+                        ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                        : 'bg-slate-900 dark:bg-rose-600 text-white disabled:opacity-50'
+                    }`}
+                  >
+                    {emailOtpSending ? 'Sending...' : emailOtpVerified ? 'Verified ✓' : emailOtpSent ? 'Resend' : 'Send OTP'}
+                  </button>
+                </div>
+                {emailOtpSent && !emailOtpVerified && (
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      name="email-otp"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="[0-9]*"
+                      maxLength={6}
+                      placeholder="6-digit Gmail OTP"
+                      value={emailOtpInput}
+                      onChange={(e) => {
+                        setEmailOtpInput(e.target.value.replace(/\D/g, ''));
+                        setEmailOtpError(null);
+                      }}
+                      className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-mono tracking-widest text-center rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleVerifyModalEmailOtp}
+                      disabled={emailOtpVerifying || emailOtpInput.length < 4}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold shrink-0 disabled:opacity-50 cursor-pointer"
+                    >
+                      {emailOtpVerifying ? 'Checking...' : 'Verify'}
+                    </button>
+                  </div>
+                )}
+                {emailOtpError && <p className="text-[11px] text-rose-500 mt-1">{emailOtpError}</p>}
+                {emailOtpNotice && !emailOtpError && <p className="text-[11px] text-emerald-500 mt-1">{emailOtpNotice}</p>}
               </div>
 
               <div>
-                <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
-                  Mobile Number (+91) <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <Phone className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="tel"
-                    required
-                    placeholder="Enter your mobile number (+91)"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Mobile Number (+91) <span className="text-rose-500">*</span>
+                  </label>
+                  {mobileOtpVerified && (
+                    <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                      Verified ✓
+                    </span>
+                  )}
                 </div>
+                <div className="flex items-stretch gap-1.5">
+                  <div className="relative flex-1 min-w-0">
+                    <Phone className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="tel"
+                      required
+                      placeholder="Enter your mobile number (+91)"
+                      value={phone}
+                      onChange={(e) => {
+                        setPhone(e.target.value);
+                        resetMobileOtpState();
+                      }}
+                      className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSendModalMobileOtp}
+                    disabled={mobileOtpSending || phone.replace(/\D/g, '').length < 6}
+                    className={`px-2.5 py-2 rounded-lg text-xs font-bold shrink-0 cursor-pointer ${
+                      mobileOtpVerified
+                        ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                        : 'bg-slate-900 dark:bg-rose-600 text-white disabled:opacity-50'
+                    }`}
+                  >
+                    {mobileOtpSending ? 'Sending...' : mobileOtpVerified ? 'Verified ✓' : mobileOtpSent ? 'Resend' : 'Send OTP'}
+                  </button>
+                </div>
+                {mobileOtpSent && !mobileOtpVerified && (
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      name="otp"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="[0-9]*"
+                      maxLength={6}
+                      placeholder="6-digit SMS OTP"
+                      value={mobileOtpInput}
+                      onChange={(e) => {
+                        setMobileOtpInput(e.target.value.replace(/\D/g, ''));
+                        setMobileOtpError(null);
+                      }}
+                      className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-mono tracking-widest text-center rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleVerifyModalMobileOtp}
+                      disabled={mobileOtpVerifying || mobileOtpInput.length < 4}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold shrink-0 disabled:opacity-50 cursor-pointer"
+                    >
+                      {mobileOtpVerifying ? 'Checking...' : 'Verify'}
+                    </button>
+                  </div>
+                )}
+                {mobileOtpError && <p className="text-[11px] text-rose-500 mt-1">{mobileOtpError}</p>}
+                {mobileOtpNotice && !mobileOtpError && <p className="text-[11px] text-emerald-500 mt-1">{mobileOtpNotice}</p>}
               </div>
             </div>
 
@@ -851,10 +1150,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-colors shadow-md cursor-pointer"
+              disabled={loading || !emailOtpVerified || !mobileOtpVerified}
+              className="w-full py-2.5 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm transition-colors shadow-md cursor-pointer"
             >
-              {loading ? 'Creating Account...' : 'Create Account & Send Welcome Email'}
+              {loading
+                ? 'Creating Account...'
+                : !emailOtpVerified || !mobileOtpVerified
+                  ? 'Verify Both Gmail & Mobile OTPs First'
+                  : 'Create Verified Account'}
             </button>
           </form>
         )}

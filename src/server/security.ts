@@ -112,6 +112,88 @@ export function verifySessionToken(token?: string): SessionTokenPayload | null {
   }
 }
 
+export type VerificationProofPurpose = 'reg_email' | 'reg_mobile';
+
+function normalizeProofIdentifier(purpose: VerificationProofPurpose, rawIdentifier: string): string {
+  const trimmed = String(rawIdentifier || '').trim();
+  if (purpose === 'reg_email') {
+    return trimmed.toLowerCase();
+  }
+  return trimmed.replace(/\D/g, '');
+}
+
+const VERIFICATION_PROOF_TTL_MS = 30 * 60 * 1000; // 30 minutes to finish registration after OTP verify
+
+export function createVerificationProofToken(
+  purpose: VerificationProofPurpose,
+  identifier: string
+): string {
+  const now = Date.now();
+  const payload = {
+    purpose,
+    identifier: normalizeProofIdentifier(purpose, identifier),
+    iat: now,
+    exp: now + VERIFICATION_PROOF_TTL_MS,
+  };
+  const base64Payload = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(`verify-proof:${base64Payload}`)
+    .digest('base64url');
+  return `${base64Payload}.${signature}`;
+}
+
+export function verifyVerificationProofToken(
+  token: unknown,
+  expectedPurpose: VerificationProofPurpose,
+  expectedIdentifier: string
+): boolean {
+  if (!token || typeof token !== 'string' || !token.includes('.')) {
+    return false;
+  }
+  const [base64Payload, providedSig] = token.split('.');
+  if (!base64Payload || !providedSig) return false;
+
+  const expectedSig = crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(`verify-proof:${base64Payload}`)
+    .digest('base64url');
+
+  const a = Buffer.from(providedSig);
+  const b = Buffer.from(expectedSig);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return false;
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(base64Payload, 'base64url').toString('utf-8')) as {
+      purpose?: string;
+      identifier?: string;
+      exp?: number;
+    };
+    if (!decoded.exp || Date.now() > decoded.exp) return false;
+    if (decoded.purpose !== expectedPurpose || !decoded.identifier) return false;
+
+    const expectedNorm = normalizeProofIdentifier(expectedPurpose, expectedIdentifier);
+    if (!expectedNorm) return false;
+
+    if (decoded.identifier === expectedNorm) {
+      return true;
+    }
+    if (
+      expectedPurpose === 'reg_mobile' &&
+      decoded.identifier.length >= 10 &&
+      expectedNorm.length >= 10 &&
+      decoded.identifier.slice(-10) === expectedNorm.slice(-10)
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Decode & verify a Firebase ID Token JWT structure or signed session token
  */

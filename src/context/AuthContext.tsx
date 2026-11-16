@@ -48,6 +48,7 @@ interface AuthContextType {
   logout: () => Promise<void>;
   switchDemoRole: (role: UserRole) => void;
   updateUser: (updated: Partial<User>) => void;
+  setAuthenticatedUser: (nextUser: User) => void;
   refreshUser: () => Promise<void>;
   refreshNotifications: () => Promise<void>;
   markNotificationRead: (notificationId?: string) => Promise<void>;
@@ -202,6 +203,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       persistSession(merged);
       return merged;
     });
+  };
+
+  const setAuthenticatedUser = (nextUser: User) => {
+    setDevPreviewRole(null);
+    setUser(nextUser);
+    persistSession(nextUser);
   };
 
   const fetchNotifications = useCallback(async (u?: User | null) => {
@@ -388,6 +395,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logout,
         switchDemoRole,
         updateUser,
+        setAuthenticatedUser,
         refreshUser,
         refreshNotifications,
         markNotificationRead,

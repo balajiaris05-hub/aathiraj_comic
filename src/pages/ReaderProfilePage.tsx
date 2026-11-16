@@ -52,18 +52,18 @@ interface ReaderProfilePageProps {
 
 const DOB_DAYS = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, '0'));
 const DOB_MONTHS = [
-  { value: '01', label: '01 - Jan' },
-  { value: '02', label: '02 - Feb' },
-  { value: '03', label: '03 - Mar' },
-  { value: '04', label: '04 - Apr' },
-  { value: '05', label: '05 - May' },
-  { value: '06', label: '06 - Jun' },
-  { value: '07', label: '07 - Jul' },
-  { value: '08', label: '08 - Aug' },
-  { value: '09', label: '09 - Sep' },
-  { value: '10', label: '10 - Oct' },
-  { value: '11', label: '11 - Nov' },
-  { value: '12', label: '12 - Dec' },
+  { value: '01', label: 'Jan' },
+  { value: '02', label: 'Feb' },
+  { value: '03', label: 'Mar' },
+  { value: '04', label: 'Apr' },
+  { value: '05', label: 'May' },
+  { value: '06', label: 'Jun' },
+  { value: '07', label: 'Jul' },
+  { value: '08', label: 'Aug' },
+  { value: '09', label: 'Sep' },
+  { value: '10', label: 'Oct' },
+  { value: '11', label: 'Nov' },
+  { value: '12', label: 'Dec' },
 ];
 const DOB_YEARS = Array.from({ length: 82 }, (_, i) => String(2021 - i));
 
@@ -179,7 +179,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   setCurrentTab,
   initialMode = 'profile',
 }) => {
-  const { user, login, logout, updateUser, refreshUser, hasActivePremium, getAuthHeaders } = useAuth();
+  const { user, login, logout, updateUser, setAuthenticatedUser, refreshUser, hasActivePremium, getAuthHeaders } = useAuth();
 
   const [viewSection, setViewSection] = useState<'login_register_form' | 'profile_dashboard'>(
     initialMode === 'login' || !user ? 'login_register_form' : 'profile_dashboard'
@@ -276,6 +276,27 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [firebaseResetConfirmation, setFirebaseResetConfirmation] = useState<ConfirmationResult | null>(null);
   const [verifiedResetPhoneIdToken, setVerifiedResetPhoneIdToken] = useState<string | null>(null);
   const [smsNotice, setSmsNotice] = useState<string | null>(null);
+
+  // Pre-registration separate Gmail & Mobile OTP verification state
+  const emailOtpInputRef = useRef<HTMLInputElement | null>(null);
+  const [emailOtpInput, setEmailOtpInput] = useState('');
+  const [emailOtpSent, setEmailOtpSent] = useState(false);
+  const [emailOtpSending, setEmailOtpSending] = useState(false);
+  const [emailOtpVerifying, setEmailOtpVerifying] = useState(false);
+  const [emailOtpVerified, setEmailOtpVerified] = useState(false);
+  const [emailVerificationToken, setEmailVerificationToken] = useState('');
+  const [emailOtpNotice, setEmailOtpNotice] = useState<string | null>(null);
+  const [emailOtpError, setEmailOtpError] = useState<string | null>(null);
+
+  const [mobileOtpInput, setMobileOtpInput] = useState('');
+  const [mobileOtpSent, setMobileOtpSent] = useState(false);
+  const [mobileOtpSending, setMobileOtpSending] = useState(false);
+  const [mobileOtpVerifying, setMobileOtpVerifying] = useState(false);
+  const [mobileOtpVerified, setMobileOtpVerified] = useState(false);
+  const [mobileVerificationToken, setMobileVerificationToken] = useState('');
+  const [mobileOtpNotice, setMobileOtpNotice] = useState<string | null>(null);
+  const [mobileOtpError, setMobileOtpError] = useState<string | null>(null);
+
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSuccess, setAuthSuccess] = useState<string | null>(null);
@@ -291,10 +312,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     if (authTab === 'verify-otp') {
       return listenForDeviceSmsOtp((code) => setOtp(code));
     }
+    if (authTab === 'register' && mobileOtpSent && !mobileOtpVerified) {
+      return listenForDeviceSmsOtp((code) => setMobileOtpInput(code));
+    }
     if (authTab === 'change-password' && resetStep === 'verify_otp') {
       return listenForDeviceSmsOtp((code) => setResetOtp(code));
     }
-  }, [authTab, resetStep]);
+  }, [authTab, resetStep, mobileOtpSent, mobileOtpVerified]);
 
   // Profile edit state when logged in
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -870,6 +894,209 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     e.target.value = '';
   };
 
+  const resetEmailOtpState = () => {
+    setEmailOtpSent(false);
+    setEmailOtpVerified(false);
+    setEmailOtpInput('');
+    setEmailVerificationToken('');
+    setEmailOtpNotice(null);
+    setEmailOtpError(null);
+  };
+
+  const resetMobileOtpState = () => {
+    setMobileOtpSent(false);
+    setMobileOtpVerified(false);
+    setMobileOtpInput('');
+    setMobileVerificationToken('');
+    setFirebaseRegConfirmation(null);
+    setMobileOtpNotice(null);
+    setMobileOtpError(null);
+  };
+
+  const handleSendRegEmailOtp = async () => {
+    const cleanEmail = regEmail.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setEmailOtpError('Please enter a valid Gmail address first.');
+      return;
+    }
+    const isResend = emailOtpSent;
+    setEmailOtpSending(true);
+    setEmailOtpError(null);
+    setEmailOtpNotice(null);
+    setAuthError(null);
+    try {
+      const res = await fetch('/api/auth/send-registration-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, name: regName.trim() }),
+      });
+      const data = await res.json();
+      setEmailOtpSending(false);
+      if (res.ok && data.success) {
+        setEmailOtpSent(true);
+        setEmailOtpVerified(false);
+        setEmailVerificationToken('');
+        if (isResend) {
+          setEmailOtpInput('');
+        }
+        const sender = data.from || 'aathiraicomic@gmail.com';
+        const sentAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setEmailOtpNotice(
+          data.message ||
+            `${isResend ? 'New 6-digit OTP resent' : '6-digit OTP sent'} from ${sender} to ${cleanEmail} (${sentAt}). Check Inbox, Spam, or Updates.`
+        );
+        setTimeout(() => {
+          emailOtpInputRef.current?.focus();
+        }, 40);
+      } else {
+        setEmailOtpError(data.error || 'Could not send OTP to this Gmail address.');
+      }
+    } catch (err: any) {
+      setEmailOtpSending(false);
+      setEmailOtpError(err?.message || 'Network error while sending Gmail OTP.');
+    }
+  };
+
+  const handleVerifyRegEmailOtp = async () => {
+    const cleanCode = emailOtpInput.trim();
+    if (cleanCode.length < 4) {
+      setEmailOtpError('Enter the 6-digit OTP sent to your Gmail.');
+      return;
+    }
+    setEmailOtpVerifying(true);
+    setEmailOtpError(null);
+    try {
+      const res = await fetch('/api/auth/verify-registration-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: regEmail.trim(), otp: cleanCode }),
+      });
+      const data = await res.json();
+      setEmailOtpVerifying(false);
+      if (res.ok && data.verified && data.emailVerificationToken) {
+        setEmailOtpVerified(true);
+        setEmailVerificationToken(data.emailVerificationToken);
+        setEmailOtpNotice(data.message || 'Gmail verified.');
+        setAuthError(null);
+      } else {
+        setEmailOtpError(data.error || 'Invalid Gmail OTP code.');
+      }
+    } catch (err: any) {
+      setEmailOtpVerifying(false);
+      setEmailOtpError(err?.message || 'Network error while verifying Gmail OTP.');
+    }
+  };
+
+  const handleSendRegMobileOtp = async () => {
+    const cleanPhone = regPhone.trim();
+    if (cleanPhone.replace(/\D/g, '').length < 6) {
+      setMobileOtpError('Please enter a valid mobile number.');
+      return;
+    }
+    const fullRegPhone = formatPhoneWithCountry(cleanPhone, regCountryCode);
+    setMobileOtpSending(true);
+    setMobileOtpError(null);
+    setMobileOtpNotice(null);
+    setAuthError(null);
+    try {
+      const res = await fetch('/api/auth/send-registration-mobile-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: fullRegPhone,
+          countryCode: regCountryCode,
+          smsChannel: 'firebase',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMobileOtpSending(false);
+        setMobileOtpError(data.error || 'Could not send OTP to this mobile number.');
+        return;
+      }
+
+      if (data.provider === 'firebase') {
+        const fbSms = await sendFirebaseSmsOtp(
+          fullRegPhone,
+          'firebase-recaptcha-reader',
+          regCountryCode
+        );
+        setMobileOtpSending(false);
+        if (fbSms.sent && fbSms.confirmationResult) {
+          setFirebaseRegConfirmation(fbSms.confirmationResult);
+          setMobileOtpSent(true);
+          setMobileOtpVerified(false);
+          setMobileVerificationToken('');
+          setMobileOtpNotice(`6-digit SMS OTP sent to ${fbSms.phoneE164}.`);
+        } else {
+          setFirebaseRegConfirmation(null);
+          setMobileOtpError(fbSms.errorMessage || 'Failed to send SMS OTP. Please verify your number and try again.');
+        }
+        return;
+      }
+
+      setMobileOtpSending(false);
+      if (data.smsDelivered) {
+        setMobileOtpSent(true);
+        setMobileOtpVerified(false);
+        setMobileVerificationToken('');
+        setMobileOtpNotice(data.message || `6-digit SMS OTP sent to ${fullRegPhone}.`);
+      } else {
+        setMobileOtpError(data.error || 'Could not deliver SMS OTP.');
+      }
+    } catch (err: any) {
+      setMobileOtpSending(false);
+      setMobileOtpError(err?.message || 'Network error while sending Mobile OTP.');
+    }
+  };
+
+  const handleVerifyRegMobileOtp = async () => {
+    const cleanCode = mobileOtpInput.trim();
+    if (cleanCode.length < 4) {
+      setMobileOtpError('Enter the 6-digit SMS OTP.');
+      return;
+    }
+    const fullRegPhone = formatPhoneWithCountry(regPhone, regCountryCode);
+    setMobileOtpVerifying(true);
+    setMobileOtpError(null);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (firebaseRegConfirmation) {
+        const fbVerify = await verifyFirebaseSmsOtp(firebaseRegConfirmation, cleanCode);
+        if (!fbVerify.verified || !fbVerify.idToken) {
+          setMobileOtpVerifying(false);
+          setMobileOtpError(fbVerify.error || 'Incorrect SMS OTP code.');
+          return;
+        }
+        headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
+      }
+
+      const res = await fetch('/api/auth/verify-registration-mobile-otp', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          phone: fullRegPhone,
+          countryCode: regCountryCode,
+          otp: cleanCode,
+        }),
+      });
+      const data = await res.json();
+      setMobileOtpVerifying(false);
+      if (res.ok && data.verified && data.mobileVerificationToken) {
+        setMobileOtpVerified(true);
+        setMobileVerificationToken(data.mobileVerificationToken);
+        setFirebaseRegConfirmation(null);
+        setMobileOtpNotice(data.message || 'Mobile number verified.');
+        setAuthError(null);
+      } else {
+        setMobileOtpError(data.error || 'Could not verify Mobile OTP.');
+      }
+    } catch (err: any) {
+      setMobileOtpVerifying(false);
+      setMobileOtpError(err?.message || 'Network error while verifying Mobile OTP.');
+    }
+  };
+
   const handleReaderRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!regName.trim() || regName.trim().length < 2) {
@@ -886,7 +1113,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
     }
     const registerDobResult = validateCalendarDob(dobDay, dobMonth, dobYear);
     if (!registerDobResult.valid || !registerDobResult.dob || registerDobResult.age === undefined) {
-      setAuthError(registerDobResult.error || 'Please select a valid Date of Birth (Date, Month, and Year).');
+      setAuthError(registerDobResult.error || 'Please select a valid Date of Birth (DD / MM / YYYY).');
+      return;
+    }
+    if (!emailOtpVerified || !emailVerificationToken) {
+      setAuthError('Please send and verify the OTP for your Gmail address before creating your account.');
+      return;
+    }
+    if (!mobileOtpVerified || !mobileVerificationToken) {
+      setAuthError('Please send and verify the SMS OTP for your Mobile Number before creating your account.');
       return;
     }
     if (!regPassword || regPassword.length < 4) {
@@ -921,55 +1156,33 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
           confirmPassword: regConfirmPassword,
           notifyGmail,
           notifyMobile,
-          smsChannel: 'firebase',
+          emailVerificationToken,
+          mobileVerificationToken,
           role: 'reader',
         }),
       });
       const data = await res.json();
-      if (res.ok) {
-        if (data.user) {
-          await syncReaderAccountToFirestore({
-            uid: data.user.firebaseUid,
-            name: data.user.name || regName.trim(),
-            email: data.user.email || regEmail.trim(),
-            age: Number(data.user.age) || registerDobResult.age,
-            phone: data.user.phone || fullRegPhone,
-            upiId: data.user.upiId || 'Not provided',
-            paidPlan: data.user.premiumPlan || 'free',
-          }).catch(() => null);
-        }
+      setAuthLoading(false);
+      if (res.ok && data.user) {
+        setAuthenticatedUser(data.user);
+        await syncReaderAccountToFirestore({
+          uid: data.user.firebaseUid,
+          name: data.user.name || regName.trim(),
+          email: data.user.email || regEmail.trim(),
+          age: Number(data.user.age) || registerDobResult.age,
+          phone: data.user.phone || fullRegPhone,
+          upiId: data.user.upiId || 'Not provided',
+          paidPlan: data.user.premiumPlan || 'free',
+        }).catch(() => null);
         if (data.welcomeEmail) {
           setWelcomeEmailNotice(data.welcomeEmail);
         }
-
-        let fbSmsMsg = '';
-        if (notifyMobile && fullRegPhone) {
-          const fbSms = await sendFirebaseSmsOtp(
-            fullRegPhone,
-            'firebase-recaptcha-reader',
-            regCountryCode
-          );
-          if (fbSms.sent && fbSms.confirmationResult) {
-            setFirebaseRegConfirmation(fbSms.confirmationResult);
-            fbSmsMsg = `6-digit SMS OTP sent to ${fbSms.phoneE164} via Firebase Phone Auth.`;
-            setSmsNotice(fbSmsMsg);
-          } else {
-            setFirebaseRegConfirmation(null);
-            if (fbSms.errorMessage) {
-              setSmsNotice(`${fbSms.errorMessage} Backup OTP sent to ${regEmail.trim()} via Gmail SMTP.`);
-            }
-          }
-        }
-
-        setAuthLoading(false);
         setAuthSuccess(
-          fbSmsMsg
-            ? `Welcome to Aathirai_Comic! ${fbSmsMsg} Confirmation email also sent to ${regEmail.trim()}. Please verify OTP below.`
-            : `Welcome to Aathirai_Comic! Account, DOB (${registerDobResult.dob}), & Global Mobile (${fullRegPhone}) stored securely in backend database. Confirmation email sent to ${regEmail.trim()}. Please verify OTP below.`
+          data.message ||
+            `Welcome to Aathirai_Comic! Your verified account (${regEmail.trim()} & ${fullRegPhone}) is now active.`
         );
-        setAuthTab('verify-otp');
+        setViewSection('profile_dashboard');
       } else {
-        setAuthLoading(false);
         setAuthError(data.error || 'Registration failed');
       }
     } catch (err: any) {
@@ -1846,40 +2059,38 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       </div>
                     </div>
 
-                    {/* Date of Birth (Date / Month / Year) on First-Time Registration */}
+                    {/* Date of Birth (compact standard DD / MM / YYYY) */}
                     <div className="sm:col-span-7">
                       <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                          Date of Birth (Date / Month / Year) <span className="text-rose-500">*</span>
+                        <label className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                          Date of Birth <span className="text-rose-500">*</span>
                         </label>
-                        <span className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded border ${
-                          hasSelectedDob && dobCheck && !dobCheck.valid
-                            ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
-                            : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
-                        }`}>
-                          {!hasSelectedDob
-                            ? 'Select DOB'
-                            : dobCheck?.valid
-                            ? `Age: ${calculatedAge} yrs`
-                            : 'Invalid Date'}
-                        </span>
+                        {hasSelectedDob && (
+                          <span className={`text-[11px] font-mono font-semibold ${
+                            dobCheck?.valid
+                              ? 'text-slate-500 dark:text-slate-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }`}>
+                            {dobCheck?.valid ? `${calculatedAge} yrs` : 'Invalid date'}
+                          </span>
+                        )}
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-3 gap-1.5">
                         <select
                           aria-label="Date of Birth Day"
                           required
                           value={dobDay}
                           onChange={(e) => setDobDay(e.target.value)}
-                          className={`w-full px-2.5 py-3 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer ${
-                            !dobDay ? 'text-slate-400 dark:text-slate-500' : ''
+                          className={`w-full px-2 py-2.5 text-xs font-mono rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer ${
+                            !dobDay ? 'text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-white'
                           }`}
                         >
                           <option value="" disabled>
-                            Date (DD)
+                            DD
                           </option>
                           {DOB_DAYS.map((d) => (
                             <option key={d} value={d}>
-                              Date: {d}
+                              {d}
                             </option>
                           ))}
                         </select>
@@ -1889,12 +2100,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           required
                           value={dobMonth}
                           onChange={(e) => setDobMonth(e.target.value)}
-                          className={`w-full px-2.5 py-3 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer ${
-                            !dobMonth ? 'text-slate-400 dark:text-slate-500' : ''
+                          className={`w-full px-2 py-2.5 text-xs font-mono rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer ${
+                            !dobMonth ? 'text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-white'
                           }`}
                         >
                           <option value="" disabled>
-                            Month (MM)
+                            MM
                           </option>
                           {DOB_MONTHS.map((m) => (
                             <option key={m.value} value={m.value}>
@@ -1908,16 +2119,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           required
                           value={dobYear}
                           onChange={(e) => setDobYear(e.target.value)}
-                          className={`w-full px-2.5 py-3 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer ${
-                            !dobYear ? 'text-slate-400 dark:text-slate-500' : ''
+                          className={`w-full px-2 py-2.5 text-xs font-mono rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer ${
+                            !dobYear ? 'text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-white'
                           }`}
                         >
                           <option value="" disabled>
-                            Year (YYYY)
+                            YYYY
                           </option>
                           {DOB_YEARS.map((y) => (
                             <option key={y} value={y}>
-                              Year: {y}
+                              {y}
                             </option>
                           ))}
                         </select>
@@ -1927,51 +2138,204 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                        Gmail Address <span className="text-rose-500">*</span>
-                      </label>
-                      <div className="relative">
-                        <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
-                        <input
-                          type="email"
-                          required
-                          placeholder="Enter your Gmail address"
-                          value={regEmail}
-                          onChange={(e) => setRegEmail(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        />
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                          Gmail Address <span className="text-rose-500">*</span>
+                        </label>
+                        {emailOtpVerified && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Verified</span>
+                          </span>
+                        )}
                       </div>
+                      <div className="flex items-stretch gap-1.5">
+                        <div className="relative flex-1 min-w-0">
+                          <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                          <input
+                            type="email"
+                            required
+                            placeholder="Enter your Gmail address"
+                            value={regEmail}
+                            onChange={(e) => {
+                              setRegEmail(e.target.value);
+                              resetEmailOtpState();
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !emailOtpVerified) {
+                                e.preventDefault();
+                                if (!emailOtpSending && regEmail.trim()) {
+                                  handleSendRegEmailOtp();
+                                }
+                              }
+                            }}
+                            className="w-full pl-9 pr-3 py-2.5 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleSendRegEmailOtp}
+                          disabled={emailOtpSending || !regEmail.trim()}
+                          className={`px-3 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer ${
+                            emailOtpVerified
+                              ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                              : 'bg-slate-900 dark:bg-rose-600 hover:bg-slate-800 dark:hover:bg-rose-500 text-white disabled:opacity-50'
+                          }`}
+                        >
+                          {emailOtpSending
+                            ? 'Sending...'
+                            : emailOtpVerified
+                              ? 'Verified ✓'
+                              : emailOtpSent
+                                ? 'Resend'
+                                : 'Send OTP'}
+                        </button>
+                      </div>
+
+                      {emailOtpSent && !emailOtpVerified && (
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <input
+                            ref={emailOtpInputRef}
+                            type="text"
+                            name="email-otp"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            pattern="[0-9]*"
+                            maxLength={6}
+                            placeholder="Enter 6-digit Gmail OTP"
+                            value={emailOtpInput}
+                            onChange={(e) => {
+                              setEmailOtpInput(e.target.value.replace(/\D/g, ''));
+                              setEmailOtpError(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (!emailOtpVerifying && emailOtpInput.length >= 4) {
+                                  handleVerifyRegEmailOtp();
+                                }
+                              }
+                            }}
+                            className="flex-1 min-w-0 px-3 py-2 text-xs font-mono tracking-widest text-center rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleVerifyRegEmailOtp}
+                            disabled={emailOtpVerifying || emailOtpInput.length < 4}
+                            className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 disabled:opacity-50 cursor-pointer"
+                          >
+                            {emailOtpVerifying ? 'Checking...' : 'Verify OTP'}
+                          </button>
+                        </div>
+                      )}
+                      {emailOtpError && (
+                        <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400 mt-1">
+                          {emailOtpError}
+                        </p>
+                      )}
+                      {emailOtpNotice && !emailOtpError && (
+                        <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 mt-1">
+                          {emailOtpNotice}
+                        </p>
+                      )}
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                        Global Mobile Number (Choose Country) <span className="text-rose-500">*</span>
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                          Mobile Number <span className="text-rose-500">*</span>
+                        </label>
+                        {mobileOtpVerified && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Verified</span>
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-stretch gap-1.5">
                         <select
                           aria-label="Registration Country Code"
                           value={regCountryCode}
-                          onChange={(e) => setRegCountryCode(e.target.value)}
-                          className="w-36 shrink-0 px-2 py-3 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
+                          onChange={(e) => {
+                            setRegCountryCode(e.target.value);
+                            resetMobileOtpState();
+                          }}
+                          className="w-28 shrink-0 px-2 py-2.5 text-xs font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
                         >
                           {GLOBAL_COUNTRIES.map((c) => (
                             <option key={`reg-${c.iso}-${c.code}`} value={c.code}>
-                              {c.country} ({c.code})
+                              {c.iso} ({c.code})
                             </option>
                           ))}
                         </select>
                         <input
                           type="tel"
                           required
-                          placeholder={`Mobile number (${regCountryCode})`}
+                          placeholder={`Mobile (${regCountryCode})`}
                           value={regPhone}
-                          onChange={(e) => setRegPhone(e.target.value)}
-                          className="w-full min-w-0 px-3 py-3 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                          onChange={(e) => {
+                            setRegPhone(e.target.value);
+                            resetMobileOtpState();
+                          }}
+                          className="w-full min-w-0 px-3 py-2.5 text-sm font-mono rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                         />
+                        <button
+                          type="button"
+                          onClick={handleSendRegMobileOtp}
+                          disabled={mobileOtpSending || regPhone.replace(/\D/g, '').length < 6}
+                          className={`px-3 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer ${
+                            mobileOtpVerified
+                              ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                              : 'bg-slate-900 dark:bg-rose-600 hover:bg-slate-800 dark:hover:bg-rose-500 text-white disabled:opacity-50'
+                          }`}
+                        >
+                          {mobileOtpSending
+                            ? 'Sending...'
+                            : mobileOtpVerified
+                              ? 'Verified ✓'
+                              : mobileOtpSent
+                                ? 'Resend'
+                                : 'Send OTP'}
+                        </button>
                       </div>
-                      <span className="block text-[10px] text-slate-500 mt-1">
-                        Stored in backend database for login &amp; password recovery
-                      </span>
+
+                      {mobileOtpSent && !mobileOtpVerified && (
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            name="otp"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            pattern="[0-9]*"
+                            maxLength={6}
+                            placeholder="Enter 6-digit SMS OTP"
+                            value={mobileOtpInput}
+                            onChange={(e) => {
+                              setMobileOtpInput(e.target.value.replace(/\D/g, ''));
+                              setMobileOtpError(null);
+                            }}
+                            className="flex-1 min-w-0 px-3 py-2 text-xs font-mono tracking-widest text-center rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleVerifyRegMobileOtp}
+                            disabled={mobileOtpVerifying || mobileOtpInput.length < 4}
+                            className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 disabled:opacity-50 cursor-pointer"
+                          >
+                            {mobileOtpVerifying ? 'Checking...' : 'Verify OTP'}
+                          </button>
+                        </div>
+                      )}
+                      {mobileOtpError && (
+                        <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400 mt-1">
+                          {mobileOtpError}
+                        </p>
+                      )}
+                      {mobileOtpNotice && !mobileOtpError && (
+                        <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 mt-1">
+                          {mobileOtpNotice}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -2040,12 +2404,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
 
                   <button
                     type="submit"
-                    disabled={authLoading}
-                    className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+                    disabled={authLoading || !emailOtpVerified || !mobileOtpVerified}
+                    className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
                   >
                     {authLoading
-                      ? 'Creating Customer Account & Sending Welcome Email...'
-                      : 'Create Customer Account (Save to Backend & Send Welcome Email)'}
+                      ? 'Creating Verified Customer Account...'
+                      : !emailOtpVerified || !mobileOtpVerified
+                        ? 'Verify Both Gmail & Mobile OTPs to Create Account'
+                        : 'Create Customer Account'}
                   </button>
                 </form>
               )}
