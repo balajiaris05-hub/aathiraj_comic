@@ -17,6 +17,7 @@ import {
   sendFirebaseSmsOtp,
   verifyFirebaseSmsOtp,
   clearRecaptchaVerifier,
+  listenForDeviceSmsOtp,
   ConfirmationResult,
 } from '../firebase';
 
@@ -96,7 +97,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [sandboxOtp, setSandboxOtp] = useState<string | null>(null);
   const [firebaseRegConfirmation, setFirebaseRegConfirmation] = useState<ConfirmationResult | null>(null);
   const [firebaseResetConfirmation, setFirebaseResetConfirmation] = useState<ConfirmationResult | null>(null);
   const [verifiedResetPhoneIdToken, setVerifiedResetPhoneIdToken] = useState<string | null>(null);
@@ -109,6 +109,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
     };
   }, []);
 
+  React.useEffect(() => {
+    if (!isOpen) return;
+    if (mode === 'verify-otp') {
+      return listenForDeviceSmsOtp((code) => setOtp(code));
+    }
+    if (mode === 'change-password' && resetStep === 'verify_otp') {
+      return listenForDeviceSmsOtp((code) => setResetOtp(code));
+    }
+  }, [isOpen, mode, resetStep]);
+
   if (!isOpen) return null;
 
   const hasSelectedDob = Boolean(dobDay && dobMonth && dobYear);
@@ -118,7 +128,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
   const resetState = () => {
     setError(null);
     setSuccessMsg(null);
-    setSandboxOtp(null);
     setSmsNotice(null);
     setFirebaseRegConfirmation(null);
     setFirebaseResetConfirmation(null);
@@ -252,7 +261,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
       });
       const data = await res.json();
       if (res.ok) {
-        setSandboxOtp(data.devOtpHint || '');
         let fbSmsMsg = '';
         if (phone.trim()) {
           const fbSms = await sendFirebaseSmsOtp(phone.trim(), 'firebase-recaptcha-modal-reg', '+91');
@@ -358,7 +366,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
       if (res.ok) {
         if (data.email && !resetEmail.trim()) setResetEmail(data.email);
         if (data.phone && !resetPhone.trim()) setResetPhone(data.phone);
-        setSandboxOtp(data.devOtpHint || '');
 
         const targetPhone = (data.phone || resetPhone.trim() || '').trim();
         let fbSmsMsg = '';
@@ -466,7 +473,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
         setCredential(resetEmail.trim());
         setIdentityVerified(true);
         setLoginPassword('');
-        setSandboxOtp(null);
         setSuccessMsg('Password updated in backend and account unlocked! Please log in.');
         setMode('login');
       } else {
@@ -547,22 +553,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
           <div className="mb-4 p-3 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-700 dark:text-sky-300 text-xs font-medium flex items-start gap-2">
             <Phone className="w-4 h-4 shrink-0 mt-0.5 text-sky-500" />
             <span>{smsNotice}</span>
-          </div>
-        )}
-
-        {sandboxOtp && (
-          <div className="mb-4 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between">
-            <span>Verification Code: <strong className="font-mono text-sm tracking-wider">{sandboxOtp}</strong></span>
-            <button
-              type="button"
-              onClick={() => {
-                if (mode === 'change-password') setResetOtp(sandboxOtp);
-                else setOtp(sandboxOtp);
-              }}
-              className="text-[11px] underline font-semibold hover:text-amber-500 cursor-pointer"
-            >
-              Auto-fill OTP
-            </button>
           </div>
         )}
 
@@ -879,11 +869,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                 <KeyRound className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
                 <input
                   type="text"
+                  name="otp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]*"
                   maxLength={6}
                   required
                   placeholder="Enter 6-digit OTP"
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value)}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                   className="w-full pl-9 pr-3 py-2 text-lg font-mono tracking-widest text-center rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
                 />
               </div>
@@ -946,11 +940,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                   </label>
                   <input
                     type="text"
+                    name="otp"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]*"
                     required
                     maxLength={6}
                     placeholder="Enter 6-digit OTP"
                     value={resetOtp}
-                    onChange={(e) => setResetOtp(e.target.value)}
+                    onChange={(e) => setResetOtp(e.target.value.replace(/\D/g, ''))}
                     className="w-full px-3 py-2 text-sm font-mono tracking-wider text-center rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
                   />
                 </div>

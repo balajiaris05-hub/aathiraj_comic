@@ -206,10 +206,9 @@ async function startServer() {
             ? `Security OTP emailed via SMTP to ${maskedDestination}. Valid for 10 minutes.`
             : hasDeliveryProvider
               ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
-              : `Development Mode: OTP generated for ${maskedDestination}.`,
+              : `6-digit verification OTP generated for ${maskedDestination}. Please enter the code sent to your registered Gmail or mobile device.`,
       channel: targetChannel,
       destinationMasked: maskedDestination,
-      ...(process.env.NODE_ENV !== 'production' && !firebaseSmsSent ? { devOtpHint: otp } : {}),
       expiresInSeconds: 600,
     });
   });
@@ -1189,7 +1188,6 @@ async function startServer() {
             : smsDelivery.sent
               ? `Account created and stored securely in backend! 6-digit OTP sent via SMS (${smsDelivery.provider}) to ${finalUser.phone}.`
               : `Account created and stored securely in backend! Welcome email recorded for ${cleanEmail} ("Welcome to Aathirai_Comic").`,
-      ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 
@@ -1826,7 +1824,6 @@ async function startServer() {
             : smsDelivery.sent
               ? `6-digit verification OTP sent via SMS (${smsDelivery.provider}) to ${targetSmsPhone}. Valid for 10 minutes.`
               : `6-digit verification OTP generated for password recovery for ${matchedUser.email}${matchedUser.phone ? ` and Mobile (${matchedUser.phone})` : ''}. Valid for 10 minutes.`,
-      ...(process.env.NODE_ENV !== 'production' ? { devOtpHint: otp } : {}),
     });
   });
 

@@ -8,6 +8,7 @@ import {
   sendFirebaseSmsOtp,
   verifyFirebaseSmsOtp,
   clearRecaptchaVerifier,
+  listenForDeviceSmsOtp,
   ConfirmationResult,
 } from '../firebase';
 import {
@@ -271,7 +272,6 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const formattedDob = dobCheck?.valid && dobCheck.dob ? dobCheck.dob : '';
 
   const [otp, setOtp] = useState('');
-  const [sandboxOtp, setSandboxOtp] = useState<string | null>(null);
   const [firebaseRegConfirmation, setFirebaseRegConfirmation] = useState<ConfirmationResult | null>(null);
   const [firebaseResetConfirmation, setFirebaseResetConfirmation] = useState<ConfirmationResult | null>(null);
   const [verifiedResetPhoneIdToken, setVerifiedResetPhoneIdToken] = useState<string | null>(null);
@@ -286,6 +286,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       clearRecaptchaVerifier('firebase-recaptcha-reset');
     };
   }, []);
+
+  useEffect(() => {
+    if (authTab === 'verify-otp') {
+      return listenForDeviceSmsOtp((code) => setOtp(code));
+    }
+    if (authTab === 'change-password' && resetStep === 'verify_otp') {
+      return listenForDeviceSmsOtp((code) => setResetOtp(code));
+    }
+  }, [authTab, resetStep]);
 
   // Profile edit state when logged in
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -932,7 +941,6 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         if (data.welcomeEmail) {
           setWelcomeEmailNotice(data.welcomeEmail);
         }
-        setSandboxOtp(data.devOtpHint || null);
 
         let fbSmsMsg = '';
         if (notifyMobile && fullRegPhone) {
@@ -1415,19 +1423,6 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
                     {welcomeEmailNotice.body || welcomeEmailNotice.message}
                   </p>
-                </div>
-              )}
-
-              {sandboxOtp && authTab === 'verify-otp' && (
-                <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between">
-                  <span>Customer OTP Code: <strong className="font-mono text-sm">{sandboxOtp}</strong></span>
-                  <button
-                    type="button"
-                    onClick={() => setOtp(sandboxOtp)}
-                    className="underline font-bold cursor-pointer"
-                  >
-                    Auto-fill OTP
-                  </button>
                 </div>
               )}
 
@@ -2152,11 +2147,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <KeyRound className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                           <input
                             type="text"
+                            name="otp"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            pattern="[0-9]*"
                             maxLength={6}
                             required
                             placeholder="Enter 6-digit OTP"
                             value={resetOtp}
-                            onChange={(e) => setResetOtp(e.target.value)}
+                            onChange={(e) => setResetOtp(e.target.value.replace(/\D/g, ''))}
                             className="w-full pl-10 pr-4 py-3 text-lg font-mono tracking-widest text-center rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                           />
                         </div>
@@ -2249,11 +2248,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <KeyRound className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                       <input
                         type="text"
+                        name="otp"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]*"
                         maxLength={6}
                         required
                         placeholder="Enter 6-digit OTP"
                         value={otp}
-                        onChange={(e) => setOtp(e.target.value)}
+                        onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                         className="w-full pl-10 pr-4 py-3 text-lg font-mono tracking-widest text-center rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
                       />
                     </div>

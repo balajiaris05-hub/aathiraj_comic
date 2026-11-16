@@ -496,6 +496,13 @@ function mapFirebasePhoneError(code: string, rawMsg: string): { message: string;
           'Firebase Phone Auth requires upgrading project "aathiraicomic" to the Blaze plan (includes 10 free SMS/day) in Firebase Console.',
       };
     case 'auth/operation-not-allowed':
+      if (/region/i.test(rawMsg)) {
+        return {
+          setupRequired: true,
+          message:
+            'SMS sending for this country/region is not enabled yet in Firebase Console → Authentication → Settings → SMS region policy.',
+        };
+      }
       return {
         setupRequired: true,
         message:
@@ -626,4 +633,41 @@ export async function verifyFirebaseSmsOtp(
   }
 }
 
+/**
+ * Listens via the browser WebOTP API so an OTP is auto-filled ONLY when
+ * an actual SMS strictly reaches the user's device on supported browsers.
+ */
+export function listenForDeviceSmsOtp(onCode: (code: string) => void): () => void {
+  if (
+    typeof window === 'undefined' ||
+    !('OTPCredential' in window) ||
+    !navigator?.credentials?.get
+  ) {
+    return () => {};
+  }
+
+  const ac = new AbortController();
+  (navigator.credentials as any)
+    .get({
+      otp: { transport: ['sms'] },
+      signal: ac.signal,
+    })
+    .then((otpCred: any) => {
+      const code = String(otpCred?.code || '').replace(/\D/g, '').slice(0, 6);
+      if (code.length >= 4) {
+        onCode(code);
+      }
+    })
+    .catch(() => {
+      // Ignore abort / unsupported / timeout silently
+    });
+
+  return () => {
+    try {
+      ac.abort();
+    } catch {
+      // ignore
+    }
+  };
+}
 

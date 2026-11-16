@@ -21,6 +21,7 @@ import {
   sendFirebaseSmsOtp,
   verifyFirebaseSmsOtp,
   clearRecaptchaVerifier,
+  listenForDeviceSmsOtp,
   ConfirmationResult,
 } from '../firebase';
 import { upsertComicAndEpisodesInFirestore, upsertAdRequestInFirestore, fetchAdRequestsFromFirestore } from '../services/firestoreBackend';
@@ -217,7 +218,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpSuccessMessage, setOtpSuccessMessage] = useState<string | null>(null);
-  const [mockOtpPreview, setMockOtpPreview] = useState<string | null>(null);
   const [otpDestinationMasked, setOtpDestinationMasked] = useState<string>('');
   const [firebaseAdminConfirmation, setFirebaseAdminConfirmation] = useState<ConfirmationResult | null>(null);
   const [adminSmsNotice, setAdminSmsNotice] = useState<string | null>(null);
@@ -227,6 +227,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       clearRecaptchaVerifier('firebase-recaptcha-admin');
     };
   }, []);
+
+  useEffect(() => {
+    if (isAdminUnlocked || otpStep !== 'enter_otp') return;
+    return listenForDeviceSmsOtp((code) => setAdminOtpInput(code));
+  }, [isAdminUnlocked, otpStep]);
 
   // Delete Comic Confirmation Modal State
   const [comicToDelete, setComicToDelete] = useState<Comic | null>(null);
@@ -396,7 +401,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setOtpStep('enter_otp');
       setOtpDestinationMasked(data.destinationMasked || '');
       setOtpSuccessMessage(finalMessage);
-      setMockOtpPreview(data.devOtpHint || null);
     } catch (err: any) {
       setOtpLoading(false);
       setOtpError('Network error while requesting verification OTP.');
@@ -468,7 +472,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setAdminOtpInput('');
     setOtpError(null);
     setOtpSuccessMessage(null);
-    setMockOtpPreview(null);
     setFirebaseAdminConfirmation(null);
     setAdminSmsNotice(null);
   };
@@ -1380,53 +1383,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
 
-              {/* In-Tab Delivered Security OTP Dispatch */}
-              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2.5 animate-fade-in shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="p-1 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold text-xs">
-                      {adminChannelChoice === 'email' ? '✉️' : '💬'}
-                    </span>
-                    <span className="text-xs font-bold text-slate-900 dark:text-white">
-                      {adminChannelChoice === 'email' ? 'Security Email Dispatch' : 'Security SMS Dispatch'}
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
-                    Delivered to this tab
-                  </span>
-                </div>
-
-                {mockOtpPreview ? (
-                  <>
-                    <p className="text-xs text-slate-600 dark:text-slate-300">
-                      Development Mode 2FA Verification Code:
-                    </p>
-                    <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                      <div className="font-mono text-2xl font-black tracking-[0.3em] text-amber-600 dark:text-amber-400 select-all">
-                        {mockOtpPreview}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setAdminOtpInput(mockOtpPreview)}
-                        className="py-1 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer shadow-sm transition-colors"
-                      >
-                        Use Code
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-xs text-slate-600 dark:text-slate-300">
-                    Check your registered administrator inbox or SMS for the 6-digit verification code.
-                  </p>
-                )}
-              </div>
-
               <div>
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
                   Enter 6-Digit Verification Code
                 </label>
                 <input
                   type="text"
+                  name="otp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]*"
                   maxLength={6}
                   value={adminOtpInput}
                   onChange={(e) => setAdminOtpInput(e.target.value.replace(/\D/g, ''))}
