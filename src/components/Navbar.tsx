@@ -42,6 +42,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
     hasActivePremium,
     notifications,
     unreadNotificationsCount,
+    refreshNotifications,
     markNotificationRead,
   } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -338,8 +339,12 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
               <button
                 type="button"
                 onClick={() => {
-                  setNotifMenuOpen(!notifMenuOpen);
+                  const nextOpen = !notifMenuOpen;
+                  setNotifMenuOpen(nextOpen);
                   setAccountMenuOpen(false);
+                  if (nextOpen) {
+                    refreshNotifications();
+                  }
                 }}
                 title="Notifications"
                 className="relative p-1.5 sm:p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
@@ -420,12 +425,23 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                                     <span>Free to Read</span>
                                   </span>
                                 )}
-                                {n.gmailSent && (
+                                {n.gmailSent ? (
                                   <span className="px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[9px] font-mono flex items-center gap-1">
                                     <Mail className="w-2.5 h-2.5" />
-                                    <span>{n.gmailSentTo ? `Gmail: ${n.gmailSentTo}` : 'Gmail Alert Sent'}</span>
+                                    <span>
+                                      {n.gmailSentTo
+                                        ? `Gmail Sent: ${n.gmailSentTo}`
+                                        : typeof n.gmailDeliveredCount === 'number'
+                                          ? `Gmail Sent (${n.gmailDeliveredCount}/${n.gmailTargetCount || n.gmailDeliveredCount})`
+                                          : 'Gmail Sent'}
+                                    </span>
                                   </span>
-                                )}
+                                ) : n.gmailError ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-500 dark:text-slate-400 text-[9px] font-mono flex items-center gap-1">
+                                    <Mail className="w-2.5 h-2.5" />
+                                    <span>Gmail Pending SMTP</span>
+                                  </span>
+                                ) : null}
                               </div>
                             )}
 

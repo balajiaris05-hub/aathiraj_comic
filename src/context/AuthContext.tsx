@@ -375,6 +375,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user?.id, user?.email, user?.phone, fetchNotifications]);
 
+  useEffect(() => {
+    const syncNotifications = () => {
+      fetchNotifications(user);
+    };
+    const intervalId = window.setInterval(syncNotifications, 30000);
+    window.addEventListener('focus', syncNotifications);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncNotifications);
+    };
+  }, [user, fetchNotifications]);
+
   const actualDbRole: UserRole = user?.role || 'reader';
   const effectiveUiRole: UserRole = isDevMode && devPreviewRole ? devPreviewRole : actualDbRole;
   const unreadNotificationsCount = notifications.filter((n) => !n.read).length;

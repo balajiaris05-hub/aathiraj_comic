@@ -516,11 +516,16 @@ export class StorageEngine {
     message: string;
     targetId?: string;
     comicId?: string;
+    comicTitle?: string;
     episodeId?: string;
+    episodeTitle?: string;
     isPaywalled?: boolean;
     gmailSent?: boolean;
     gmailSentTo?: string;
     gmailSentAt?: string;
+    gmailError?: string;
+    gmailDeliveredCount?: number;
+    gmailTargetCount?: number;
   }): NotificationItem {
     const item: NotificationItem = {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -532,11 +537,16 @@ export class StorageEngine {
       read: false,
       targetId: params.targetId || params.comicId,
       comicId: params.comicId || params.targetId,
+      comicTitle: params.comicTitle,
       episodeId: params.episodeId,
+      episodeTitle: params.episodeTitle,
       isPaywalled: params.isPaywalled,
       gmailSent: params.gmailSent,
       gmailSentTo: params.gmailSentTo,
       gmailSentAt: params.gmailSentAt,
+      gmailError: params.gmailError,
+      gmailDeliveredCount: params.gmailDeliveredCount,
+      gmailTargetCount: params.gmailTargetCount,
       createdAt: new Date().toISOString(),
     };
     this.mutate(d => {

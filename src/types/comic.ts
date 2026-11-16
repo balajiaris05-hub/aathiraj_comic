@@ -377,11 +377,16 @@ export interface NotificationItem {
   read: boolean;
   targetId?: string;
   comicId?: string;
+  comicTitle?: string;
   episodeId?: string;
+  episodeTitle?: string;
   isPaywalled?: boolean;
   gmailSent?: boolean;
   gmailSentTo?: string;
   gmailSentAt?: string;
+  gmailError?: string;
+  gmailDeliveredCount?: number;
+  gmailTargetCount?: number;
   createdAt: string;
 }
 

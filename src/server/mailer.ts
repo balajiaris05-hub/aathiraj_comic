@@ -333,3 +333,61 @@ export async function sendReaderAccountWelcomeEmail(params: {
     `,
   });
 }
+
+export async function sendComicReleaseNotificationEmail(params: {
+  to: string;
+  customerName?: string;
+  comicTitle: string;
+  episodeTitle?: string;
+  authorName?: string;
+  releaseType: 'new_comic' | 'new_episode';
+  isPaywalled?: boolean;
+}): Promise<EmailSendResult> {
+  const customerName = params.customerName?.trim() || 'Reader';
+  const comicTitle = params.comicTitle.trim();
+  const episodeTitle = params.episodeTitle?.trim() || '';
+  const authorName = params.authorName?.trim() || 'Aathirai_Comic Editorial';
+  const safeCustomerName = escapeHtml(customerName);
+  const safeComicTitle = escapeHtml(comicTitle);
+  const safeEpisodeTitle = escapeHtml(episodeTitle);
+  const safeAuthorName = escapeHtml(authorName);
+  const accessLabel = params.isPaywalled ? 'Premium Pass (₹49 / ₹249)' : 'Free to Read';
+
+  const subject =
+    params.releaseType === 'new_comic'
+      ? `New Comic Published: ${comicTitle}${episodeTitle ? ` — ${episodeTitle}` : ''} | Aathirai_Comic`
+      : `New Episode Published: ${comicTitle} — ${episodeTitle || 'Latest Episode'} | Aathirai_Comic`;
+
+  const headline =
+    params.releaseType === 'new_comic'
+      ? 'New Comic Published on Aathirai_Comic!'
+      : 'New Episode Published on Aathirai_Comic!';
+
+  const episodeLineText = episodeTitle ? `\nEpisode Published: ${episodeTitle}` : '';
+  const text = `Hello ${customerName},\n\n${headline}\n\nComic Title: ${comicTitle}${episodeLineText}\nAuthor: ${authorName}\nAccess: ${accessLabel}\n\nOpen Aathirai_Comic now to read "${comicTitle}"${episodeTitle ? ` (${episodeTitle})` : ''}.`;
+
+  const episodeHtmlRow = episodeTitle
+    ? `<p style="margin:4px 0 0;color:#cbd5e1;font-size:14px;"><strong>Episode Published:</strong> ${safeEpisodeTitle}</p>`
+    : '';
+
+  return sendEmail({
+    to: params.to,
+    subject,
+    text,
+    html: `
+      <div style="font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#0f172a;color:#f1f5f9;border-radius:14px;border:1px solid #334155;">
+        <span style="display:inline-block;padding:4px 10px;border-radius:999px;background:#e11d48;color:#ffffff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">
+          ${params.releaseType === 'new_comic' ? 'New Comic Release' : 'New Episode Release'}
+        </span>
+        <h2 style="margin:0 0 12px;color:#ffffff;font-size:20px;">${escapeHtml(headline)}</h2>
+        <p style="margin:0 0 16px;color:#cbd5e1;font-size:14px;">Hello <strong>${safeCustomerName}</strong>, a new release is now live on Aathirai_Comic:</p>
+        <div style="padding:16px;background:#1e293b;border-radius:10px;border:1px solid #334155;margin-bottom:16px;">
+          <p style="margin:0;color:#fb7185;font-size:16px;font-weight:800;">${safeComicTitle}</p>
+          ${episodeHtmlRow}
+          <p style="margin:6px 0 0;color:#94a3b8;font-size:12px;">By ${safeAuthorName} · ${escapeHtml(accessLabel)}</p>
+        </div>
+        <p style="margin:0;color:#94a3b8;font-size:12px;">Visit Aathirai_Comic and open the Notification Bar or Books tab to start reading.</p>
+      </div>
+    `,
+  });
+}

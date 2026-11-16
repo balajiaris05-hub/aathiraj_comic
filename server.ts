@@ -14,6 +14,7 @@ import {
   sendPasswordResetOtpEmail,
   sendEmailVerificationOtpEmail,
   sendReaderAccountWelcomeEmail,
+  sendComicReleaseNotificationEmail,
 } from './src/server/mailer.ts';
 import { getSmsConfigSummary, sendOtpSms } from './src/server/sms.ts';
 import {
@@ -2835,7 +2836,7 @@ async function startServer() {
 
   // Direct Comic Publishing by Admin (instantly live on website: title, description, attached file alone)
   // Direct Comic & Episode Publishing by Admin
-  app.post('/api/admin/comics/publish-direct', (req, res) => {
+  app.post('/api/admin/comics/publish-direct', async (req, res) => {
     const {
       mode = 'new_series', // 'new_series' | 'add_episode'
       comicId,
@@ -2959,10 +2960,11 @@ async function startServer() {
         (newEpisode as Episode).id
       );
 
-      broadcastComicReleaseNotification({
+      const gmailBroadcast = await broadcastComicReleaseNotification({
         comic: updatedComic as Comic,
         episode: newEpisode as Episode,
         releaseType: 'new_episode',
+        firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
       });
 
       return res.json({
@@ -2970,6 +2972,7 @@ async function startServer() {
         comic: updatedComic,
         chapter: targetChapter,
         episode: newEpisode,
+        gmailBroadcast,
         message: `Episode "${(newEpisode as Episode).title}" published directly to "${(targetChapter as Chapter).title}" with ${(newEpisode as Episode).pages.length} pages!`,
       });
     }
@@ -3066,10 +3069,11 @@ async function startServer() {
       newComic.id
     );
 
-    broadcastComicReleaseNotification({
+    const gmailBroadcast = await broadcastComicReleaseNotification({
       comic: newComic,
       episode: newComic.chapters[0]?.episodes[0] || null,
       releaseType: 'new_comic',
+      firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
 
     mirrorWritesInBackground(
@@ -3082,6 +3086,7 @@ async function startServer() {
       success: true,
       comic: newComic,
       episode: newComic.chapters[0].episodes[0],
+      gmailBroadcast,
       message: `"${newComic.title}" published directly to the website with ${constructedPages.length} pages!`,
     });
   });
@@ -3563,7 +3568,7 @@ async function startServer() {
   });
 
   // Admin approves or rejects submitted comic
-  app.post('/api/admin/comics/:id/moderate-submission', (req, res) => {
+  app.post('/api/admin/comics/:id/moderate-submission', async (req, res) => {
     const { action, adminNote } = req.body; // action: 'approve' | 'reject' | 'pending'
     let moderatedComic: Comic | null = null;
 
@@ -3648,11 +3653,13 @@ async function startServer() {
       req.params.id
     );
 
+    let gmailBroadcast: any = null;
     if (action === 'approve') {
-      broadcastComicReleaseNotification({
+      gmailBroadcast = await broadcastComicReleaseNotification({
         comic: comicObj,
         episode: comicObj.chapters?.[0]?.episodes?.[0] || null,
         releaseType: 'new_comic',
+        firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
       });
     }
 
@@ -3665,6 +3672,7 @@ async function startServer() {
     return res.json({
       success: true,
       comic: moderatedComic,
+      gmailBroadcast,
       message:
         action === 'approve'
           ? 'Comic approved and published live! The author has been notified on their Author Page that they are approved to upload comics of their own.'
@@ -3761,7 +3769,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/comics', (req, res) => {
+  app.post('/api/comics', async (req, res) => {
     const {
       title,
       authorId,
@@ -3867,10 +3875,11 @@ async function startServer() {
 
     db.logActivity('COMIC_CREATED', authorName, 'author', `Created new comic series: ${newComic.title}`, 'comic', newComic.id);
 
-    broadcastComicReleaseNotification({
+    const gmailBroadcast = await broadcastComicReleaseNotification({
       comic: newComic,
       episode: newComic.chapters[0]?.episodes[0] || null,
       releaseType: 'new_comic',
+      firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
 
     mirrorWritesInBackground(
@@ -3879,7 +3888,7 @@ async function startServer() {
       extractFirebaseIdToken(req.headers.authorization)
     );
 
-    return res.json({ success: true, comic: newComic });
+    return res.json({ success: true, comic: newComic, gmailBroadcast });
   });
 
   // Helper to ensure author only edits/deletes their own comics and cannot modify admin comics
@@ -4047,7 +4056,7 @@ async function startServer() {
   });
 
   // Add Episode (Strictly for Own Books)
-  app.post('/api/comics/:comicId/chapters/:chapId/episodes', (req, res) => {
+  app.post('/api/comics/:comicId/chapters/:chapId/episodes', async (req, res) => {
     const { title, synopsis, isPremium, priceInr, pages, coverImage, authorId, authorName } = req.body;
     let addedEpisode: any = null;
     let isForbidden = false;
@@ -4119,11 +4128,13 @@ async function startServer() {
     db.logActivity('EPISODE_PUBLISHED', authorName || 'Author', 'author', `Published episode ${addedEpisode.title} with ${(addedEpisode as Episode).pages.length} pages.`, 'episode', addedEpisode.id);
 
     const parentComic = db.getSnapshot().comics.find(c => c.id === req.params.comicId);
+    let gmailBroadcast: any = null;
     if (parentComic) {
-      broadcastComicReleaseNotification({
+      gmailBroadcast = await broadcastComicReleaseNotification({
         comic: parentComic,
         episode: addedEpisode as Episode,
         releaseType: 'new_episode',
+        firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
       });
       const parentChapter = parentComic.chapters.find(ch => ch.id === req.params.chapId);
       if (parentChapter) {
@@ -4144,7 +4155,7 @@ async function startServer() {
       }
     }
 
-    return res.json({ success: true, episode: addedEpisode, comic: parentComic || null });
+    return res.json({ success: true, episode: addedEpisode, comic: parentComic || null, gmailBroadcast });
   });
 
   // Edit Episode
@@ -4695,75 +4706,180 @@ async function startServer() {
     return res.json({ success: true, report });
   });
 
-  // Automated Gmail & In-App Notification Bar Broadcast for New Comic / Episode Releases
-  function broadcastComicReleaseNotification(params: {
+  // Automated Real Gmail & In-App Notification Bar Broadcast for New Comic / Episode Releases
+  async function broadcastComicReleaseNotification(params: {
     comic: Comic;
     episode?: Episode | null;
     releaseType: 'new_comic' | 'new_episode';
-  }) {
-    const { comic, episode, releaseType } = params;
+    firebaseIdToken?: string;
+  }): Promise<{
+    totalCustomers: number;
+    sentCount: number;
+    failedCount: number;
+    smtpConfigured: boolean;
+    recipients: { email: string; sent: boolean; error?: string }[];
+  }> {
+    const { comic, episode, releaseType, firebaseIdToken } = params;
     const isPaywalled =
       comic.accessType === 'premium' ||
       Boolean(episode?.isPremium) ||
       Boolean(comic.chapters?.some(ch => ch.isPremium || ch.episodes?.some(ep => ep.isPremium)));
-    const nowIso = new Date().toISOString();
+    const resolvedEpisodeTitle =
+      episode?.title?.trim() || comic.chapters?.[0]?.episodes?.[0]?.title?.trim() || '';
+    const resolvedEpisodeId =
+      episode?.id || comic.chapters?.[0]?.episodes?.[0]?.id;
+
     const title =
       releaseType === 'new_comic'
-        ? `New Comic Released: ${comic.title}`
-        : `New Episode: ${comic.title} - ${episode?.title || 'Latest Issue'}`;
+        ? `New Comic Published: ${comic.title}${resolvedEpisodeTitle ? ` · ${resolvedEpisodeTitle}` : ''}`
+        : `New Episode Published: ${comic.title} · ${resolvedEpisodeTitle || 'Latest Episode'}`;
     const baseMessage =
       releaseType === 'new_comic'
-        ? `"${comic.title}" by ${comic.authorName} is now available (${isPaywalled ? 'Premium Paywall' : 'Free Access'}).`
-        : `New episode "${episode?.title || 'New Issue'}" of "${comic.title}" is now live (${isPaywalled ? 'Premium Paywall' : 'Free Access'}).`;
+        ? `"${comic.title}"${resolvedEpisodeTitle ? ` (${resolvedEpisodeTitle})` : ''} by ${comic.authorName} has been published (${isPaywalled ? 'Premium Pass' : 'Free to Read'}).`
+        : `"${comic.title}" — Episode "${resolvedEpisodeTitle || 'New Episode'}" by ${comic.authorName} has been published (${isPaywalled ? 'Premium Pass' : 'Free to Read'}).`;
 
     const snapshot = db.getSnapshot();
-    const registeredReaders = (snapshot.users || []).filter(
-      u => u.email && u.email.includes('@') && u.notifyGmail !== false
-    );
+    const seenEmails = new Set<string>();
+    const registeredCustomers = (snapshot.users || []).filter(u => {
+      const cleanEmail = String(u.email || '').trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@') || cleanEmail.endsWith('@mobile.reader')) {
+        return false;
+      }
+      if (u.notifyGmail === false) {
+        return false;
+      }
+      if (seenEmails.has(cleanEmail)) {
+        return false;
+      }
+      seenEmails.add(cleanEmail);
+      return true;
+    });
 
-    const recipientEmails: string[] = [];
-    for (const reader of registeredReaders) {
-      recipientEmails.push(reader.email);
-      db.addNotification({
-        userId: reader.id,
-        userEmail: reader.email,
+    const createdNotifIdsByUser = new Map<string, string>();
+    for (const customer of registeredCustomers) {
+      const notif = db.addNotification({
+        userId: customer.id,
+        userEmail: customer.email,
         type: releaseType,
         title,
-        message: `${baseMessage} Gmail alert sent to ${reader.email}.`,
+        message: `${baseMessage} Sending Gmail notification to ${customer.email}...`,
         targetId: comic.id,
         comicId: comic.id,
-        episodeId: episode?.id,
+        comicTitle: comic.title,
+        episodeId: resolvedEpisodeId,
+        episodeTitle: resolvedEpisodeTitle || undefined,
         isPaywalled,
-        gmailSent: true,
-        gmailSentTo: reader.email,
-        gmailSentAt: nowIso,
+        gmailSent: false,
+        gmailSentTo: customer.email,
       });
+      createdNotifIdsByUser.set(customer.id, notif.id);
     }
 
     // Add global Notification Bar entry for guest/public view
-    db.addNotification({
+    const globalNotif = db.addNotification({
       userId: 'all',
       type: releaseType,
       title,
       message: baseMessage,
       targetId: comic.id,
       comicId: comic.id,
-      episodeId: episode?.id,
+      comicTitle: comic.title,
+      episodeId: resolvedEpisodeId,
+      episodeTitle: resolvedEpisodeTitle || undefined,
       isPaywalled,
-      gmailSent: true,
-      gmailSentAt: nowIso,
+      gmailSent: false,
+      gmailTargetCount: registeredCustomers.length,
     });
 
-    if (recipientEmails.length > 0) {
+    const smtpSummary = getSmtpConfigSummary();
+    const emailResults = await Promise.all(
+      registeredCustomers.map(async customer => {
+        const result = await sendComicReleaseNotificationEmail({
+          to: customer.email,
+          customerName: customer.name,
+          comicTitle: comic.title,
+          episodeTitle: resolvedEpisodeTitle || undefined,
+          authorName: comic.authorName,
+          releaseType,
+          isPaywalled,
+        });
+        return { customer, result };
+      })
+    );
+
+    const recipients: { email: string; sent: boolean; error?: string }[] = [];
+    let sentCount = 0;
+    let failedCount = 0;
+    const completedIso = new Date().toISOString();
+
+    db.mutate(d => {
+      for (const { customer, result } of emailResults) {
+        const cleanEmail = customer.email;
+        if (result.sent) {
+          sentCount += 1;
+          recipients.push({ email: cleanEmail, sent: true });
+        } else {
+          failedCount += 1;
+          recipients.push({
+            email: cleanEmail,
+            sent: false,
+            error: result.error || 'SMTP delivery failed',
+          });
+        }
+        const notifId = createdNotifIdsByUser.get(customer.id);
+        const notif = d.notifications.find(n => n.id === notifId);
+        if (notif) {
+          notif.gmailSent = result.sent;
+          notif.gmailSentAt = result.sent ? completedIso : undefined;
+          notif.gmailError = result.sent ? undefined : result.error || 'SMTP delivery unavailable';
+          notif.message = result.sent
+            ? `${baseMessage} Gmail notification sent to ${cleanEmail}.`
+            : `${baseMessage} Notification posted here (Gmail error: ${result.error || 'SMTP not configured'}).`;
+        }
+      }
+
+      const allNotif = d.notifications.find(n => n.id === globalNotif.id);
+      if (allNotif) {
+        allNotif.gmailSent = sentCount > 0;
+        allNotif.gmailSentAt = sentCount > 0 ? completedIso : undefined;
+        allNotif.gmailDeliveredCount = sentCount;
+        allNotif.gmailTargetCount = registeredCustomers.length;
+        if (registeredCustomers.length > 0 && sentCount > 0) {
+          allNotif.message = `${baseMessage} Gmail alert sent to ${sentCount}/${registeredCustomers.length} customer(s).`;
+        }
+      }
+    });
+
+    const updatedSnapshot = db.getSnapshot();
+    const notificationsToMirror = updatedSnapshot.notifications.filter(
+      n => n.id === globalNotif.id || Array.from(createdNotifIdsByUser.values()).includes(n.id)
+    );
+    if (notificationsToMirror.length > 0) {
+      mirrorWritesInBackground(
+        'comic_release_notifications',
+        notificationsToMirror.map(buildNotificationWriteItem),
+        firebaseIdToken
+      );
+    }
+
+    if (registeredCustomers.length > 0) {
       db.logActivity(
         'GMAIL_RELEASE_ALERT_SENT',
         'system@aathirai.com',
         'admin',
-        `Automated Gmail & Notification Bar release alert for "${comic.title}" (${releaseType}) dispatched to ${recipientEmails.length} registered reader(s): ${recipientEmails.join(', ')}`,
+        `Notification Bar & Gmail release alert for "${comic.title}"${resolvedEpisodeTitle ? ` (${resolvedEpisodeTitle})` : ''} (${releaseType}) — Sent: ${sentCount}/${registeredCustomers.length} (${recipients.filter(r => r.sent).map(r => r.email).join(', ') || 'none'}).`,
         'comic',
         comic.id
       );
     }
+
+    return {
+      totalCustomers: registeredCustomers.length,
+      sentCount,
+      failedCount,
+      smtpConfigured: smtpSummary.configured,
+      recipients,
+    };
   }
 
   // Reader Bookmarks, Favorites, Reading Progress & Notifications
