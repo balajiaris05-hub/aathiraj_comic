@@ -113,29 +113,159 @@ async function startServer() {
   // SECURE DEDICATED ADMIN 2FA OTP AUTHENTICATION
   // -------------------------------------------------------------
 
-  app.post('/api/admin-auth/request-otp', authRateLimiter, async (req, res) => {
-    const { credential, channel = 'email', smsChannel, firebaseSmsSent, firebaseSmsError } = req.body;
-    if (!credential) {
-      return res.status(400).json({ error: 'Please enter your administrator Gmail or Indian mobile number.' });
+  const resolveAndVerifyStoredAdminCredential = (
+    rawCredential: unknown,
+    requestedChannel?: unknown
+  ): {
+    ok: boolean;
+    status: number;
+    error?: string;
+    adminUser?: User;
+    channel?: 'email' | 'sms';
+    destination?: string;
+    maskedDestination?: string;
+    normalizedInput?: string;
+  } => {
+    const cleanInput = String(rawCredential || '').trim();
+    if (!cleanInput) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Please enter your registered Administrator Gmail or Mobile Number.',
+      };
     }
 
-    const cleanInput = credential.trim().toLowerCase();
-    const cleanDigits = credential.replace(/\D/g, '');
+    const snapshot = db.getSnapshot();
+    const adminUser = snapshot.users.find(
+      (u: User) => u.id === 'usr_admin' || u.role === 'admin'
+    );
+    if (!adminUser || adminUser.isSuspended) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'Access Denied: No active administrator account is configured in the backend database.',
+      };
+    }
 
-    const isAuthorizedEmail = cleanInput === 'balajiaris05@gmail.com' || cleanInput === 'admin@aathirai.com' || cleanInput === 'admin';
-    const isAuthorizedPhone = cleanDigits.endsWith('8610950780') || cleanDigits.length >= 10;
+    const storedEmail = String(adminUser.email || '').trim().toLowerCase();
+    const storedPhone = String(adminUser.phone || '').trim();
+    const storedPhoneDigits = storedPhone.replace(/\D/g, '');
+    const storedTail10 =
+      storedPhoneDigits.length >= 10 ? storedPhoneDigits.slice(-10) : storedPhoneDigits;
 
-    if (!isAuthorizedEmail && !isAuthorizedPhone) {
-      return res.status(403).json({
-        error: 'Access Denied: Unrecognized administrator credentials. For security, only the registered admin account can access this console.',
+    const looksLikeEmail = cleanInput.includes('@');
+    const chosenChannel =
+      requestedChannel === 'email' || requestedChannel === 'sms'
+        ? requestedChannel
+        : looksLikeEmail
+          ? 'email'
+          : 'sms';
+
+    if (looksLikeEmail) {
+      const inputEmailLower = cleanInput.toLowerCase();
+      if (!storedEmail || inputEmailLower !== storedEmail) {
+        return {
+          ok: false,
+          status: 403,
+          error:
+            'Access Denied: This Gmail address does not match the registered administrator account stored in the backend database.',
+        };
+      }
+      if (chosenChannel !== 'email') {
+        return {
+          ok: false,
+          status: 400,
+          error:
+            "You entered a Gmail address. Please select 'Send OTP to Gmail' or enter your registered Mobile Number for SMS.",
+        };
+      }
+      const [localPart, domainPart] = storedEmail.split('@');
+      const maskedEmail =
+        localPart.length > 3
+          ? `${localPart[0]}${'*'.repeat(Math.max(3, localPart.length - 3))}${localPart.slice(-2)}@${domainPart}`
+          : `${localPart[0] || '*'}***@${domainPart}`;
+
+      return {
+        ok: true,
+        status: 200,
+        adminUser,
+        channel: 'email',
+        destination: storedEmail,
+        maskedDestination: maskedEmail,
+        normalizedInput: storedEmail,
+      };
+    }
+
+    // Mobile number validation (reject text/usernames or arbitrary digits)
+    if (/[a-zA-Z]/.test(cleanInput)) {
+      return {
+        ok: false,
+        status: 403,
+        error:
+          'Access Denied: Please enter your exact registered Administrator Gmail or Mobile Number stored in the backend database.',
+      };
+    }
+
+    const inputDigits = cleanInput.replace(/\D/g, '');
+    const isExactPhoneMatch =
+      inputDigits.length >= 10 &&
+      storedPhoneDigits.length >= 10 &&
+      (inputDigits === storedPhoneDigits ||
+        (inputDigits.length === 10 &&
+          storedPhoneDigits.startsWith('91') &&
+          inputDigits === storedTail10));
+
+    if (!isExactPhoneMatch) {
+      return {
+        ok: false,
+        status: 403,
+        error:
+          'Access Denied: This mobile number does not match the registered administrator account stored in the backend database.',
+      };
+    }
+
+    if (chosenChannel !== 'sms') {
+      return {
+        ok: false,
+        status: 400,
+        error:
+          "You entered a mobile number. Please select 'Send OTP to SMS (+91)' or enter your registered Gmail address for Gmail OTP.",
+      };
+    }
+
+    const maskedPhone =
+      storedTail10.length === 10
+        ? `+91 ******${storedTail10.slice(-4)}`
+        : '+91 ******';
+
+    return {
+      ok: true,
+      status: 200,
+      adminUser,
+      channel: 'sms',
+      destination: storedPhone,
+      maskedDestination: maskedPhone,
+      normalizedInput: storedPhone,
+    };
+  };
+
+  app.post('/api/admin-auth/request-otp', authRateLimiter, async (req, res) => {
+    const { credential, channel, smsChannel, firebaseSmsSent } = req.body || {};
+
+    const check = resolveAndVerifyStoredAdminCredential(credential, channel);
+    if (!check.ok || !check.adminUser || !check.channel || !check.destination) {
+      return res.status(check.status).json({
+        verifiedInDatabase: false,
+        error:
+          check.error ||
+          'Access Denied: Unrecognized administrator credentials.',
       });
     }
 
-    const targetChannel = channel === 'sms' ? 'sms' : 'email';
-    const targetDestination = targetChannel === 'email' ? 'balajiaris05@gmail.com' : '+91 8610950780';
-    const maskedDestination = targetChannel === 'email' ? 'b*******05@gmail.com' : '+91 ******0780';
+    const targetChannel = check.channel;
+    const targetDestination = check.destination;
+    const maskedDestination = check.maskedDestination || targetDestination;
 
-    // Generate cryptographically random 6-digit fallback OTP (also used for Gmail SMTP channel & backup)
     const otp = crypto.randomInt(100000, 999999).toString();
 
     db.mutate(d => {
@@ -144,150 +274,220 @@ async function startServer() {
         expiresAt: Date.now() + 10 * 60 * 1000, // Valid for 10 minutes
         channel: targetChannel,
         sentTo: targetDestination,
+        verifiedCredential: check.normalizedInput,
+        attempts: 0,
       };
     });
 
-    let emailResult: { sent: boolean; configured: boolean; messageId?: string; error?: string } = {
-      sent: false,
-      configured: getSmtpConfigSummary().configured,
-    };
-    let smsResult: { sent: boolean; configured: boolean; provider: string; error?: string } = {
-      sent: Boolean(targetChannel === 'sms' && firebaseSmsSent),
-      configured: targetChannel === 'sms' && (Boolean(firebaseSmsSent) || smsChannel === 'firebase')
-        ? true
-        : getSmsConfigSummary().configured,
-      provider:
-        targetChannel === 'sms' && (Boolean(firebaseSmsSent) || smsChannel === 'firebase')
-          ? 'firebase'
-          : getSmsConfigSummary().provider,
-      ...(firebaseSmsError ? { error: String(firebaseSmsError) } : {}),
-    };
+    if (targetChannel === 'email') {
+      const emailResult = await sendAdminOtpEmail(targetDestination, otp);
 
-    if (targetChannel === 'sms') {
-      if (!firebaseSmsSent) {
-        if (smsChannel !== 'firebase') {
-          smsResult = await sendOtpSms({
-            phone: targetDestination,
-            countryCode: '+91',
-            otp,
-            purpose: 'admin_2fa',
-          });
-        }
-        // Automatic reliable backup to admin Gmail via SMTP when Firebase/carrier SMS is unavailable
-        if (!smsResult.sent) {
-          emailResult = await sendAdminOtpEmail('balajiaris05@gmail.com', otp);
-        }
+      db.logActivity(
+        'ADMIN_OTP_REQUESTED',
+        check.adminUser.email,
+        'admin',
+        `Admin requested 2FA OTP via GMAIL to ${maskedDestination} (SMTP Sent: ${emailResult.sent}).`,
+        'admin_auth',
+        check.adminUser.id
+      );
+
+      if (!emailResult.sent) {
+        return res.status(emailResult.configured ? 502 : 503).json({
+          success: false,
+          verifiedInDatabase: true,
+          channel: 'email',
+          emailDelivered: false,
+          smsDelivered: false,
+          smtpConfigured: emailResult.configured,
+          error:
+            emailResult.error ||
+            'Unable to send 6-digit OTP to your registered Gmail address. Please check SMTP configuration and try again.',
+        });
       }
-    } else {
-      emailResult = await sendAdminOtpEmail(targetDestination, otp);
+
+      return res.json({
+        success: true,
+        verifiedInDatabase: true,
+        emailDelivered: true,
+        smsDelivered: false,
+        smtpConfigured: emailResult.configured,
+        channel: 'email',
+        destinationMasked: maskedDestination,
+        expiresInSeconds: 600,
+        message: `Verified against backend database. 6-digit OTP sent to ${maskedDestination}. Valid for 10 minutes.`,
+      });
     }
+
+    // targetChannel === 'sms'
+    const useFirebaseSms = smsChannel === 'firebase' || smsChannel === undefined;
+    if (useFirebaseSms) {
+      db.logActivity(
+        'ADMIN_OTP_REQUESTED',
+        check.adminUser.email,
+        'admin',
+        `Admin identity verified in DB for SMS 2FA OTP to ${maskedDestination} (Firebase Phone Auth handshake).`,
+        'admin_auth',
+        check.adminUser.id
+      );
+
+      return res.json({
+        success: true,
+        verifiedInDatabase: true,
+        emailDelivered: false,
+        smsDelivered: Boolean(firebaseSmsSent),
+        smsProvider: 'firebase',
+        smsConfigured: true,
+        channel: 'sms',
+        verifiedPhone: targetDestination,
+        destinationMasked: maskedDestination,
+        expiresInSeconds: 600,
+        message: `Verified against backend database. Sending 6-digit SMS OTP to ${maskedDestination}. Valid for 10 minutes.`,
+      });
+    }
+
+    const smsResult = await sendOtpSms({
+      phone: targetDestination,
+      countryCode: '+91',
+      otp,
+      purpose: 'admin_2fa',
+    });
 
     db.logActivity(
       'ADMIN_OTP_REQUESTED',
-      'balajiaris05@gmail.com',
+      check.adminUser.email,
       'admin',
-      `Admin requested 2FA OTP via ${targetChannel.toUpperCase()} to ${maskedDestination} (SMS Sent: ${smsResult.sent} [${smsResult.provider}], SMTP Sent: ${emailResult.sent}). Valid for 10 minutes.`,
+      `Admin requested 2FA OTP via SMS to ${maskedDestination} (SMS Sent: ${smsResult.sent} [${smsResult.provider}]).`,
       'admin_auth',
-      'usr_admin'
+      check.adminUser.id
     );
 
-    const hasDeliveryProvider = Boolean(emailResult.sent || smsResult.sent);
+    if (!smsResult.sent) {
+      return res.status(smsResult.configured ? 502 : 503).json({
+        success: false,
+        verifiedInDatabase: true,
+        channel: 'sms',
+        emailDelivered: false,
+        smsDelivered: false,
+        smsProvider: smsResult.provider,
+        smsConfigured: smsResult.configured,
+        error:
+          smsResult.error ||
+          'Unable to send SMS OTP to your registered mobile number. Please check Firebase/SMS provider configuration or verify via Gmail.',
+      });
+    }
+
     return res.json({
       success: true,
-      emailDelivered: emailResult.sent,
-      smsDelivered: smsResult.sent,
+      verifiedInDatabase: true,
+      emailDelivered: false,
+      smsDelivered: true,
       smsProvider: smsResult.provider,
-      smtpConfigured: emailResult.configured,
       smsConfigured: smsResult.configured,
-      message: smsResult.sent
-        ? smsResult.provider === 'firebase'
-          ? `6-digit SMS OTP dispatched via Firebase Phone Auth to ${maskedDestination}.`
-          : `Security OTP sent via SMS (${smsResult.provider}) to ${maskedDestination}. Valid for 10 minutes.`
-        : emailResult.sent && targetChannel === 'sms'
-          ? `Firebase SMS pending setup (${smsResult.error || 'enable Blaze/Phone Auth in Firebase Console'}) — 6-digit backup OTP delivered via Gmail SMTP to your linked admin email.`
-          : emailResult.sent
-            ? `Security OTP emailed via SMTP to ${maskedDestination}. Valid for 10 minutes.`
-            : hasDeliveryProvider
-              ? `Security OTP dispatched to ${maskedDestination}. Valid for 10 minutes.`
-              : `6-digit verification OTP generated for ${maskedDestination}. Please enter the code sent to your registered Gmail or mobile device.`,
-      channel: targetChannel,
+      channel: 'sms',
+      verifiedPhone: targetDestination,
       destinationMasked: maskedDestination,
       expiresInSeconds: 600,
+      message: `Verified against backend database. 6-digit SMS OTP sent to ${maskedDestination}. Valid for 10 minutes.`,
     });
   });
 
   app.post('/api/admin-auth/verify-otp', authRateLimiter, async (req, res) => {
-    const { credential, otp } = req.body;
+    const { credential, otp, channel } = req.body || {};
+    const check = resolveAndVerifyStoredAdminCredential(credential, channel);
+
+    if (!check.ok || !check.adminUser || !check.channel) {
+      return res.status(check.status).json({
+        error:
+          check.error ||
+          'Access Denied: Credentials do not match the registered administrator account.',
+      });
+    }
+
     const tokenInfo = await verifyBearerToken(req.headers.authorization);
     const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
     const firebasePhoneMatchesAdmin = Boolean(
-      tokenInfo?.phoneNumber && phonesMatch('+91 8610950780', tokenInfo.phoneNumber)
+      tokenInfo?.phoneNumber &&
+        check.adminUser.phone &&
+        phonesMatch(check.adminUser.phone, tokenInfo.phoneNumber, '+91')
     );
 
-    if (!credential || (!otp && !hasFirebasePhoneClaim)) {
-      return res.status(400).json({ error: 'Credential and OTP are required.' });
-    }
-
-    const cleanInput = credential.trim().toLowerCase();
-    const cleanDigits = credential.replace(/\D/g, '');
-    const isAuthorizedEmail = cleanInput === 'balajiaris05@gmail.com' || cleanInput === 'admin@aathirai.com' || cleanInput === 'admin';
-    const isAuthorizedPhone = cleanDigits.endsWith('8610950780') || cleanDigits.length >= 10;
-
-    if (!isAuthorizedEmail && !isAuthorizedPhone) {
-      return res.status(403).json({ error: 'Access Denied: Unrecognized administrator credentials.' });
+    if (!otp && !hasFirebasePhoneClaim) {
+      return res.status(400).json({ error: 'Please enter the 6-digit verification OTP.' });
     }
 
     if (hasFirebasePhoneClaim && !firebasePhoneMatchesAdmin) {
       return res.status(403).json({
-        error: 'Verified Firebase mobile number does not match the registered administrator mobile number.',
+        error:
+          'Access Denied: Verified Firebase mobile number does not match the registered administrator mobile number stored in the backend database.',
       });
     }
 
     const snapshot = db.getSnapshot();
     const activeOtp = snapshot.adminOtp;
 
+    if (!activeOtp || Date.now() > activeOtp.expiresAt) {
+      return res.status(400).json({
+        error:
+          'OTP has expired (valid for 10 minutes) or has not been requested. Please click Resend OTP.',
+      });
+    }
+
+    if (activeOtp.channel !== check.channel) {
+      return res.status(400).json({
+        error: `OTP was requested for ${activeOtp.channel.toUpperCase()}. Please verify on the matching channel or click Resend OTP.`,
+      });
+    }
+
     if (!firebasePhoneMatchesAdmin) {
-      if (!activeOtp || Date.now() > activeOtp.expiresAt) {
-        return res.status(400).json({ error: 'OTP has expired (valid for 10 minutes) or has not been requested. Please request a new code.' });
+      if ((activeOtp.attempts || 0) >= 5) {
+        db.mutate(d => {
+          delete d.adminOtp;
+        });
+        return res.status(429).json({
+          error:
+            'Too many incorrect OTP attempts. For security, this code has been invalidated. Please request a new OTP.',
+        });
       }
 
       if (activeOtp.code !== String(otp || '').trim()) {
-        return res.status(400).json({ error: 'Invalid 6-digit verification code. Please check your verification dispatch.' });
+        let attemptsRemaining = 0;
+        db.mutate(d => {
+          if (d.adminOtp) {
+            d.adminOtp.attempts = (d.adminOtp.attempts || 0) + 1;
+            attemptsRemaining = Math.max(0, 5 - d.adminOtp.attempts);
+            if (d.adminOtp.attempts >= 5) {
+              delete d.adminOtp;
+            }
+          }
+        });
+        return res.status(400).json({
+          error:
+            attemptsRemaining > 0
+              ? `Invalid 6-digit verification code. ${attemptsRemaining} attempt${attemptsRemaining === 1 ? '' : 's'} remaining before code resets.`
+              : 'Too many incorrect OTP attempts. Code invalidated — please click Resend OTP.',
+        });
       }
     }
 
-    // Clear one-time OTP
+    // Clear one-time OTP after verification
     db.mutate(d => {
       delete d.adminOtp;
     });
 
-    // Fetch or construct admin user from authoritative database
-    const adminUser = snapshot.users.find(u => u.role === 'admin' || u.email === 'balajiaris05@gmail.com') || {
-      id: 'usr_admin',
-      name: 'Balaji Administrator',
-      email: 'balajiaris05@gmail.com',
-      phone: '+91 8610950780',
-      role: 'admin' as const,
-      isVerified: true,
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
-      bio: 'Chief Content Administrator and Publisher at Aathirai_Comic.',
-      createdAt: '2026-01-01T00:00:00Z',
-    };
-
     db.logActivity(
       'ADMIN_AUTHENTICATED',
-      'balajiaris05@gmail.com',
+      check.adminUser.email,
       'admin',
-      `Administrator successfully verified 2FA ${firebasePhoneMatchesAdmin ? 'Firebase SMS OTP' : 'OTP'} and unlocked console.`,
+      `Administrator successfully verified 2FA ${firebasePhoneMatchesAdmin ? 'Firebase SMS OTP' : `${check.channel.toUpperCase()} OTP`} and unlocked console.`,
       'admin_auth',
-      adminUser.id
+      check.adminUser.id
     );
 
     return res.json({
       success: true,
-      verifiedVia: firebasePhoneMatchesAdmin ? 'firebase_sms' : 'backend_otp',
-      user: sanitizeUserForClient(adminUser as User, true),
-      message: 'Admin authentication verified! Console access unlocked.',
+      verifiedVia: firebasePhoneMatchesAdmin ? 'firebase_sms' : `backend_${check.channel}_otp`,
+      user: sanitizeUserForClient(check.adminUser as User, true),
+      message: 'Admin identity verified against backend database! Console access unlocked.',
     });
   });
 

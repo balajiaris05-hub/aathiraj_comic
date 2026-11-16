@@ -58,7 +58,14 @@ export interface MigrationAuditReport {
 export interface DatabaseSchema {
   users: User[];
   otps: Record<string, { code: string; expiresAt: number } | string>;
-  adminOtp?: { code: string; expiresAt: number; channel: 'email' | 'sms'; sentTo: string };
+  adminOtp?: {
+    code: string;
+    expiresAt: number;
+    channel: 'email' | 'sms';
+    sentTo: string;
+    verifiedCredential?: string;
+    attempts?: number;
+  };
   authorApplications: AuthorApplication[];
   comics: Comic[];
   comments: Comment[];

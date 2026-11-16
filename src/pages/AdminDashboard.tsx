@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
@@ -101,7 +101,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   setCurrentTab,
   initialSubTab,
 }) => {
-  const { user, switchDemoRole, updateUser, getAuthHeaders } = useAuth();
+  const { user, switchDemoRole, setAuthenticatedUser, getAuthHeaders } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<
     'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'ad-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
@@ -221,6 +221,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [otpDestinationMasked, setOtpDestinationMasked] = useState<string>('');
   const [firebaseAdminConfirmation, setFirebaseAdminConfirmation] = useState<ConfirmationResult | null>(null);
   const [adminSmsNotice, setAdminSmsNotice] = useState<string | null>(null);
+  const [adminResendCooldown, setAdminResendCooldown] = useState<number>(0);
+  const adminOtpInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (adminResendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setAdminResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [adminResendCooldown]);
 
   useEffect(() => {
     return () => {
@@ -351,10 +361,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   }, [initialSubTab]);
 
-  // Request 2FA OTP
-  const handleRequestAdminOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!adminCredentialInput.trim()) return;
+  // Send or Resend 2FA OTP strictly to the verified Gmail or Mobile Number stored in backend DB
+  const dispatchAdminOtp = async (isResend = false) => {
+    const trimmed = adminCredentialInput.trim();
+    if (!trimmed) {
+      setOtpError('Please enter your registered Administrator Gmail or Mobile Number.');
+      return;
+    }
+    if (isResend && adminResendCooldown > 0) return;
+
+    const looksLikeEmail = trimmed.includes('@');
+    const resolvedChannel: 'email' | 'sms' = looksLikeEmail ? 'email' : adminChannelChoice;
+
+    if (resolvedChannel === 'email' && !looksLikeEmail) {
+      setOtpError("Please enter your registered Administrator Gmail address or select 'Send OTP to SMS (+91)'.");
+      return;
+    }
+    if (resolvedChannel === 'sms' && (looksLikeEmail || /[a-zA-Z]/.test(trimmed) || trimmed.replace(/\D/g, '').length < 10)) {
+      setOtpError("Please enter your registered 10-digit Indian Mobile Number (+91) or select 'Send OTP to Gmail'.");
+      return;
+    }
 
     setOtpLoading(true);
     setOtpError(null);
@@ -366,9 +392,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          credential: adminCredentialInput.trim(),
-          channel: adminChannelChoice,
-          smsChannel: adminChannelChoice === 'sms' ? 'firebase' : undefined,
+          credential: trimmed,
+          channel: resolvedChannel,
+          smsChannel: resolvedChannel === 'sms' ? 'firebase' : undefined,
         }),
       });
 
@@ -376,35 +402,86 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       if (!res.ok) {
         setOtpLoading(false);
-        setOtpError(data.error || 'Access Denied: Unrecognized credentials.');
+        setOtpError(data.error || 'Access Denied: Credentials do not match the administrator stored in the backend database.');
         return;
       }
 
-      let finalMessage = data.message;
-      if (adminChannelChoice === 'sms') {
-        const fbSms = await sendFirebaseSmsOtp('+91 8610950780', 'firebase-recaptcha-admin', '+91');
-        if (fbSms.sent && fbSms.confirmationResult) {
-          setFirebaseAdminConfirmation(fbSms.confirmationResult);
-          setAdminSmsNotice('Real SMS OTP sent to +91 ******0780 via Firebase Phone Auth.');
-          finalMessage = `6-digit SMS OTP dispatched via Firebase Phone Auth to ${data.destinationMasked || '+91 ******0780'}. Backup OTP also sent to admin Gmail.`;
-        } else {
-          setFirebaseAdminConfirmation(null);
-          if (fbSms.errorMessage) {
-            setAdminSmsNotice(`${fbSms.errorMessage} Backup OTP sent via Gmail SMTP.`);
-          }
-        }
-      } else {
+      if (resolvedChannel === 'email') {
+        setOtpLoading(false);
         setFirebaseAdminConfirmation(null);
+        if (isResend) setAdminOtpInput('');
+        setOtpStep('enter_otp');
+        setOtpDestinationMasked(data.destinationMasked || trimmed);
+        setAdminResendCooldown(30);
+        setOtpSuccessMessage(
+          data.message ||
+            `Verified in backend database! 6-digit OTP ${isResend ? 'resent' : 'sent'} to ${data.destinationMasked || trimmed}.`
+        );
+        setTimeout(() => adminOtpInputRef.current?.focus(), 40);
+        return;
       }
 
+      // resolvedChannel === 'sms' -> Dispatch SMS exclusively to the stored admin phone verified by backend
+      const targetPhone = data.verifiedPhone || trimmed;
+      const fbSms = await sendFirebaseSmsOtp(targetPhone, 'firebase-recaptcha-admin', '+91');
+      if (fbSms.sent && fbSms.confirmationResult) {
+        setOtpLoading(false);
+        setFirebaseAdminConfirmation(fbSms.confirmationResult);
+        if (isResend) setAdminOtpInput('');
+        setOtpStep('enter_otp');
+        setOtpDestinationMasked(data.destinationMasked || fbSms.phoneE164 || targetPhone);
+        setAdminResendCooldown(30);
+        const smsMsg = `Verified in backend database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${data.destinationMasked || fbSms.phoneE164}.`;
+        setAdminSmsNotice(smsMsg);
+        setOtpSuccessMessage(smsMsg);
+        setTimeout(() => adminOtpInputRef.current?.focus(), 40);
+        return;
+      }
+
+      // Fallback attempt to configured backend SMS provider (no email redirect)
+      const backendSmsRes = await fetch('/api/admin-auth/request-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: trimmed,
+          channel: 'sms',
+          smsChannel: 'backend',
+        }),
+      });
+      const backendSmsData = await backendSmsRes.json();
       setOtpLoading(false);
-      setOtpStep('enter_otp');
-      setOtpDestinationMasked(data.destinationMasked || '');
-      setOtpSuccessMessage(finalMessage);
+
+      if (backendSmsRes.ok && backendSmsData.smsDelivered) {
+        setFirebaseAdminConfirmation(null);
+        if (isResend) setAdminOtpInput('');
+        setOtpStep('enter_otp');
+        setOtpDestinationMasked(backendSmsData.destinationMasked || targetPhone);
+        setAdminResendCooldown(30);
+        const smsMsg =
+          backendSmsData.message ||
+          `Verified in backend database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${backendSmsData.destinationMasked || targetPhone}.`;
+        setAdminSmsNotice(smsMsg);
+        setOtpSuccessMessage(smsMsg);
+        setTimeout(() => adminOtpInputRef.current?.focus(), 40);
+        return;
+      }
+
+      setFirebaseAdminConfirmation(null);
+      setOtpError(
+        fbSms.errorMessage ||
+          backendSmsData.error ||
+          'Could not deliver SMS OTP to your registered mobile number. Please check Firebase/SMS provider setup or switch to Gmail.'
+      );
     } catch (err: any) {
       setOtpLoading(false);
-      setOtpError('Network error while requesting verification OTP.');
+      setOtpError('Network error while verifying backend identity and dispatching OTP.');
     }
+  };
+
+  // Request 2FA OTP
+  const handleRequestAdminOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await dispatchAdminOtp(false);
   };
 
   // Verify 2FA OTP
@@ -433,6 +510,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         headers,
         body: JSON.stringify({
           credential: adminCredentialInput.trim(),
+          channel: adminChannelChoice,
           otp: adminOtpInput.trim(),
         }),
       });
@@ -446,13 +524,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
 
       setAdminSmsNotice(null);
+      setAdminResendCooldown(0);
       sessionStorage.removeItem('aathirai_admin_unlocked');
       setIsAdminUnlocked(true);
       if (data.user) {
-        updateUser(data.user);
+        setAuthenticatedUser(data.user);
       }
       switchDemoRole('admin');
-      setActionMessage('Admin Authentication Verified! Terminal Unlocked.');
+      setActionMessage('Admin Identity Verified! Terminal Unlocked.');
       fetchAdminData();
       onRefreshComics();
       setTimeout(() => setActionMessage(null), 5000);
@@ -474,6 +553,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setOtpSuccessMessage(null);
     setFirebaseAdminConfirmation(null);
     setAdminSmsNotice(null);
+    setAdminResendCooldown(0);
   };
 
   // Comic deletion handler with modal confirmation
@@ -1291,8 +1371,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <input
                     type="text"
                     value={adminCredentialInput}
-                    onChange={(e) => setAdminCredentialInput(e.target.value)}
-                    placeholder="Enter registered Gmail or Indian Mobile (+91...)"
+                    onChange={(e) => {
+                      const nextVal = e.target.value;
+                      setAdminCredentialInput(nextVal);
+                      setOtpError(null);
+                      if (nextVal.includes('@')) {
+                        setAdminChannelChoice('email');
+                      } else if (/^\+?\d[\d\s-]{5,}$/.test(nextVal.trim())) {
+                        setAdminChannelChoice('sms');
+                      }
+                    }}
+                    placeholder={
+                      adminChannelChoice === 'email'
+                        ? 'Enter your registered Admin Gmail address'
+                        : 'Enter your registered Admin Mobile Number (+91...)'
+                    }
                     autoComplete="off"
                     className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-xs font-mono placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500"
                     required
@@ -1321,7 +1414,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       name="adminChannel"
                       value="email"
                       checked={adminChannelChoice === 'email'}
-                      onChange={() => setAdminChannelChoice('email')}
+                      onChange={() => {
+                        setAdminChannelChoice('email');
+                        setOtpError(null);
+                      }}
                       className="text-amber-500 focus:ring-amber-500"
                     />
                     <div className="flex items-center gap-2 text-xs">
@@ -1342,7 +1438,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       name="adminChannel"
                       value="sms"
                       checked={adminChannelChoice === 'sms'}
-                      onChange={() => setAdminChannelChoice('sms')}
+                      onChange={() => {
+                        setAdminChannelChoice('sms');
+                        setOtpError(null);
+                      }}
                       className="text-amber-500 focus:ring-amber-500"
                     />
                     <div className="flex items-center gap-2 text-xs">
@@ -1359,11 +1458,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="w-full py-3.5 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 {otpLoading ? (
-                  <span>Dispatching OTP...</span>
+                  <span>Verifying &amp; Sending OTP...</span>
                 ) : (
                   <>
                     <KeyRound className="w-4 h-4" />
-                    <span>Send 6-Digit OTP</span>
+                    <span>
+                      {adminChannelChoice === 'email'
+                        ? 'Verify & Send OTP to Gmail'
+                        : 'Verify & Send OTP to SMS'}
+                    </span>
                   </>
                 )}
               </button>
@@ -1384,10 +1487,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
-                  Enter 6-Digit Verification Code
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                    Enter 6-Digit Verification Code
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => dispatchAdminOtp(true)}
+                    disabled={otpLoading || adminResendCooldown > 0}
+                    className="inline-flex items-center gap-1 text-xs font-bold text-amber-600 dark:text-amber-400 hover:text-amber-500 disabled:text-slate-400 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>
+                      {adminResendCooldown > 0
+                        ? `Resend OTP in ${adminResendCooldown}s`
+                        : 'Resend OTP'}
+                    </span>
+                  </button>
+                </div>
                 <input
+                  ref={adminOtpInputRef}
                   type="text"
                   name="otp"
                   inputMode="numeric"
@@ -1410,8 +1529,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     setOtpStep('enter_credential');
                     setAdminOtpInput('');
                     setOtpError(null);
+                    setOtpSuccessMessage(null);
+                    setAdminSmsNotice(null);
+                    setAdminResendCooldown(0);
                   }}
-                  className="py-3 px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white text-xs font-semibold transition-colors"
+                  className="py-3 px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white text-xs font-semibold transition-colors cursor-pointer"
                 >
                   Change Channel / ID
                 </button>
