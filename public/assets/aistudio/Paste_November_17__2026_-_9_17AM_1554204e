@@ -1,0 +1,680 @@
+
+starting build "fda4b7e3-c68f-4d05-8c0c-9497d03df9d5" using release legacy
+FETCHSOURCE
+From https://github.com/balajiaris05-hub/aathiraj_comic
+ * branch            214d3729e80d9f1bf9374b607cecd94f0000eb59 -> FETCH_HEAD
+HEAD is now at 214d372 refactor: improve Firebase auth error messages
+GitCommit:
+214d3729e80d9f1bf9374b607cecd94f0000eb59
+BUILD
+Starting Step #0 - "ubuntu"
+Step #0 - "ubuntu": Already have image (with digest): gcr.io/cloud-builders/gcloud
+Finished Step #0 - "ubuntu"
+Starting Step #1 - "preparer"
+Step #1 - "preparer": Pulling image: us-east4-docker.pkg.dev/serverless-runtimes/utilities/preparer:base_20261022_18_04_RC00
+Step #1 - "preparer": base_20261022_18_04_RC00: Pulling from serverless-runtimes/utilities/preparer
+Step #1 - "preparer": 135bebc91277: Pulling fs layer
+Step #1 - "preparer": 135bebc91277: Verifying Checksum
+Step #1 - "preparer": 135bebc91277: Download complete
+Step #1 - "preparer": 135bebc91277: Pull complete
+Step #1 - "preparer": Digest: sha256:aef9c8b3b793633789eae9e6d165e54216182cf70a2f355825154846ed57f7aa
+Step #1 - "preparer": Status: Downloaded newer image for us-east4-docker.pkg.dev/serverless-runtimes/utilities/preparer:base_20261022_18_04_RC00
+Step #1 - "preparer": us-east4-docker.pkg.dev/serverless-runtimes/utilities/preparer:base_20261022_18_04_RC00
+Step #1 - "preparer": 2026/11/17 03:41:09 WARNING: X_FIREBASE_SUPPORTED_HOSTS is a reserved key, removing it from the final environment variables
+Step #1 - "preparer": 2026/11/17 03:41:09 FIREBASE_CONFIG has no availability specified, applying the default of 'BUILD' and 'RUNTIME'
+Step #1 - "preparer": 2026/11/17 03:41:09 Final app hosting schema:
+Step #1 - "preparer": runConfig:
+Step #1 - "preparer":   cpu: 1
+Step #1 - "preparer":   memoryMiB: 512
+Step #1 - "preparer":   concurrency: 80
+Step #1 - "preparer":   maxInstances: 4
+Step #1 - "preparer":   minInstances: 0
+Step #1 - "preparer":   vpcAccess: null
+Step #1 - "preparer":   cpuAlwaysAllocated: null
+Step #1 - "preparer": env:
+Step #1 - "preparer": - variable: NODE_ENV
+Step #1 - "preparer":   value: production
+Step #1 - "preparer":   availability:
+Step #1 - "preparer":   - RUNTIME
+Step #1 - "preparer":   source: apphosting.yaml
+Step #1 - "preparer": - variable: FIREBASE_CONFIG
+Step #1 - "preparer":   value: '{"databaseURL":"","projectId":"aathiraicomic","storageBucket":"aathiraicomic.firebasestorage.app"}'
+Step #1 - "preparer":   availability:
+Step #1 - "preparer":   - BUILD
+Step #1 - "preparer":   - RUNTIME
+Step #1 - "preparer":   source: Firebase System
+Step #1 - "preparer": - variable: FIREBASE_WEBAPP_CONFIG
+Step #1 - "preparer":   value: '{"apiKey":"AIzaSyA8vRoHmPMgkw_cyRCq-LhTJkNPf4RMYjw","appId":"1:788104864494:web:2506531d7af282afe389ff","authDomain":"aathiraicomic.firebaseapp.com","databaseURL":"","messagingSenderId":"788104864494","projectId":"aathiraicomic","storageBucket":"aathiraicomic.firebasestorage.app"}'
+Step #1 - "preparer":   availability:
+Step #1 - "preparer":   - BUILD
+Step #1 - "preparer":   source: Firebase System
+Step #1 - "preparer": 
+Step #1 - "preparer": 2026/11/17 03:41:09 Final app hosting schema:
+Step #1 - "preparer": runConfig:
+Step #1 - "preparer":   cpu: 1
+Step #1 - "preparer":   memoryMiB: 512
+Step #1 - "preparer":   concurrency: 80
+Step #1 - "preparer":   maxInstances: 4
+Step #1 - "preparer":   minInstances: 0
+Step #1 - "preparer":   vpcAccess: null
+Step #1 - "preparer":   cpuAlwaysAllocated: null
+Step #1 - "preparer": env:
+Step #1 - "preparer": - variable: NODE_ENV
+Step #1 - "preparer":   value: production
+Step #1 - "preparer":   availability:
+Step #1 - "preparer":   - RUNTIME
+Step #1 - "preparer":   source: apphosting.yaml
+Step #1 - "preparer": - variable: FIREBASE_CONFIG
+Step #1 - "preparer":   value: '{"databaseURL":"","projectId":"aathiraicomic","storageBucket":"aathiraicomic.firebasestorage.app"}'
+Step #1 - "preparer":   availability:
+Step #1 - "preparer":   - BUILD
+Step #1 - "preparer":   - RUNTIME
+Step #1 - "preparer":   source: Firebase System
+Step #1 - "preparer": - variable: FIREBASE_WEBAPP_CONFIG
+Step #1 - "preparer":   value: '{"apiKey":"AIzaSyA8vRoHmPMgkw_cyRCq-LhTJkNPf4RMYjw","appId":"1:788104864494:web:2506531d7af282afe389ff","authDomain":"aathiraicomic.firebaseapp.com","databaseURL":"","messagingSenderId":"788104864494","projectId":"aathiraicomic","storageBucket":"aathiraicomic.firebasestorage.app"}'
+Step #1 - "preparer":   availability:
+Step #1 - "preparer":   - BUILD
+Step #1 - "preparer":   source: Firebase System
+Step #1 - "preparer": 
+Finished Step #1 - "preparer"
+Starting Step #2 - "pre-buildpack"
+Step #2 - "pre-buildpack": Already have image: us-east4-docker.pkg.dev/serverless-runtimes/google-24-full/builder/nodejs:nodejs_20261104_RC00
+Step #2 - "pre-buildpack": Preparing directory /layers
+Step #2 - "pre-buildpack": Preparing directory /workspace
+Step #2 - "pre-buildpack": Preparing directory /builder/home
+Step #2 - "pre-buildpack": Preparing directory /builder/outputs
+Step #2 - "pre-buildpack": Preparing directory /platform/env
+Step #2 - "pre-buildpack": Passing build environment variable X_GOOGLE_TARGET_PLATFORM to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable APPHOSTINGYAML_FILEPATH to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable FIREBASE_OUTPUT_BUNDLE_DIR to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable FIREBASE_APP_HOSTING to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable GOOGLE_RUNTIME to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable GOOGLE_RUNTIME_VERSION to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable X_GOOGLE_SKIP_RUNTIME_LAUNCH to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable NEXTJS_ADAPTER_VERSION to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable ANGULAR_ADAPTER_VERSION to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable GOOGLE_BUILDABLE to buildpacks
+Step #2 - "pre-buildpack": Passing build environment variable BUILDER_OUTPUT to buildpacks
+Finished Step #2 - "pre-buildpack"
+Starting Step #3 - "build"
+Step #3 - "build": Already have image: us-east4-docker.pkg.dev/serverless-runtimes/google-24-full/builder/nodejs:nodejs_20261104_RC00
+Step #3 - "build": Warning: No cached data will be used, no cache specified.
+Step #3 - "build": ===> ANALYZING
+Step #3 - "build": Image with name "us-east4-docker.pkg.dev/aathiraicomic/firebaseapphosting-images/aathiraicomic:build-2026-11-17-003" not found
+Step #3 - "build": ===> DETECTING
+Step #3 - "build": target distro name/version labels not found, reading /etc/os-release file
+Step #3 - "build": google.nodejs.runtime        1.0.0
+Step #3 - "build": google.nodejs.npm            1.1.1
+Step #3 - "build": google.nodejs.firebasebundle 0.0.1
+Step #3 - "build": ===> RESTORING
+Step #3 - "build": ===> BUILDING
+Step #3 - "build": target distro name/version labels not found, reading /etc/os-release file
+Step #3 - "build": === Node.js - Runtime Using Runner (google.nodejs.runtime@1.0.0) ===
+Step #3 - "build": Using runtime version from GOOGLE_RUNTIME_VERSION: 24.22.1
+Step #3 - "build": Using exact version 24.22.1 for Node.js
+Step #3 - "build": Adding image label google.runtime-version: nodejs24
+Step #3 - "build": Using exact version 24.22.1 for Node.js
+Step #3 - "build": ***** CACHE MISS: "nodejs"
+Step #3 - "build": Installing Node.js v24.22.1.
+Step #3 - "build": 2026/11/17 03:41:12 [DEBUG] GET https://dl.google.com/runtimes/ubuntu2404/nodejs/nodejs-24.22.1.tar.gz
+Step #3 - "build": Installing the heapsize.sh exec.d script.
+Step #3 - "build": === Node.js - Npm Using Runner (google.nodejs.npm@1.1.1) ===
+Step #3 - "build": ***** CACHE MISS: "npm_modules"
+Step #3 - "build": Installing application dependencies.
+Step #3 - "build": --------------------------------------------------------------------------------
+Step #3 - "build": Running "npm ci --quiet --no-fund --no-audit (NODE_ENV=development)"
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn   @typescript-eslint/parser@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn     @typescript-eslint/parser@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn   @typescript-eslint/project-service@"8.72.2" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn     @typescript-eslint/project-service@"8.72.2" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn   @typescript-eslint/rule-tester@"^8.57.2" from @firebase/eslint-plugin-security-rules@0.0.2
+Step #3 - "build": npm warn   node_modules/@firebase/eslint-plugin-security-rules
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn     @typescript-eslint/rule-tester@"^8.57.2" from @firebase/eslint-plugin-security-rules@0.0.2
+Step #3 - "build": npm warn     node_modules/@firebase/eslint-plugin-security-rules
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/tsconfig-utils@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/tsconfig-utils@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/tsconfig-utils
+Step #3 - "build": npm warn   @typescript-eslint/tsconfig-utils@"^8.72.2" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn   1 more (@typescript-eslint/typescript-estree)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/tsconfig-utils@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/tsconfig-utils
+Step #3 - "build": npm warn     @typescript-eslint/tsconfig-utils@"^8.72.2" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn     1 more (@typescript-eslint/typescript-estree)
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn   @typescript-eslint/typescript-estree@"8.72.2" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn   2 more (@typescript-eslint/rule-tester, @typescript-eslint/utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn     @typescript-eslint/typescript-estree@"8.72.2" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn     2 more (@typescript-eslint/rule-tester, @typescript-eslint/utils)
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/utils@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/utils@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/utils
+Step #3 - "build": npm warn   @typescript-eslint/utils@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/utils@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/utils
+Step #3 - "build": npm warn     @typescript-eslint/utils@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm error code EUSAGE
+Step #3 - "build": npm error
+Step #3 - "build": npm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before continuing.
+Step #3 - "build": npm error
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-android-arm64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-darwin-arm64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-darwin-x64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-freebsd-x64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-arm-gnueabihf@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-arm64-gnu@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-arm64-musl@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-x64-musl@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-win32-arm64-msvc@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-win32-x64-msvc@4.3.5 from lock file
+Step #3 - "build": npm error Missing: lightningcss-android-arm64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-darwin-arm64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-darwin-x64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-freebsd-x64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-arm-gnueabihf@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-arm64-gnu@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-arm64-musl@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-x64-musl@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-win32-arm64-msvc@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-win32-x64-msvc@1.33.0 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-android-arm-eabi@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-android-arm64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-darwin-arm64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-darwin-x64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-freebsd-x64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-arm-gnueabihf@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-arm64-gnu@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-arm64-musl@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-ppc64-gnu@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-s390x-gnu@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-x64-musl@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-openharmony-arm64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-wasm32-wasi@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-win32-arm64-msvc@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-win32-x64-msvc@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @emnapi/core@2.0.0-beta.2 from lock file
+Step #3 - "build": npm error Missing: @emnapi/runtime@2.0.0-beta.2 from lock file
+Step #3 - "build": npm error Missing: @napi-rs/wasm-runtime@1.2.6 from lock file
+Step #3 - "build": npm error Missing: @emnapi/wasi-threads@2.2.0 from lock file
+Step #3 - "build": npm error Missing: @tybys/wasm-util@0.10.5 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-aix-ppc64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-darwin-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-darwin-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-freebsd-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-freebsd-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-arm@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-loong64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-mips64el@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-ppc64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-riscv64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-s390x@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-netbsd-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-netbsd-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-openbsd-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-openbsd-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-sunos-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-win32-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-win32-x64@7.0.2 from lock file
+Step #3 - "build": npm error
+Step #3 - "build": npm error Clean install a project
+Step #3 - "build": npm error
+Step #3 - "build": npm error Usage:
+Step #3 - "build": npm error npm ci
+Step #3 - "build": npm error
+Step #3 - "build": npm error Options:
+Step #3 - "build": npm error [--install-strategy <hoisted|nested|shallow|linked>] [--legacy-bundling]
+Step #3 - "build": npm error [--global-style] [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+Step #3 - "build": npm error [--include <prod|dev|optional|peer> [--include <prod|dev|optional|peer> ...]]
+Step #3 - "build": npm error [--strict-peer-deps] [--foreground-scripts] [--ignore-scripts]
+Step #3 - "build": npm error [--allow-directory <all|none|root>] [--allow-file <all|none|root>]
+Step #3 - "build": npm error [--allow-git <all|none|root>] [--allow-remote <all|none|root>]
+Step #3 - "build": npm error [--allow-scripts <package-list> [--allow-scripts <package-list> ...]]
+Step #3 - "build": npm error [--strict-allow-scripts] [--dangerously-allow-all-scripts] [--no-audit]
+Step #3 - "build": npm error [--no-bin-links] [--no-fund] [--dry-run]
+Step #3 - "build": npm error [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+Step #3 - "build": npm error [--workspaces] [--include-workspace-root] [--install-links]
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --install-strategy
+Step #3 - "build": npm error     Sets the strategy for installing packages in node_modules.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --legacy-bundling
+Step #3 - "build": npm error     Instead of hoisting package installs in `node_modules`, install packages
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --global-style
+Step #3 - "build": npm error     Only install direct dependencies in the top level `node_modules`,
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --omit
+Step #3 - "build": npm error     Dependency types to omit from the installation tree on disk.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --include
+Step #3 - "build": npm error     Option that allows for defining which types of dependencies to install.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --strict-peer-deps
+Step #3 - "build": npm error     If set to `true`, and `--legacy-peer-deps` is not set, then _any_
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --foreground-scripts
+Step #3 - "build": npm error     Run all build scripts (ie, `preinstall`, `install`, and
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --ignore-scripts
+Step #3 - "build": npm error     If true, npm does not run scripts specified in package.json files.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-directory
+Step #3 - "build": npm error     Limits the ability for npm to install dependencies from directories.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-file
+Step #3 - "build": npm error     Limits the ability for npm to install dependencies from tarball files.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-git
+Step #3 - "build": npm error     Limits the ability for npm to fetch dependencies from git references.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-remote
+Step #3 - "build": npm error     Limits the ability for npm to fetch dependencies from urls.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-scripts
+Step #3 - "build": npm error     Comma-separated list of packages whose install-time lifecycle scripts
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --strict-allow-scripts
+Step #3 - "build": npm error     If `true`, turn the install-script policy from a warning into a hard
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --dangerously-allow-all-scripts
+Step #3 - "build": npm error     If `true`, bypass the `allowScripts` policy entirely and run every
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --audit
+Step #3 - "build": npm error     When "true" submit audit reports alongside the current npm command to the
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --bin-links
+Step #3 - "build": npm error     Tells npm to create symlinks (or `.cmd` shims on Windows) for package
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --fund
+Step #3 - "build": npm error     When "true" displays the message at the end of each `npm install`
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --dry-run
+Step #3 - "build": npm error     Indicates that you don't want npm to make any changes and that it should
+Step #3 - "build": npm error
+Step #3 - "build": npm error   -w|--workspace
+Step #3 - "build": npm error     Enable running a command in the context of the configured workspaces of the
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --workspaces
+Step #3 - "build": npm error     Set to true to run the command in the context of **all** configured
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --include-workspace-root
+Step #3 - "build": npm error     Include the workspace root when workspaces are enabled for a command.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --install-links
+Step #3 - "build": npm error     When set file: protocol dependencies will be packed and installed as
+Step #3 - "build": npm error
+Step #3 - "build": npm error
+Step #3 - "build": npm error aliases: clean-install, ic, install-clean, isntall-clean
+Step #3 - "build": npm error
+Step #3 - "build": npm error Run "npm help ci" for more info
+Step #3 - "build": npm error A complete log of this run can be found in: /www-data-home/.npm/_logs/2026-11-17T03_41_15_552Z-debug-0.log
+Step #3 - "build": Done "npm ci --quiet --no-fund --no-audit (NODE_ENV=development)" (5.481449188s)
+Step #3 - "build": --------------------------------------------------------------------------------
+Step #3 - "build": failed to build: (error ID: 7fa33aaa):
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn   @typescript-eslint/parser@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn     @typescript-eslint/parser@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn   @typescript-eslint/project-service@"8.72.2" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn     @typescript-eslint/project-service@"8.72.2" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn   @typescript-eslint/rule-tester@"^8.57.2" from @firebase/eslint-plugin-security-rules@0.0.2
+Step #3 - "build": npm warn   node_modules/@firebase/eslint-plugin-security-rules
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn     @typescript-eslint/rule-tester@"^8.57.2" from @firebase/eslint-plugin-security-rules@0.0.2
+Step #3 - "build": npm warn     node_modules/@firebase/eslint-plugin-security-rules
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/tsconfig-utils@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/tsconfig-utils@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/tsconfig-utils
+Step #3 - "build": npm warn   @typescript-eslint/tsconfig-utils@"^8.72.2" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn   1 more (@typescript-eslint/typescript-estree)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/tsconfig-utils@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/tsconfig-utils
+Step #3 - "build": npm warn     @typescript-eslint/tsconfig-utils@"^8.72.2" from @typescript-eslint/project-service@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/project-service
+Step #3 - "build": npm warn     1 more (@typescript-eslint/typescript-estree)
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn   @typescript-eslint/typescript-estree@"8.72.2" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn   2 more (@typescript-eslint/rule-tester, @typescript-eslint/utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/typescript-estree@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/typescript-estree
+Step #3 - "build": npm warn     @typescript-eslint/typescript-estree@"8.72.2" from @typescript-eslint/parser@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/parser
+Step #3 - "build": npm warn     2 more (@typescript-eslint/rule-tester, @typescript-eslint/utils)
+Step #3 - "build": npm warn ERESOLVE overriding peer dependency
+Step #3 - "build": npm warn While resolving: @typescript-eslint/utils@8.72.2
+Step #3 - "build": npm warn Found: typescript@7.0.2
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   dev typescript@"^7.0.2" from the root project
+Step #3 - "build": npm warn   1 more (ts-api-utils)
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Could not resolve dependency:
+Step #3 - "build": npm warn peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/utils@8.72.2
+Step #3 - "build": npm warn node_modules/@typescript-eslint/utils
+Step #3 - "build": npm warn   @typescript-eslint/utils@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm warn
+Step #3 - "build": npm warn Conflicting peer dependency: typescript@6.0.3
+Step #3 - "build": npm warn node_modules/typescript
+Step #3 - "build": npm warn   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/utils@8.72.2
+Step #3 - "build": npm warn   node_modules/@typescript-eslint/utils
+Step #3 - "build": npm warn     @typescript-eslint/utils@"8.72.2" from @typescript-eslint/rule-tester@8.72.2
+Step #3 - "build": npm warn     node_modules/@typescript-eslint/rule-tester
+Step #3 - "build": npm error code EUSAGE
+Step #3 - "build": npm error
+Step #3 - "build": npm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before continuing.
+Step #3 - "build": npm error
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-android-arm64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-darwin-arm64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-darwin-x64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-freebsd-x64@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-arm-gnueabihf@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-arm64-gnu@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-arm64-musl@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-linux-x64-musl@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-win32-arm64-msvc@4.3.5 from lock file
+Step #3 - "build": npm error Missing: @tailwindcss/oxide-win32-x64-msvc@4.3.5 from lock file
+Step #3 - "build": npm error Missing: lightningcss-android-arm64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-darwin-arm64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-darwin-x64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-freebsd-x64@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-arm-gnueabihf@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-arm64-gnu@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-arm64-musl@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-linux-x64-musl@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-win32-arm64-msvc@1.33.0 from lock file
+Step #3 - "build": npm error Missing: lightningcss-win32-x64-msvc@1.33.0 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-android-arm-eabi@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-android-arm64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-darwin-arm64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-darwin-x64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-freebsd-x64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-arm-gnueabihf@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-arm64-gnu@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-arm64-musl@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-ppc64-gnu@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-s390x-gnu@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-linux-x64-musl@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-openharmony-arm64@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-wasm32-wasi@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-win32-arm64-msvc@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @rolldown/binding-win32-x64-msvc@1.2.19 from lock file
+Step #3 - "build": npm error Missing: @emnapi/core@2.0.0-beta.2 from lock file
+Step #3 - "build": npm error Missing: @emnapi/runtime@2.0.0-beta.2 from lock file
+Step #3 - "build": npm error Missing: @napi-rs/wasm-runtime@1.2.6 from lock file
+Step #3 - "build": npm error Missing: @emnapi/wasi-threads@2.2.0 from lock file
+Step #3 - "build": npm error Missing: @tybys/wasm-util@0.10.5 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-aix-ppc64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-darwin-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-darwin-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-freebsd-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-freebsd-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-arm@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-loong64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-mips64el@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-ppc64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-riscv64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-linux-s390x@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-netbsd-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-netbsd-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-openbsd-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-openbsd-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-sunos-x64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-win32-arm64@7.0.2 from lock file
+Step #3 - "build": npm error Missing: @typescript/typescript-win32-x64@7.0.2 from lock file
+Step #3 - "build": npm error
+Step #3 - "build": npm error Clean install a project
+Step #3 - "build": npm error
+Step #3 - "build": npm error Usage:
+Step #3 - "build": npm error npm ci
+Step #3 - "build": npm error
+Step #3 - "build": npm error Options:
+Step #3 - "build": npm error [--install-strategy <hoisted|nested|shallow|linked>] [--legacy-bundling]
+Step #3 - "build": npm error [--global-style] [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+Step #3 - "build": npm error [--include <prod|dev|optional|peer> [--include <prod|dev|optional|peer> ...]]
+Step #3 - "build": npm error [--strict-peer-deps] [--foreground-scripts] [--ignore-scripts]
+Step #3 - "build": npm error [--allow-directory <all|none|root>] [--allow-file <all|none|root>]
+Step #3 - "build": npm error [--allow-git <all|none|root>] [--allow-remote <all|none|root>]
+Step #3 - "build": npm error [--allow-scripts <package-list> [--allow-scripts <package-list> ...]]
+Step #3 - "build": npm error [--strict-allow-scripts] [--dangerously-allow-all-scripts] [--no-audit]
+Step #3 - "build": npm error [--no-bin-links] [--no-fund] [--dry-run]
+Step #3 - "build": npm error [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+Step #3 - "build": npm error [--workspaces] [--include-workspace-root] [--install-links]
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --install-strategy
+Step #3 - "build": npm error     Sets the strategy for installing packages in node_modules.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --legacy-bundling
+Step #3 - "build": npm error     Instead of hoisting package installs in `node_modules`, install packages
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --global-style
+Step #3 - "build": npm error     Only install direct dependencies in the top level `node_modules`,
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --omit
+Step #3 - "build": npm error     Dependency types to omit from the installation tree on disk.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --include
+Step #3 - "build": npm error     Option that allows for defining which types of dependencies to install.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --strict-peer-deps
+Step #3 - "build": npm error     If set to `true`, and `--legacy-peer-deps` is not set, then _any_
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --foreground-scripts
+Step #3 - "build": npm error     Run all build scripts (ie, `preinstall`, `install`, and
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --ignore-scripts
+Step #3 - "build": npm error     If true, npm does not run scripts specified in package.json files.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-directory
+Step #3 - "build": npm error     Limits the ability for npm to install dependencies from directories.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-file
+Step #3 - "build": npm error     Limits the ability for npm to install dependencies from tarball files.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-git
+Step #3 - "build": npm error     Limits the ability for npm to fetch dependencies from git references.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-remote
+Step #3 - "build": npm error     Limits the ability for npm to fetch dependencies from urls.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --allow-scripts
+Step #3 - "build": npm error     Comma-separated list of packages whose install-time lifecycle scripts
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --strict-allow-scripts
+Step #3 - "build": npm error     If `true`, turn the install-script policy from a warning into a hard
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --dangerously-allow-all-scripts
+Step #3 - "build": npm error     If `true`, bypass the `allowScripts` policy entirely and run every
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --audit
+Step #3 - "build": npm error     When "true" submit audit reports alongside the current npm command to the
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --bin-links
+Step #3 - "build": npm error     Tells npm to create symlinks (or `.cmd` shims on Windows) for package
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --fund
+Step #3 - "build": npm error     When "true" displays the message at the end of each `npm install`
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --dry-run
+Step #3 - "build": npm error     Indicates that you don't want npm to make any changes and that it should
+Step #3 - "build": npm error
+Step #3 - "build": npm error   -w|--workspace
+Step #3 - "build": npm error     Enable running a command in the context of the configured workspaces of the
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --workspaces
+Step #3 - "build": npm error     Set to true to run the command in the context of **all** configured
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --include-workspace-root
+Step #3 - "build": npm error     Include the workspace root when workspaces are enabled for a command.
+Step #3 - "build": npm error
+Step #3 - "build": npm error   --install-links
+Step #3 - "build": npm error     When set file: protocol dependencies will be packed and installed as
+Step #3 - "build": npm error
+Step #3 - "build": npm error
+Step #3 - "build": npm error aliases: clean-install, ic, install-clean, isntall-clean
+Step #3 - "build": npm error
+Step #3 - "build": npm error Run "npm help ci" for more info
+Step #3 - "build": npm error A complete log of this run can be found in: /www-data-home/.npm/_logs/2026-11-17T03_41_15_552Z-debug-0.log
+Step #3 - "build": ERROR: failed to build: exit status 1
+Finished Step #3 - "build"
+ERROR
+ERROR: build step 3 "us-east4-docker.pkg.dev/serverless-runtimes/google-24-full/builder/nodejs:nodejs_20261104_RC00" failed: step exited with non-zero status: 51
