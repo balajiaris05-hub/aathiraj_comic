@@ -488,6 +488,11 @@ export function clearRecaptchaVerifier(containerId: string): void {
 }
 
 function mapFirebasePhoneError(code: string, rawMsg: string): { message: string; setupRequired: boolean } {
+  const currentHost =
+    typeof window !== 'undefined' && window.location?.hostname
+      ? window.location.hostname
+      : 'this domain';
+
   switch (code) {
     case 'auth/billing-not-enabled':
       return {
@@ -512,13 +517,13 @@ function mapFirebasePhoneError(code: string, rawMsg: string): { message: string;
       return {
         setupRequired: true,
         message:
-          'This domain is not yet added to Firebase Console → Authentication → Settings → Authorized domains.',
+          `Domain "${currentHost}" is not added to Firebase Console → Authentication → Settings → Authorized domains.`,
       };
     case 'auth/captcha-check-failed':
       return {
         setupRequired: true,
         message:
-          'Firebase reCAPTCHA verification failed (ensure this domain is in Firebase Authorized Domains and retry).',
+          `Firebase reCAPTCHA verification failed for "${currentHost}". Ensure "${currentHost}" is added to Firebase Console → Authentication → Settings → Authorized domains (and Phone Sign-In / Blaze billing is enabled), then retry.`,
       };
     case 'auth/invalid-phone-number':
       return {
