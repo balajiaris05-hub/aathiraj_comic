@@ -4,5 +4,19 @@ dist/
 coverage/
 .DS_Store
 *.log
+
+# Environment files (keep .env.example template only)
+.env
 .env*
 !.env.example
+
+# Firebase & Google Cloud service account keys and local secrets
+secrets/
+*firebase-adminsdk*.json
+*service-account*.json
+*service_account*.json
+*serviceAccount*.json
+firebase-key*.json
+gcloud-key*.json
+*.pem
+*.p12
