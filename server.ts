@@ -89,7 +89,7 @@ import {
   sanitizeFirestoreId,
 } from './src/server/firestoreAdmin.ts';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 async function startServer() {
   const app = express();
@@ -5553,8 +5553,8 @@ async function startServer() {
     });
   });
 
-  // Create Razorpay Order (Server-Side via Razorpay Orders API when live/real keys are set)
-  app.post('/api/payments/razorpay/create-order', paymentRateLimiter, async (req, res) => {
+  // Create Razorpay Order (Server-Side via official Razorpay SDK Orders API for Test & Live modes)
+  const handleCreateOrder = async (req: express.Request, res: express.Response) => {
     const rzpStatus = getRazorpayEnvironmentStatus();
     if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
       return res.status(503).json({
@@ -5569,16 +5569,40 @@ async function startServer() {
       episodeId,
       type = 'episode',
       amountInr,
+      amount,
+      currency = 'INR',
+      receipt,
       userId,
       userEmail,
       placeOfSupplyStateCode,
       isInternational,
       customerGstin,
-    } = req.body;
-    const parsedAmount = Number(amountInr);
+    } = req.body || {};
 
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({ error: 'Valid amount in INR is required' });
+    let amountInPaise = 0;
+    let parsedAmountInr = 0;
+    if (amount !== undefined && amount !== null && String(amount).trim() !== '') {
+      const rawPaise = Number(amount);
+      if (!Number.isFinite(rawPaise)) {
+        return res.status(400).json({ error: 'Valid amount in paise is required.' });
+      }
+      amountInPaise = Math.round(rawPaise);
+      parsedAmountInr = Number((amountInPaise / 100).toFixed(2));
+    } else if (amountInr !== undefined && amountInr !== null && String(amountInr).trim() !== '') {
+      const rawInr = Number(amountInr);
+      if (!Number.isFinite(rawInr)) {
+        return res.status(400).json({ error: 'Valid amount in INR is required.' });
+      }
+      parsedAmountInr = rawInr;
+      amountInPaise = Math.round(rawInr * 100);
+    } else {
+      return res.status(400).json({ error: 'Order amount (amount in paise or amountInr) is required.' });
+    }
+
+    if (amountInPaise < 100) {
+      return res.status(400).json({
+        error: 'Minimum Razorpay order amount is 100 paise (₹1.00 INR).',
+      });
     }
 
     if (customerGstin && String(customerGstin).trim()) {
@@ -5612,7 +5636,7 @@ async function startServer() {
 
     const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
     const gstBreakdown = calculateInclusiveGstBreakdown({
-      totalAmountInr: parsedAmount,
+      totalAmountInr: parsedAmountInr,
       sellerStateCode: gstSettings.stateCode || '33',
       placeOfSupplyStateCode: placeOfSupplyStateCode || gstSettings.stateCode || '33',
       applicableRatePercent: gstSettings.applicableGstRate ?? 18,
@@ -5622,25 +5646,32 @@ async function startServer() {
       hsnSacDescription: gstSettings.defaultSacDescription,
     });
 
-    const amountInPaise = Math.round(parsedAmount * 100);
+    const normalizedCurrency = String(currency || 'INR').trim().toUpperCase() || 'INR';
+    const orderReceipt = String(receipt || `rcpt_${Date.now()}`).trim().slice(0, 40);
     const environment: 'test' | 'live' = rzpStatus.isLiveMode ? 'live' : 'test';
     const orderResult = await createGatewayOrderOnRazorpay({
       amountPaise: amountInPaise,
-      receipt: `rcpt_${Date.now()}`,
+      currency: normalizedCurrency,
+      receipt: orderReceipt,
       notes: {
         comicId: String(comicId || 'global_subscription'),
         type: String(type),
         userEmail: String(userEmail || ''),
+        ...(chapterId ? { chapterId: String(chapterId) } : {}),
+        ...(episodeId ? { episodeId: String(episodeId) } : {}),
       },
     });
 
     if (!orderResult.orderId) {
-      return res.status(502).json({
+      const status = orderResult.statusCode === 401 ? 401 : 500;
+      return res.status(status).json({
         error: orderResult.error || 'Could not initialize order with Razorpay API.',
       });
     }
 
     const orderId = orderResult.orderId;
+    const finalAmount = orderResult.amount ?? amountInPaise;
+    const finalCurrency = orderResult.currency || normalizedCurrency;
 
     return res.json({
       success: true,
@@ -5649,11 +5680,12 @@ async function startServer() {
       environment,
       createdViaRazorpayApi: orderResult.createdViaRazorpayApi,
       warningBanner: rzpStatus.statusMessage,
+      order_id: orderId,
       orderId,
-      amount: amountInPaise,
-      amountInr: parsedAmount,
+      amount: finalAmount,
+      amountInr: parsedAmountInr,
       gstBreakdown,
-      currency: 'INR',
+      currency: finalCurrency,
       keyId: rzpStatus.keyId,
       paymentMethods: [
         'UPI (Google Pay, PhonePe, Paytm, BHIM)',
@@ -5662,10 +5694,13 @@ async function startServer() {
         'Digital Wallets (Paytm, PhonePe)',
       ],
     });
-  });
+  };
 
-  // Verify Razorpay Payment via HMAC-SHA256 + Live Razorpay API (when real keys configured) & Persist Customer + Purchase
-  app.post('/api/payments/razorpay/verify-payment', paymentRateLimiter, async (req, res) => {
+  app.post('/api/create-order', paymentRateLimiter, handleCreateOrder);
+  app.post('/api/payments/razorpay/create-order', paymentRateLimiter, handleCreateOrder);
+
+  // Verify Razorpay Payment via HMAC-SHA256 + Razorpay API confirmation & Persist Customer + Purchase
+  const handleVerifyPayment = async (req: express.Request, res: express.Response) => {
     const rzpStatus = getRazorpayEnvironmentStatus();
     if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
       return res.status(503).json({
@@ -5673,31 +5708,34 @@ async function startServer() {
       });
     }
 
+    const body = req.body || {};
+    const resolvedOrderId = String(body.razorpay_order_id || body.razorpayOrderId || '').trim();
+    const resolvedPaymentId = String(body.razorpay_payment_id || body.razorpayPaymentId || '').trim();
+    const resolvedSignature = String(body.razorpay_signature || body.razorpaySignature || '').trim();
+
     const {
-      razorpayOrderId,
-      razorpayPaymentId,
-      razorpaySignature,
       userId,
       customerName,
       userEmail,
       userPhone,
       userUpiId,
-      comicId,
+      comicId = 'global_subscription',
       comicTitle,
       chapterId,
       episodeId,
-      type = 'episode',
+      type = 'subscription',
       subscriptionPlan,
       amountInr,
-      paymentMethod = 'UPI / Card',
+      amount,
+      paymentMethod = 'Razorpay Checkout',
       placeOfSupplyStateCode,
       isInternational,
       customerGstin,
-    } = req.body;
+    } = body;
 
-    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+    if (!resolvedOrderId || !resolvedPaymentId || !resolvedSignature) {
       return res.status(400).json({
-        error: 'Payment verification failed: Missing razorpayOrderId, razorpayPaymentId, or razorpaySignature.',
+        error: 'Payment verification failed: Missing razorpay_order_id, razorpay_payment_id, or razorpay_signature.',
       });
     }
 
@@ -5715,22 +5753,23 @@ async function startServer() {
     // 1. Idempotency check: prevent duplicate fulfillment for the same payment ID or order ID
     const snapshot = db.getSnapshot();
     const existingPurchase = snapshot.purchases.find(
-      p => p.razorpayPaymentId === razorpayPaymentId || (p.razorpayOrderId === razorpayOrderId && p.status === 'success')
+      p => p.razorpayPaymentId === resolvedPaymentId || (p.razorpayOrderId === resolvedOrderId && p.status === 'success')
     );
     if (existingPurchase) {
       return res.json({
         success: true,
+        verified: true,
         idempotentReplay: true,
         purchase: existingPurchase,
         message: 'Payment already verified and fulfilled.',
       });
     }
 
-    // 2. Cryptographic HMAC-SHA256 signature verification
+    // 2. Cryptographic HMAC-SHA256 signature verification (order_id + "|" + payment_id, KEY_SECRET)
     const isSignatureValid = verifyRazorpayPaymentSignature({
-      orderId: String(razorpayOrderId),
-      paymentId: String(razorpayPaymentId),
-      signature: String(razorpaySignature),
+      orderId: resolvedOrderId,
+      paymentId: resolvedPaymentId,
+      signature: resolvedSignature,
     });
 
     if (!isSignatureValid) {
@@ -5738,30 +5777,44 @@ async function startServer() {
         'PAYMENT_SIGNATURE_INVALID',
         userEmail || 'unknown',
         'reader',
-        `Rejected tampered or invalid Razorpay signature for order ${razorpayOrderId} / payment ${razorpayPaymentId}.`,
+        `Rejected tampered or invalid Razorpay signature for order ${resolvedOrderId} / payment ${resolvedPaymentId}.`,
         'payment',
-        String(razorpayOrderId)
+        resolvedOrderId
       );
       return res.status(400).json({
+        success: false,
+        verified: false,
         error: 'Cryptographic HMAC-SHA256 payment signature verification failed. Access denied.',
       });
     }
 
-    // 2b. When real Razorpay API keys are configured and this is not a sandbox test payment ID, confirm capture status via Razorpay API
+    // 2b. When real Razorpay API keys are configured and this is not a synthetic test ID, check capture status via Razorpay API
     let confirmedViaRazorpayApi = false;
-    if (hasRealRazorpayApiKeys() && !String(razorpayPaymentId).startsWith('pay_test_')) {
-      const liveCheck = await fetchRazorpayPaymentById(String(razorpayPaymentId));
+    let razorpayPaymentAmountInr: number | undefined = undefined;
+    let razorpayMethodLabel: string | undefined = undefined;
+    if (hasRealRazorpayApiKeys() && !resolvedPaymentId.startsWith('pay_test_')) {
+      const liveCheck = await fetchRazorpayPaymentById(resolvedPaymentId);
       if (liveCheck.checked && liveCheck.found && !liveCheck.capturedOrAuthorized) {
         return res.status(400).json({
+          success: false,
+          verified: false,
           error: `Razorpay payment status is "${liveCheck.rawStatus || 'unpaid'}" and has not been captured yet.`,
         });
       }
       if (liveCheck.checked && !liveCheck.found && rzpStatus.isLiveMode) {
         return res.status(400).json({
+          success: false,
+          verified: false,
           error: liveCheck.error || 'Razorpay payment could not be confirmed on Razorpay servers.',
         });
       }
       confirmedViaRazorpayApi = Boolean(liveCheck.capturedOrAuthorized);
+      if (liveCheck.payment?.amountInr) {
+        razorpayPaymentAmountInr = liveCheck.payment.amountInr;
+      }
+      if (liveCheck.payment?.method) {
+        razorpayMethodLabel = liveCheck.payment.method;
+      }
     }
 
     const cleanEmailCheck = (userEmail || '').trim().toLowerCase();
@@ -5796,7 +5849,15 @@ async function startServer() {
         ? '96'
         : sellerSnap.stateCode || '33');
 
-    const amountNum = Number(amountInr);
+    const parsedBodyAmountInr = Number(amountInr);
+    const parsedBodyPaise = Number(amount);
+    const amountNum =
+      Number.isFinite(parsedBodyAmountInr) && parsedBodyAmountInr > 0
+        ? parsedBodyAmountInr
+        : Number.isFinite(parsedBodyPaise) && parsedBodyPaise > 0
+          ? Number((parsedBodyPaise / 100).toFixed(2))
+          : razorpayPaymentAmountInr || (subscriptionPlan === '6_months' ? 249 : 49);
+
     const gstCalc = calculateInclusiveGstBreakdown({
       totalAmountInr: amountNum,
       sellerStateCode: sellerSnap.stateCode,
@@ -5846,12 +5907,12 @@ async function startServer() {
       expiresAt: computedExpiresAt,
       amountInr: amountNum,
       currency: 'INR',
-      paymentMethod: paymentMethod || 'UPI - Instant Pay',
-      razorpayOrderId: String(razorpayOrderId),
-      razorpayPaymentId: String(razorpayPaymentId),
+      paymentMethod: razorpayMethodLabel || paymentMethod || 'Razorpay Checkout',
+      razorpayOrderId: resolvedOrderId,
+      razorpayPaymentId: resolvedPaymentId,
       signatureVerified: true,
       environment,
-      idempotencyKey: `idem_${razorpayOrderId}_${razorpayPaymentId}`,
+      idempotencyKey: `idem_${resolvedOrderId}_${resolvedPaymentId}`,
       status: 'success',
       createdAt: nowIso,
       receiptNumber,
@@ -5894,7 +5955,7 @@ async function startServer() {
       status: 'verified',
       environment,
       signatureVerified: true,
-      idempotencyKey: `idem_${razorpayOrderId}_${razorpayPaymentId}`,
+      idempotencyKey: `idem_${resolvedOrderId}_${resolvedPaymentId}`,
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -5990,6 +6051,7 @@ async function startServer() {
 
     return res.json({
       success: true,
+      verified: true,
       environment,
       razorpayVerified: true,
       confirmedViaRazorpayApi,
@@ -5999,7 +6061,10 @@ async function startServer() {
         ? `Gmail (${cleanEmail}) verified! ${resolvedPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'} Premium Pass activated (${environment.toUpperCase()} mode).`
         : `Payment verified successfully (${environment.toUpperCase()} mode)! Access granted to premium comic episode.`,
     });
-  });
+  };
+
+  app.post('/api/verify-payment', paymentRateLimiter, handleVerifyPayment);
+  app.post('/api/payments/razorpay/verify-payment', paymentRateLimiter, handleVerifyPayment);
 
   // Customer Purchases
   app.get('/api/payments/my-purchases', (req, res) => {

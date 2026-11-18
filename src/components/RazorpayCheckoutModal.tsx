@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   AlertCircle,
   CreditCard,
-  QrCode,
   Smartphone,
   Building2,
   Wallet,
@@ -44,7 +43,38 @@ interface CheckoutProps {
   itemType: 'full_comic' | 'chapter' | 'episode' | 'subscription';
   subscriptionPlan?: '1_month' | '6_months';
   amountInr: number;
+  hostedPaymentUrl?: string;
   onPaymentSuccess: (purchase: Purchase) => void;
+}
+
+function ensureRazorpayCheckoutScript(): Promise<boolean> {
+  if (typeof window === 'undefined') return Promise.resolve(false);
+  if (window.Razorpay) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src="https://checkout.razorpay.com/v1/checkout.js"]'
+    );
+    if (existing) {
+      if (window.Razorpay) {
+        resolve(true);
+        return;
+      }
+      const onLoad = () => resolve(Boolean(window.Razorpay));
+      const onError = () => resolve(false);
+      existing.addEventListener('load', onLoad, { once: true });
+      existing.addEventListener('error', onError, { once: true });
+      setTimeout(() => resolve(Boolean(window.Razorpay)), 6000);
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.onload = () => resolve(Boolean(window.Razorpay));
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
 }
 
 export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
@@ -58,21 +88,16 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   itemType,
   subscriptionPlan,
   amountInr,
+  hostedPaymentUrl,
   onPaymentSuccess,
 }) => {
   const { user, updateUser, refreshUser, getAuthHeaders } = useAuth();
-  const [selectedMethod, setSelectedMethod] = useState<'upi' | 'card' | 'netbanking' | 'wallet'>('upi');
-  const [upiId, setUpiId] = useState(user?.upiId || '');
-  const [merchantUpiId, setMerchantUpiId] = useState('balajiaris05@okaxis');
-  const [merchantUpiName, setMerchantUpiName] = useState('Aathirai_Comic Official');
   const [paymentMode, setPaymentMode] = useState<'unconfigured' | 'test' | 'live'>('test');
   const [gatewayMessage, setGatewayMessage] = useState<string>('');
-  const [upiApp, setUpiApp] = useState('Google Pay');
-  const [bank, setBank] = useState('State Bank of India (SBI)');
-  const [cardNumber, setCardNumber] = useState('4532 •••• •••• 8821');
-  const [wallet, setWallet] = useState('Paytm Wallet');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [statusLabel, setStatusLabel] = useState<string>('Preparing Razorpay Checkout...');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Purchase | null>(null);
 
   // GST & Place-of-Supply State
@@ -81,14 +106,17 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   const [customerGstin, setCustomerGstin] = useState<string>('');
 
   useEffect(() => {
-    if (user?.upiId) {
-      setUpiId(user.upiId);
+    if (!isOpen) {
+      setError(null);
+      setNotice(null);
+      setIsProcessing(false);
+      setReceipt(null);
+      return;
     }
+
     fetch('/api/payments/config')
       .then((res) => res.json())
       .then((data) => {
-        if (data?.merchantUpiId) setMerchantUpiId(data.merchantUpiId);
-        if (data?.merchantUpiName) setMerchantUpiName(data.merchantUpiName);
         const normalizedMode = String(data?.modeLower || data?.mode || 'test').toLowerCase();
         if (normalizedMode === 'live' || normalizedMode === 'test' || normalizedMode === 'unconfigured') {
           setPaymentMode(normalizedMode);
@@ -104,7 +132,7 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         }
       })
       .catch(() => {});
-  }, [user?.upiId, isOpen]);
+  }, [isOpen]);
 
   const liveGstBreakdown = useMemo(
     () => calculateInclusiveGstBreakdown(amountInr, placeOfSupplyStateCode, gstSettings),
@@ -117,10 +145,6 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   );
 
   if (!isOpen) return null;
-
-  const upiDeepLink = `upi://pay?pa=${encodeURIComponent(merchantUpiId)}&pn=${encodeURIComponent(
-    merchantUpiName
-  )}&am=${amountInr}&cu=INR&tn=${encodeURIComponent(`${comicTitle} - ${itemTitle}`)}`;
 
   const isCustomerGstEnabled = Boolean(gstSettings.applyGstToDomesticSales);
 
@@ -153,23 +177,33 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
       return;
     }
 
+    const amountPaise = Math.round(Number(amountInr) * 100);
+    if (!Number.isFinite(amountPaise) || amountPaise < 100) {
+      setError('Minimum payable amount is ₹1 (100 paise).');
+      return;
+    }
+
     if (customerGstin.trim() && !gstinValidation.isValid) {
       setError(gstinValidation.error || 'Invalid Customer B2B GSTIN format.');
       return;
     }
 
     setIsProcessing(true);
+    setStatusLabel('Creating Razorpay order...');
     setError(null);
+    setNotice(null);
 
     try {
-      const headers = await getAuthHeaders();
-      let methodDesc = '';
-      if (selectedMethod === 'upi') methodDesc = `UPI - ${upiApp} (${upiId})`;
-      else if (selectedMethod === 'card') methodDesc = `Card - RuPay / Visa (${cardNumber})`;
-      else if (selectedMethod === 'netbanking') methodDesc = `Net Banking - ${bank}`;
-      else methodDesc = `Digital Wallet - ${wallet}`;
+      const sdkReady = await ensureRazorpayCheckoutScript();
+      if (!sdkReady || typeof window === 'undefined' || !window.Razorpay) {
+        throw new Error(
+          'Unable to load Razorpay Checkout script (checkout.razorpay.com). Please check your connection or use the hosted payment link below.'
+        );
+      }
 
-      // 1. Create order on backend (server determines TEST vs LIVE mode and computes GST-inclusive breakdown)
+      const headers = await getAuthHeaders();
+
+      // 1. Create order on backend (server creates real Razorpay order in both Test & Live modes)
       const orderRes = await fetch('/api/payments/razorpay/create-order', {
         method: 'POST',
         headers,
@@ -182,19 +216,27 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           type: itemType,
           subscriptionPlan,
           amountInr,
+          amount: amountPaise,
+          currency: 'INR',
+          receipt: `rcpt_${Date.now()}`,
           userId: user?.id || 'usr_guest',
-          customerName: user?.name || 'Customer',
+          customerName: user?.name || 'Reader',
           userEmail: user?.email || 'customer@aathirai.com',
           userPhone: user?.phone,
-          paymentMethod: methodDesc,
           placeOfSupplyStateCode,
           customerGstin: customerGstin.trim() ? gstinValidation.normalized : undefined,
         }),
       });
 
-      const orderData = await orderRes.json();
+      const orderData = await orderRes.json().catch(() => ({}));
       if (!orderRes.ok) {
         throw new Error(orderData.error || 'Failed to initialize Razorpay order on server');
+      }
+
+      const razorpayKeyId = orderData.keyId || import.meta.env.VITE_RAZORPAY_KEY_ID || '';
+      const createdOrderId = orderData.order_id || orderData.orderId;
+      if (!razorpayKeyId || !createdOrderId) {
+        throw new Error('Server returned an incomplete Razorpay order payload.');
       }
 
       const verifyOnBackend = async (params: {
@@ -202,18 +244,22 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         razorpayPaymentId: string;
         razorpaySignature: string;
       }) => {
+        setStatusLabel('Verifying HMAC-SHA256 signature...');
         const verifyRes = await fetch('/api/payments/razorpay/verify-payment', {
           method: 'POST',
           headers,
           body: JSON.stringify({
+            razorpay_order_id: params.razorpayOrderId,
+            razorpay_payment_id: params.razorpayPaymentId,
+            razorpay_signature: params.razorpaySignature,
             razorpayOrderId: params.razorpayOrderId,
             razorpayPaymentId: params.razorpayPaymentId,
             razorpaySignature: params.razorpaySignature,
             userId: user?.id || 'usr_guest',
-            customerName: user?.name || 'Customer',
+            customerName: user?.name || 'Reader',
             userEmail: user?.email || 'customer@aathirai.com',
             userPhone: user?.phone,
-            userUpiId: selectedMethod === 'upi' ? upiId.trim() : user?.upiId,
+            userUpiId: user?.upiId,
             comicId,
             comicTitle,
             chapterId,
@@ -221,13 +267,14 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
             type: itemType,
             subscriptionPlan,
             amountInr,
-            paymentMethod: methodDesc,
+            amount: orderData.amount || amountPaise,
+            paymentMethod: 'Razorpay Standard Checkout',
             placeOfSupplyStateCode,
             customerGstin: customerGstin.trim() ? gstinValidation.normalized : undefined,
           }),
         });
 
-        const verifyData = await verifyRes.json();
+        const verifyData = await verifyRes.json().catch(() => ({}));
         setIsProcessing(false);
 
         if (verifyRes.ok && verifyData.purchase) {
@@ -240,8 +287,8 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
             itemTitle,
             planType: itemType === 'subscription' ? subscriptionPlan || '1_month' : itemType,
             amountInr,
-            upiId: selectedMethod === 'upi' ? upiId.trim() : user?.upiId,
-            paymentMethod: verifyData.purchase.paymentMethod || methodDesc,
+            upiId: user?.upiId,
+            paymentMethod: verifyData.purchase.paymentMethod || 'Razorpay Checkout',
             receiptNumber: verifyData.purchase.receiptNumber,
           }).catch(() => {});
           await refreshUser();
@@ -252,21 +299,29 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         }
       };
 
-      const orderMode = String(orderData.modeLower || orderData.mode || 'test').toLowerCase();
-
-      // 2. If LIVE mode and official Razorpay SDK is available, launch real Razorpay Checkout modal
-      if (orderMode === 'live' && typeof window !== 'undefined' && window.Razorpay) {
+      const orderMode = String(orderData.modeLower || orderData.mode || paymentMode || 'test').toLowerCase();
+      if (orderMode === 'live' || orderMode === 'test') {
+        setStatusLabel('Opening Razorpay payment window...');
         const rzp = new window.Razorpay({
-          key: orderData.keyId,
-          amount: orderData.amount,
-          currency: 'INR',
+          key: razorpayKeyId,
+          amount: orderData.amount || amountPaise,
+          currency: orderData.currency || 'INR',
           name: 'Aathirai_Comic',
-          description: `${comicTitle} - ${itemTitle}`,
-          order_id: orderData.orderId,
+          description: `${comicTitle} — ${itemTitle}`,
+          order_id: createdOrderId,
           prefill: {
             name: user?.name || 'Reader',
             email: user?.email || '',
             contact: user?.phone || '',
+          },
+          notes: {
+            comicId,
+            type: itemType,
+            ...(subscriptionPlan ? { subscriptionPlan } : {}),
+            ...(user?.email ? { userEmail: user.email } : {}),
+          },
+          theme: {
+            color: '#e11d48',
           },
           handler: async (response: {
             razorpay_order_id: string;
@@ -287,14 +342,27 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
           modal: {
             ondismiss: () => {
               setIsProcessing(false);
+              setNotice('Checkout window was closed before completing payment. You can try again anytime.');
             },
           },
         });
+
+        if (typeof rzp.on === 'function') {
+          rzp.on('payment.failed', (failureRes: any) => {
+            setIsProcessing(false);
+            const reason =
+              failureRes?.error?.description ||
+              failureRes?.error?.reason ||
+              'Transaction was declined or failed inside Razorpay.';
+            setError(`Payment failed: ${reason}`);
+          });
+        }
+
         rzp.open();
         return;
       }
 
-      throw new Error('Live Razorpay checkout could not be initialized in the current environment.');
+      throw new Error('Razorpay checkout could not be initialized in the current environment.');
     } catch (err: any) {
       setIsProcessing(false);
       setError(err.message || 'Payment processing failed. Please try another method.');
@@ -304,47 +372,59 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   const enrichedReceipt = receipt ? ensurePurchaseGstFields(receipt, gstSettings) : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl relative text-slate-900 dark:text-slate-100 flex flex-col max-h-[90vh]">
         {/* Header Strip with Razorpay Logo & Mode Indicator */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded bg-[#0c2340] text-white flex items-center justify-center font-black text-xs tracking-tighter">
               Rzp
             </div>
             <div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <span className="font-extrabold text-xs uppercase tracking-wider text-slate-900 dark:text-white">
                   Razorpay Checkout
                 </span>
                 {paymentMode === 'live' ? (
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-                    LIVE MODE · INR
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                    LIVE · INR
+                  </span>
+                ) : paymentMode === 'test' ? (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                    TEST MODE · NO REAL CHARGE
                   </span>
                 ) : (
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
                     UNCONFIGURED
                   </span>
                 )}
               </div>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 {isCustomerGstEnabled
-                  ? 'HMAC-SHA256 Server Signature Verification · GST-Inclusive Billing (SAC 998431)'
-                  : 'HMAC-SHA256 Server Signature Verification · Direct Payment (No GST)'}
+                  ? 'HMAC-SHA256 Signature Verification · GST-Inclusive Billing'
+                  : 'HMAC-SHA256 Signature Verification · Instant Access'}
               </p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800"
+            aria-label="Close checkout"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* UNCONFIGURED MODE BANNER */}
+        {paymentMode === 'test' && (
+          <div className="px-6 py-2.5 bg-amber-500/10 border-b border-amber-500/25 text-amber-700 dark:text-amber-300 text-xs font-medium flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+            <span>Test Mode active — use Razorpay test UPI/cards in the popup; no real money is deducted.</span>
+          </div>
+        )}
 
+        {/* UNCONFIGURED MODE BANNER */}
         {paymentMode === 'unconfigured' && (
           <div className="px-6 py-3 bg-rose-500/15 border-b border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
@@ -643,6 +723,13 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
               )}
             </div>
 
+            {notice && (
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-700 dark:text-amber-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{notice}</span>
+              </div>
+            )}
+
             {error && (
               <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
@@ -650,257 +737,77 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
               </div>
             )}
 
-            {/* Indian Payment Method Tabs */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
-                Select Indian Payment Method
-              </label>
-
-              <div className="grid grid-cols-4 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('upi')}
-                  className={`p-2.5 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-colors ${
-                    selectedMethod === 'upi'
-                      ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-600 text-rose-600 dark:text-rose-400'
-                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'
-                  }`}
-                >
-                  <Smartphone className="w-4 h-4" />
-                  <span>UPI Pay</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('card')}
-                  className={`p-2.5 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-colors ${
-                    selectedMethod === 'card'
-                      ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-600 text-rose-600 dark:text-rose-400'
-                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'
-                  }`}
-                >
-                  <CreditCard className="w-4 h-4" />
-                  <span>Card</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('netbanking')}
-                  className={`p-2.5 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-colors ${
-                    selectedMethod === 'netbanking'
-                      ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-600 text-rose-600 dark:text-rose-400'
-                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'
-                  }`}
-                >
-                  <Building2 className="w-4 h-4" />
-                  <span>Net Banking</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('wallet')}
-                  className={`p-2.5 rounded-lg border text-xs font-semibold flex flex-col items-center gap-1 transition-colors ${
-                    selectedMethod === 'wallet'
-                      ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-600 text-rose-600 dark:text-rose-400'
-                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400'
-                  }`}
-                >
-                  <Wallet className="w-4 h-4" />
-                  <span>Wallets</span>
-                </button>
+            {/* Supported Methods Inside Official Razorpay Modal */}
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
+                <span>All Indian Payment Methods via Razorpay</span>
+                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                  {user?.email || 'Reader Account'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span className="truncate">UPI Apps</span>
+                </div>
+                <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center gap-1.5">
+                  <CreditCard className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span className="truncate">Cards</span>
+                </div>
+                <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span className="truncate">NetBanking</span>
+                </div>
+                <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center gap-1.5">
+                  <Wallet className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                  <span className="truncate">Wallets</span>
+                </div>
               </div>
             </div>
 
-            {/* 1. UPI */}
-            {selectedMethod === 'upi' && (
-              <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400">
-                  <span>Fast UPI Payment (Saved in Firestore)</span>
-                  <span className="text-[10px] text-emerald-500 font-semibold">Zero Surcharge</span>
-                </div>
-
-                {/* Receiving Merchant UPI Box */}
-                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between gap-2 text-xs">
-                  <div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 block">
-                      Pay To Merchant UPI ID ({merchantUpiName})
-                    </span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white">{merchantUpiId}</span>
-                  </div>
-                  <a
-                    href={upiDeepLink}
-                    className="py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shrink-0 flex items-center gap-1"
-                  >
-                    <QrCode className="w-3.5 h-3.5" />
-                    <span>Open UPI App (₹{amountInr})</span>
-                  </a>
-                </div>
-
-                <div className="grid grid-cols-4 gap-2">
-                  {['Google Pay', 'PhonePe', 'Paytm', 'BHIM'].map((app) => (
-                    <button
-                      key={app}
-                      type="button"
-                      onClick={() => setUpiApp(app)}
-                      className={`py-1.5 px-2 rounded-lg text-xs font-semibold border transition-colors ${
-                        upiApp === app
-                          ? 'bg-white dark:bg-slate-800 border-rose-500 text-rose-600 dark:text-rose-400 shadow-sm'
-                          : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      {app}
-                    </button>
-                  ))}
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Customer Paying UPI ID / VPA (Stored in Database)
-                  </label>
-                  <input
-                    type="text"
-                    value={upiId}
-                    onChange={(e) => setUpiId(e.target.value)}
-                    placeholder="reader@okaxis or mobile@ybl"
-                    className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                  />
-                  <span className="text-[10px] text-slate-400 block mt-1">
-                    Your UPI ID is linked to your Gmail account in the Admin database for instant paywall verification.
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* 2. Cards */}
-            {selectedMethod === 'card' && (
-              <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
-                  <span>RuPay, Visa, Mastercard, Maestro</span>
-                  <span className="text-[10px] font-semibold text-blue-500">RBI 2FA Secured</span>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Card Number
-                  </label>
-                  <input
-                    type="text"
-                    value={cardNumber}
-                    onChange={(e) => setCardNumber(e.target.value)}
-                    className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                      Expiry (MM/YY)
-                    </label>
-                    <input
-                      type="text"
-                      defaultValue="08/29"
-                      placeholder="MM/YY"
-                      className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                      CVV
-                    </label>
-                    <input
-                      type="password"
-                      defaultValue="821"
-                      maxLength={4}
-                      className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* 3. Net Banking */}
-            {selectedMethod === 'netbanking' && (
-              <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Select Indian Bank
-                </label>
-                <select
-                  value={bank}
-                  onChange={(e) => setBank(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                >
-                  <option>State Bank of India (SBI)</option>
-                  <option>HDFC Bank</option>
-                  <option>ICICI Bank</option>
-                  <option>Axis Bank</option>
-                  <option>Indian Bank</option>
-                  <option>Punjab National Bank (PNB)</option>
-                  <option>Bank of Baroda</option>
-                  <option>Kotak Mahindra Bank</option>
-                  <option>Canara Bank</option>
-                </select>
-                <p className="text-[10px] text-slate-400">
-                  Redirects to your bank's secure net banking authorization portal.
-                </p>
-              </div>
-            )}
-
-            {/* 4. Digital Wallets */}
-            {selectedMethod === 'wallet' && (
-              <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Select Wallet
-                </label>
-                <div className="space-y-2">
-                  {['Paytm Wallet', 'PhonePe Wallet', 'Amazon Pay', 'Mobikwik'].map((w) => (
-                    <label
-                      key={w}
-                      className="flex items-center gap-2 p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer"
-                    >
-                      <input
-                        type="radio"
-                        name="wallet"
-                        checked={wallet === w}
-                        onChange={() => setWallet(w)}
-                        className="text-rose-600 focus:ring-rose-500"
-                      />
-                      <span className="text-xs font-medium">{w}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {/* Submit Action Button */}
-            <div className="pt-2">
+            <div className="pt-1 space-y-3">
               <button
                 type="button"
                 onClick={handleProcessPayment}
                 disabled={isProcessing || paymentMode === 'unconfigured'}
-                className="w-full py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-all shadow-lg shadow-rose-600/20 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-colors shadow-lg shadow-rose-600/20 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
               >
-                <Lock className="w-4 h-4" />
+                <Lock className="w-4 h-4 shrink-0" />
                 <span>
                   {paymentMode === 'unconfigured'
                     ? 'Payment Gateway Unconfigured'
                     : isProcessing
-                      ? 'Verifying HMAC-SHA256 Signature...'
+                      ? statusLabel
                       : paymentMode === 'test'
                         ? isCustomerGstEnabled
-                          ? `Authorize Test Payment ₹${amountInr} (Incl. GST · No Real Charge)`
-                          : `Authorize Test Payment ₹${amountInr} (No Real Charge)`
+                          ? `Pay ₹${amountInr} in Razorpay Test Mode (Incl. GST)`
+                          : `Pay ₹${amountInr} in Razorpay Test Mode`
                         : isCustomerGstEnabled
-                          ? `Pay ₹${amountInr} Securely (Incl. GST)`
-                          : `Pay ₹${amountInr} Securely`}
+                          ? `Pay ₹${amountInr} Securely via Razorpay (Incl. GST)`
+                          : `Pay ₹${amountInr} Securely via Razorpay`}
                 </span>
               </button>
 
-              <div className="flex items-center justify-center gap-2 mt-3 text-[10px] text-slate-400">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+              {hostedPaymentUrl && (
+                <div className="text-center">
+                  <a
+                    href={hostedPaymentUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] font-semibold text-slate-500 hover:text-rose-500 dark:text-slate-400 dark:hover:text-rose-400 underline underline-offset-2"
+                  >
+                    Having trouble with the popup? Pay on Razorpay hosted page instead
+                  </a>
+                </div>
+              )}
+
+              <div className="flex items-center justify-center gap-2 text-[11px] text-slate-400">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                 <span>
                   {isCustomerGstEnabled
-                    ? 'HMAC-SHA256 Verified · GST Tax Invoice (PDF) · Instant Episode Unlock'
-                    : 'HMAC-SHA256 Verified · Official Payment Receipt (PDF) · Instant Episode Unlock'}
+                    ? 'HMAC-SHA256 Verified · GST Tax Invoice (PDF) · Instant Unlock'
+                    : 'HMAC-SHA256 Verified · Official Payment Receipt (PDF) · Instant Unlock'}
                 </span>
               </div>
             </div>

@@ -1,9 +1,13 @@
 import crypto from 'crypto';
+import Razorpay from 'razorpay';
 import { getRazorpayEnvironmentStatus, getRazorpaySecret, computeRazorpayOrderSignature } from './security.ts';
 
 export interface RazorpayGatewayOrderResult {
   orderId: string;
+  amount?: number;
+  currency?: string;
   createdViaRazorpayApi: boolean;
+  statusCode?: number;
   error?: string;
 }
 
@@ -43,6 +47,17 @@ export function hasRealRazorpayApiKeys(): boolean {
   if (keyId === 'your_razorpay_key_id' || keyId === 'rzp_test_AathiraiTestModeKey') return false;
   if (secret === 'your_razorpay_key_secret' || secret === 'rzp_test_secret_AathiraiTestSecretKey2026') return false;
   return keyId.startsWith('rzp_live_') || keyId.startsWith('rzp_test_');
+}
+
+function createRazorpaySdkClient(): Razorpay | null {
+  if (!hasRealRazorpayApiKeys()) return null;
+  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keySecret = getRazorpaySecret();
+  if (!keyId || !keySecret) return null;
+  return new Razorpay({
+    key_id: keyId,
+    key_secret: keySecret,
+  });
 }
 
 function getRazorpayAuthHeader(): string | null {
@@ -124,58 +139,68 @@ function isEntityPaidAndActive(entity: any): boolean {
 }
 
 /**
- * Create an order on Razorpay Orders API when real credentials are configured,
- * with clean deterministic fallback only in sandbox TEST mode.
+ * Create a real order via Razorpay Orders API (official Razorpay Node SDK)
+ * for both Test Mode (rzp_test_*) and Live Mode (rzp_live_*).
  */
 export async function createGatewayOrderOnRazorpay(params: {
   amountPaise: number;
+  currency?: string;
   receipt: string;
   notes?: Record<string, string>;
 }): Promise<RazorpayGatewayOrderResult> {
-  const rzpStatus = getRazorpayEnvironmentStatus();
-  const authHeader = getRazorpayAuthHeader();
+  const rzp = createRazorpaySdkClient();
+  const currency = (params.currency || 'INR').toUpperCase();
 
-  if (authHeader) {
-    try {
-      const res = await fetch('https://api.razorpay.com/v1/orders', {
-        method: 'POST',
-        headers: {
-          Authorization: authHeader,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          amount: params.amountPaise,
-          currency: 'INR',
-          receipt: params.receipt.slice(0, 40),
-          notes: params.notes || {},
-        }),
-        signal: AbortSignal.timeout(8000),
-      });
-
-      const data = (await res.json().catch(() => ({}))) as any;
-      if (res.ok && data?.id) {
-        return { orderId: String(data.id), createdViaRazorpayApi: true };
-      }
-
-      const apiErr = data?.error?.description || `Razorpay Orders API HTTP ${res.status}`;
-      if (rzpStatus.isLiveMode) {
-        return { orderId: '', createdViaRazorpayApi: false, error: apiErr };
-      }
-      console.warn('[Razorpay] Orders API fallback in TEST mode:', apiErr);
-    } catch (err: any) {
-      if (rzpStatus.isLiveMode) {
-        return {
-          orderId: '',
-          createdViaRazorpayApi: false,
-          error: err?.message || 'Unable to reach Razorpay Orders API in Live Mode.',
-        };
-      }
-    }
+  if (!rzp) {
+    return {
+      orderId: '',
+      createdViaRazorpayApi: false,
+      statusCode: 401,
+      error: 'Razorpay credentials (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET) are missing or invalid.',
+    };
   }
 
-  // Sandbox / Test-mode local order creation
-  const fallbackOrderId = 'order_' + crypto.randomBytes(10).toString('hex');
-  return { orderId: fallbackOrderId, createdViaRazorpayApi: false };
+  try {
+    const order = await rzp.orders.create({
+      amount: Math.round(params.amountPaise),
+      currency,
+      receipt: params.receipt.slice(0, 40),
+      notes: params.notes || {},
+    });
+
+    if (order && order.id) {
+      return {
+        orderId: String(order.id),
+        amount: Number(order.amount ?? params.amountPaise),
+        currency: String(order.currency || currency),
+        createdViaRazorpayApi: true,
+      };
+    }
+
+    return {
+      orderId: '',
+      createdViaRazorpayApi: false,
+      statusCode: 500,
+      error: 'Razorpay Orders API did not return an order ID.',
+    };
+  } catch (err: any) {
+    const httpStatus = Number(err?.statusCode || err?.response?.status || 500);
+    const apiDesc =
+      err?.error?.description ||
+      err?.description ||
+      err?.message ||
+      'Razorpay Orders API request failed.';
+    const isAuthFailure =
+      httpStatus === 401 ||
+      /authentication failed|invalid key|unauthorized/i.test(String(apiDesc));
+
+    return {
+      orderId: '',
+      createdViaRazorpayApi: false,
+      statusCode: isAuthFailure ? 401 : 500,
+      error: String(apiDesc),
+    };
+  }
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   Heart,
   ExternalLink
 } from 'lucide-react';
+import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 
 interface ComicDetailsPageProps {
   comic: Comic;
@@ -49,6 +50,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
   const [verifiedExpiresAt, setVerifiedExpiresAt] = useState<string | null>(null);
 
   const [awaitingPaymentInfo, setAwaitingPaymentInfo] = useState<string | null>(null);
+  const [checkoutPlan, setCheckoutPlan] = useState<'1_month' | '6_months' | null>(null);
 
   const verifyReaderGmailPaywall = async () => {
     if (!user) {
@@ -350,39 +352,40 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                     </button>
                   </>
                 ) : (
-                  <>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setCheckoutPlan('1_month')}
+                      className="py-3 px-5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer border border-slate-700 whitespace-nowrap"
+                    >
+                      <Sparkles className="w-4 h-4 text-rose-500" />
+                      <span>Subscribe 1 Month (₹49)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setCheckoutPlan('6_months')}
+                      className="py-3 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer whitespace-nowrap"
+                    >
+                      <IndianRupee className="w-4 h-4" />
+                      <span>Subscribe 6 Months (₹249)</span>
+                    </button>
+
                     <a
                       href="https://rzp.io/rzp/eMyTbngF"
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() =>
                         setAwaitingPaymentInfo(
-                          `Razorpay payment page opened for 1 Month Pass (₹49). Complete payment using your registered email (${user.email}) or phone, then click Verify Payment Status.`
+                          `Razorpay hosted page opened for 1 Month Pass (₹49). Complete payment using your registered email (${user.email}) or phone, then click Verify Payment Status.`
                         )
                       }
-                      className="py-3 px-5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer border border-slate-700"
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-rose-500 dark:text-slate-400"
                     >
-                      <Sparkles className="w-4 h-4 text-rose-500" />
-                      <span>Subscribe 1 Month (₹49)</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Hosted link</span>
+                      <ExternalLink className="w-3 h-3" />
                     </a>
-
-                    <a
-                      href="https://rzp.io/rzp/E077NNn"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() =>
-                        setAwaitingPaymentInfo(
-                          `Razorpay payment page opened for 6 Months Pass (₹249). Complete payment using your registered email (${user.email}) or phone, then click Verify Payment Status.`
-                        )
-                      }
-                      className="py-3 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition-transform hover:scale-105 cursor-pointer"
-                    >
-                      <IndianRupee className="w-4 h-4" />
-                      <span>Subscribe 6 Months (₹249)</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </>
+                  </div>
                 )}
               </>
             )}
@@ -569,6 +572,33 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
             {verifyingGmail ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
           </button>
         </div>
+      )}
+
+      {checkoutPlan && (
+        <RazorpayCheckoutModal
+          isOpen={Boolean(checkoutPlan)}
+          onClose={() => setCheckoutPlan(null)}
+          comicId={comic.id}
+          comicTitle={comic.title}
+          itemTitle={
+            checkoutPlan === '6_months'
+              ? '6 Months All-Access Premium Pass (180 Days)'
+              : '1 Month All-Access Premium Pass (30 Days)'
+          }
+          itemType="subscription"
+          subscriptionPlan={checkoutPlan}
+          amountInr={checkoutPlan === '6_months' ? 249 : 49}
+          hostedPaymentUrl={
+            checkoutPlan === '6_months'
+              ? 'https://rzp.io/rzp/E077NNn'
+              : 'https://rzp.io/rzp/eMyTbngF'
+          }
+          onPaymentSuccess={async () => {
+            setAwaitingPaymentInfo(null);
+            await refreshUser();
+            await verifyReaderGmailPaywall();
+          }}
+        />
       )}
     </div>
   );

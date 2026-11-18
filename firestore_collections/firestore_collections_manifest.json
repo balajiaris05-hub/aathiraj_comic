@@ -9,6 +9,15 @@
       "socialLinks": {},
       "isSuspended": false,
       "createdAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "userId": "usr_1794964561188",
+      "name": "test-reader-e2e",
+      "role": "reader",
+      "avatar": "https://api.dicebear.com/7.x/bottts/svg?seed=test-reader-e2e",
+      "socialLinks": {},
+      "isSuspended": false,
+      "createdAt": "2026-11-18T01:16:01.187Z"
     }
   ],
   "users_private": [
@@ -22,6 +31,17 @@
       "dob": null,
       "premiumPlan": "free",
       "premiumExpiresAt": null
+    },
+    {
+      "userId": "usr_1794964561188",
+      "email": "test-reader-e2e@example.com",
+      "phone": "",
+      "countryCode": "+91",
+      "upiId": "",
+      "age": null,
+      "dob": null,
+      "premiumPlan": "1_month",
+      "premiumExpiresAt": "2026-12-18T01:16:01.187Z"
     }
   ],
   "authorApplications": [],
@@ -29,9 +49,96 @@
   "comments": [],
   "ratings": [],
   "votes": [],
-  "purchases": [],
-  "paymentTransactions": [],
-  "notifications": [],
+  "purchases": [
+    {
+      "id": "pur_1794964561188",
+      "userId": "usr_guest",
+      "customerName": "test-reader-e2e",
+      "userEmail": "test-reader-e2e@example.com",
+      "comicId": "global_subscription",
+      "comicTitle": "Aathirai 1-Month Premium Pass",
+      "type": "subscription",
+      "subscriptionPlan": "1_month",
+      "expiresAt": "2026-12-18T01:16:01.187Z",
+      "amountInr": 49,
+      "currency": "INR",
+      "paymentMethod": "Razorpay Checkout",
+      "razorpayOrderId": "order_U1SAtxMwfivHwZ",
+      "razorpayPaymentId": "pay_test_e2e_ok_001",
+      "signatureVerified": true,
+      "environment": "test",
+      "idempotencyKey": "idem_order_U1SAtxMwfivHwZ_pay_test_e2e_ok_001",
+      "status": "success",
+      "createdAt": "2026-11-18T01:16:01.187Z",
+      "receiptNumber": "INV-AATHIRAI-2026-0043",
+      "invoiceNumber": "AAC/2627/0043",
+      "taxableValue": 41.53,
+      "taxAmount": 7.47,
+      "taxRate": 18,
+      "taxType": "CGST_SGST",
+      "cgstRate": 9,
+      "cgstAmount": 3.73,
+      "sgstRate": 9,
+      "sgstAmount": 3.74,
+      "igstRate": 0,
+      "igstAmount": 0,
+      "hsnSacCode": "998431",
+      "hsnSacDescription": "Online text based information such as online books, newspapers, periodicals, directories and digital comics",
+      "placeOfSupplyStateCode": "33",
+      "placeOfSupplyStateName": "Tamil Nadu",
+      "isInternational": false,
+      "supplyType": "INTRA",
+      "sellerSnapshot": {
+        "legalBusinessName": "Aathirai Media & Publishing Pvt Ltd",
+        "tradeName": "Aathirai_Comic",
+        "gstin": "",
+        "isGstRegistered": false,
+        "stateCode": "33",
+        "stateName": "Tamil Nadu",
+        "registeredAddress": "Chennai, Tamil Nadu, India - 600001",
+        "hsnSacCode": "998431",
+        "hsnSacDescription": "Online text based information such as online books, newspapers, periodicals, directories and digital comics"
+      },
+      "authorEarningsInr": 29.07,
+      "platformFeeInr": 12.46
+    }
+  ],
+  "paymentTransactions": [
+    {
+      "id": "tx_pur_1794964561188",
+      "orderId": "order_U1SAtxMwfivHwZ",
+      "paymentId": "pay_test_e2e_ok_001",
+      "userId": "usr_guest",
+      "userEmail": "test-reader-e2e@example.com",
+      "comicId": "global_subscription",
+      "itemTitle": "Aathirai 1-Month Premium Pass",
+      "type": "subscription",
+      "subscriptionPlan": "1_month",
+      "amountInr": 49,
+      "amountPaise": 4900,
+      "currency": "INR",
+      "status": "verified",
+      "environment": "test",
+      "signatureVerified": true,
+      "idempotencyKey": "idem_order_U1SAtxMwfivHwZ_pay_test_e2e_ok_001",
+      "createdAt": "2026-11-18T01:16:01.187Z",
+      "updatedAt": "2026-11-18T01:16:01.187Z"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "notif_1794964561189_pa7y",
+      "userId": "usr_guest",
+      "userEmail": "test-reader-e2e@example.com",
+      "type": "payment_success",
+      "title": "Payment Confirmed (TEST): ₹49",
+      "message": "Receipt INV-AATHIRAI-2026-0043 for Aathirai 1-Month Premium Pass. Access unlocked!",
+      "read": false,
+      "targetId": "pur_1794964561188",
+      "comicId": "pur_1794964561188",
+      "createdAt": "2026-11-18T01:16:01.189Z"
+    }
+  ],
   "reports": [],
   "deleteRequests": [],
   "adRequests": [],
@@ -59,7 +166,7 @@
     "registeredAddress": "Chennai, Tamil Nadu, India - 600001",
     "invoicePrefix": "AAC/2627/",
     "creditNotePrefix": "CN/2627/",
-    "nextInvoiceSequence": 43,
+    "nextInvoiceSequence": 44,
     "nextCreditNoteSequence": 1,
     "defaultSacCode": "998431",
     "defaultSacDescription": "Online text based information such as online books, newspapers, periodicals, directories and digital comics",
@@ -81,11 +188,11 @@
   "creditNotes": [],
   "migrationAudit": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-16T22:23:32.475Z",
-    "completedAt": "2026-11-16T22:23:32.476Z",
+    "startedAt": "2026-11-18T01:15:51.374Z",
+    "completedAt": "2026-11-18T01:15:51.375Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "0726ce05b7e62c28a5da5b2d3d6e6dd99612cf2d5c248cb682c6445115635f3c",
+    "backupSha256": "7262fb40c27770ee0c6258cb6b2682f8bbee7f158af48c21394139f5c0084dd8",
     "status": "verified",
     "counts": {
       "users": 1,
@@ -102,11 +209,11 @@
       "reports": 0,
       "deleteRequests": 0,
       "copyrightDocs": 2,
-      "activityLogs": 0
+      "activityLogs": 1
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: 0726ce05b7e62c28...)",
+      "Backed up aathirai_db.json (SHA-256: 7262fb40c27770ee...)",
       "Migrated 1 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",

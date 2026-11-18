@@ -110,11 +110,11 @@
   ],
   "migrationReport": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-16T22:23:32.475Z",
-    "completedAt": "2026-11-16T22:23:32.476Z",
+    "startedAt": "2026-11-18T01:15:51.374Z",
+    "completedAt": "2026-11-18T01:15:51.375Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "0726ce05b7e62c28a5da5b2d3d6e6dd99612cf2d5c248cb682c6445115635f3c",
+    "backupSha256": "7262fb40c27770ee0c6258cb6b2682f8bbee7f158af48c21394139f5c0084dd8",
     "status": "verified",
     "counts": {
       "users": 1,
@@ -131,11 +131,11 @@
       "reports": 0,
       "deleteRequests": 0,
       "copyrightDocs": 2,
-      "activityLogs": 0
+      "activityLogs": 1
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: 0726ce05b7e62c28...)",
+      "Backed up aathirai_db.json (SHA-256: 7262fb40c27770ee...)",
       "Migrated 1 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",

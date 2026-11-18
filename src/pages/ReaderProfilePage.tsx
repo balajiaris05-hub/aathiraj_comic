@@ -41,6 +41,7 @@ import {
   Camera,
   ExternalLink,
 } from 'lucide-react';
+import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 
 const RAZORPAY_PROFILE_PLAN_LINKS = {
   '1_month': 'https://rzp.io/rzp/eMyTbngF',
@@ -185,6 +186,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   initialMode = 'profile',
 }) => {
   const { user, login, logout, updateUser, setAuthenticatedUser, refreshUser, hasActivePremium, getAuthHeaders } = useAuth();
+  const [profileCheckoutPlan, setProfileCheckoutPlan] = useState<'1_month' | '6_months' | null>(null);
 
   const [viewSection, setViewSection] = useState<'login_register_form' | 'profile_dashboard'>(
     initialMode === 'login' || !user ? 'login_register_form' : 'profile_dashboard'
@@ -3343,20 +3345,31 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             })`}
                       </button>
                     ) : (
-                      <a
-                        href={RAZORPAY_PROFILE_PLAN_LINKS['1_month']}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() =>
-                          setAwaitingPlanPaymentInfo(
-                            `Razorpay payment page opened for 1 Month Pass (₹49). Use your registered email (${user.email}) or phone during payment, then verify status below.`
-                          )
-                        }
-                        className="w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors bg-rose-600 hover:bg-rose-500 text-white cursor-pointer flex items-center justify-center gap-2"
-                      >
-                        <span>Subscribe 1 Month Pass — ₹49</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setProfileCheckoutPlan('1_month')}
+                          className="w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors bg-rose-600 hover:bg-rose-500 text-white cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
+                        >
+                          <span>Subscribe 1 Month Pass — ₹49</span>
+                        </button>
+                        <div className="text-center">
+                          <a
+                            href={RAZORPAY_PROFILE_PLAN_LINKS['1_month']}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() =>
+                              setAwaitingPlanPaymentInfo(
+                                `Razorpay hosted page opened for 1 Month Pass (₹49). Use your registered email (${user.email}) or phone during payment, then verify status below.`
+                              )
+                            }
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-rose-500 dark:text-slate-400"
+                          >
+                            <span>Prefer Razorpay hosted page?</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
                     )}
                   </div>
 
@@ -3417,20 +3430,31 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             })`}
                       </button>
                     ) : (
-                      <a
-                        href={RAZORPAY_PROFILE_PLAN_LINKS['6_months']}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() =>
-                          setAwaitingPlanPaymentInfo(
-                            `Razorpay payment page opened for 6 Months Pass (₹249). Use your registered email (${user.email}) or phone during payment, then verify status below.`
-                          )
-                        }
-                        className="w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer flex items-center justify-center gap-2"
-                      >
-                        <span>Subscribe 6 Months Pass — ₹249</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setProfileCheckoutPlan('6_months')}
+                          className="w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
+                        >
+                          <span>Subscribe 6 Months Pass — ₹249</span>
+                        </button>
+                        <div className="text-center">
+                          <a
+                            href={RAZORPAY_PROFILE_PLAN_LINKS['6_months']}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() =>
+                              setAwaitingPlanPaymentInfo(
+                                `Razorpay hosted page opened for 6 Months Pass (₹249). Use your registered email (${user.email}) or phone during payment, then verify status below.`
+                              )
+                            }
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-amber-500 dark:text-slate-400"
+                          >
+                            <span>Prefer Razorpay hosted page?</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -3737,6 +3761,31 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
             </div>
           </div>
         </>
+      )}
+
+      {profileCheckoutPlan && (
+        <RazorpayCheckoutModal
+          isOpen={Boolean(profileCheckoutPlan)}
+          onClose={() => setProfileCheckoutPlan(null)}
+          comicId="global_subscription"
+          comicTitle="Aathirai_Comic Premium Pass"
+          itemTitle={
+            profileCheckoutPlan === '6_months'
+              ? '6 Months All-Access Premium Pass (180 Days)'
+              : '1 Month All-Access Premium Pass (30 Days)'
+          }
+          itemType="subscription"
+          subscriptionPlan={profileCheckoutPlan}
+          amountInr={profileCheckoutPlan === '6_months' ? 249 : 49}
+          hostedPaymentUrl={RAZORPAY_PROFILE_PLAN_LINKS[profileCheckoutPlan]}
+          onPaymentSuccess={async (purchase) => {
+            setAwaitingPlanPaymentInfo(null);
+            await refreshUser();
+            setProfileMessage(
+              `Razorpay Payment Verified (${purchase.receiptNumber || purchase.razorpayPaymentId})! Premium access is now active.`
+            );
+          }}
+        />
       )}
 
     </div>
