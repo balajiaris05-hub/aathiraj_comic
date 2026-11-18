@@ -418,9 +418,15 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         </div>
 
         {paymentMode === 'test' && (
-          <div className="px-6 py-2.5 bg-amber-500/10 border-b border-amber-500/25 text-amber-700 dark:text-amber-300 text-xs font-medium flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>Test Mode active — use Razorpay test UPI/cards in the popup; no real money is deducted.</span>
+          <div className="px-6 py-3 bg-amber-500/10 border-b border-amber-500/25 text-amber-800 dark:text-amber-200 text-xs space-y-1.5">
+            <div className="flex items-center gap-2 font-semibold">
+              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+              <span>Test Mode active — no real money is deducted.</span>
+            </div>
+            <div className="pl-6 space-y-0.5 text-[11px] font-mono tabular-nums text-amber-900/90 dark:text-amber-100/90">
+              <div>Test Card: 4100 2800 0000 1007 · CVV: 123 · Expiry: 12/26</div>
+              <div>Test UPI: test@razorpay</div>
+            </div>
           </div>
         )}
 
