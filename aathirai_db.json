@@ -24,7 +24,46 @@
   "votes": [],
   "purchases": [],
   "paymentTransactions": [],
-  "notifications": [],
+  "notifications": [
+    {
+      "id": "notif_1795041290372_fq52",
+      "userId": "all",
+      "type": "new_comic",
+      "title": "New Comic Published: __VERIFY_SMOKE_TEST_COMIC__ · Episode 1: Premiere Issue",
+      "message": "\"__VERIFY_SMOKE_TEST_COMIC__\" (Episode 1: Premiere Issue) by Aathirai Editorial (Admin) has been published (Free to Read). Gmail alert sent to 1/1 customer(s).",
+      "read": false,
+      "targetId": "comic_1795041290364",
+      "comicId": "comic_1795041290364",
+      "comicTitle": "__VERIFY_SMOKE_TEST_COMIC__",
+      "episodeId": "ep_1795041290364",
+      "episodeTitle": "Episode 1: Premiere Issue",
+      "isPaywalled": false,
+      "gmailSent": true,
+      "gmailSentAt": "2026-11-18T22:34:52.860Z",
+      "gmailDeliveredCount": 1,
+      "gmailTargetCount": 1,
+      "createdAt": "2026-11-18T22:34:50.372Z"
+    },
+    {
+      "id": "notif_1795041290370_jed1",
+      "userId": "usr_admin",
+      "userEmail": "balajiaris05@gmail.com",
+      "type": "new_comic",
+      "title": "New Comic Published: __VERIFY_SMOKE_TEST_COMIC__ · Episode 1: Premiere Issue",
+      "message": "\"__VERIFY_SMOKE_TEST_COMIC__\" (Episode 1: Premiere Issue) by Aathirai Editorial (Admin) has been published (Free to Read). Gmail notification sent to balajiaris05@gmail.com.",
+      "read": false,
+      "targetId": "comic_1795041290364",
+      "comicId": "comic_1795041290364",
+      "comicTitle": "__VERIFY_SMOKE_TEST_COMIC__",
+      "episodeId": "ep_1795041290364",
+      "episodeTitle": "Episode 1: Premiere Issue",
+      "isPaywalled": false,
+      "gmailSent": true,
+      "gmailSentTo": "balajiaris05@gmail.com",
+      "gmailSentAt": "2026-11-18T22:34:52.860Z",
+      "createdAt": "2026-11-18T22:34:50.370Z"
+    }
+  ],
   "reports": [],
   "deleteRequests": [],
   "adRequests": [],
@@ -98,6 +137,36 @@
   "creditNotes": [],
   "activityLogs": [
     {
+      "id": "log_1795041292885_0k3",
+      "timestamp": "2026-11-18T22:34:52.885Z",
+      "action": "COMIC_DELETED",
+      "actorEmail": "User",
+      "actorRole": "author",
+      "details": "Deleted comic series: \"__VERIFY_SMOKE_TEST_COMIC__\"",
+      "targetType": "comic",
+      "targetId": "comic_1795041290364"
+    },
+    {
+      "id": "log_1795041292864_089",
+      "timestamp": "2026-11-18T22:34:52.864Z",
+      "action": "GMAIL_RELEASE_ALERT_SENT",
+      "actorEmail": "system@aathirai.com",
+      "actorRole": "admin",
+      "details": "Notification Bar & Gmail release alert for \"__VERIFY_SMOKE_TEST_COMIC__\" (Episode 1: Premiere Issue) (new_comic) — Sent: 1/1 (balajiaris05@gmail.com).",
+      "targetType": "comic",
+      "targetId": "comic_1795041290364"
+    },
+    {
+      "id": "log_1795041290367_g3j",
+      "timestamp": "2026-11-18T22:34:50.367Z",
+      "action": "ADMIN_COMIC_PUBLISHED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Directly published comic: \"__VERIFY_SMOKE_TEST_COMIC__\" in categories [Action] with 1 pages.",
+      "targetType": "comic",
+      "targetId": "comic_1795041290364"
+    },
+    {
       "id": "log_1794867815710_wzo",
       "timestamp": "2026-11-16T22:23:35.710Z",
       "action": "ADMIN_OTP_REQUESTED",
@@ -110,11 +179,11 @@
   ],
   "migrationReport": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-18T01:15:51.374Z",
-    "completedAt": "2026-11-18T01:15:51.375Z",
+    "startedAt": "2026-11-18T22:39:26.842Z",
+    "completedAt": "2026-11-18T22:39:26.844Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "7262fb40c27770ee0c6258cb6b2682f8bbee7f158af48c21394139f5c0084dd8",
+    "backupSha256": "627a0d33860aedc679029818590402b01ca6ddb4ece210da813c4e4b80cbfbd5",
     "status": "verified",
     "counts": {
       "users": 1,
@@ -127,15 +196,15 @@
       "votes": 0,
       "purchases": 0,
       "paymentTransactions": 0,
-      "notifications": 0,
+      "notifications": 2,
       "reports": 0,
       "deleteRequests": 0,
       "copyrightDocs": 2,
-      "activityLogs": 1
+      "activityLogs": 4
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: 7262fb40c27770ee...)",
+      "Backed up aathirai_db.json (SHA-256: 627a0d33860aedc6...)",
       "Migrated 1 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",

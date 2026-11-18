@@ -282,7 +282,11 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
         setNewDesc('');
         setNewComicAttachedPages([]);
         setSelectedCoverPageId(null);
-        showToast(`✓ Comic series "${data.comic.title}" was created and published live on the website!`);
+        showToast(
+          data.cloudPersisted === false
+            ? `✓ Comic "${data.comic.title}" published locally, but Firestore sync warned: ${data.cloudPersistWarning || 'Check IAM permissions'}`
+            : `✓ Comic series "${data.comic.title}" was created and published live on the website!`
+        );
       } else {
         showToast(data.error || 'Failed to create comic.');
       }

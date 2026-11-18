@@ -791,7 +791,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           episodeTitle: data.episode ? data.episode.title : 'New Episode',
           pageCount: attachedPages.length,
         });
-        setDirectPublishSuccess(data.message || 'Comic episode published live on website!');
+        setDirectPublishSuccess(
+          data.cloudPersisted === false
+            ? `${data.message || 'Published locally'} — Cloud backup warning: ${data.cloudPersistWarning || 'Check Firestore IAM access'}`
+            : (data.message || 'Comic episode published live on website!')
+        );
         setAttachedPages([]);
         if (publishMode === 'new_series') {
           setDirectTitle('');

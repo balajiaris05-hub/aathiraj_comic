@@ -340,10 +340,26 @@ export async function commitFirestoreWrites(
     };
   }
 
-  // Batch into groups of 200 writes to stay safely within Firestore REST commit limits
+  const MAX_WRITES_PER_COMMIT = 80;
+  const MAX_BYTES_PER_COMMIT = 3_200_000;
+
   let totalWritten = 0;
-  for (let i = 0; i < items.length; i += 200) {
-    const chunk = items.slice(i, i + 200);
+  let index = 0;
+  while (index < items.length) {
+    const chunk: CommitWriteItem[] = [];
+    let estimatedBytes = 0;
+
+    while (index < items.length && chunk.length < MAX_WRITES_PER_COMMIT) {
+      const candidate = items[index];
+      const approxLen = JSON.stringify(candidate.fields).length + 256;
+      if (chunk.length > 0 && estimatedBytes + approxLen > MAX_BYTES_PER_COMMIT) {
+        break;
+      }
+      chunk.push(candidate);
+      estimatedBytes += approxLen;
+      index += 1;
+    }
+
     const writes = await Promise.all(
       chunk.map(async (item) => {
         const existingDoc = item.preserveCreatedAt ? await fetchFirestoreDocument(item.docPath, bearerToken) : null;
@@ -382,7 +398,7 @@ export async function commitFirestoreWrites(
           Authorization: `Bearer ${bearerToken}`,
         },
         body: JSON.stringify({ writes }),
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(20000),
       }
     );
 
@@ -400,6 +416,86 @@ export async function commitFirestoreWrites(
   }
 
   return { success: true, mode, written: totalWritten };
+}
+
+export async function listFirestoreCollection(
+  collectionId: string,
+  userFirebaseIdToken?: string
+): Promise<{
+  ok: boolean;
+  status: number;
+  mode: CredentialMode;
+  docs: Array<{ id: string; fields: Record<string, unknown> }>;
+  error?: string;
+}> {
+  const { bearerToken, mode } = await resolveAuthContext(userFirebaseIdToken);
+  if (!bearerToken) {
+    return {
+      ok: false,
+      status: 401,
+      mode,
+      docs: [],
+      error: 'No server credentials available for listing collection.',
+    };
+  }
+
+  const docs: Array<{ id: string; fields: Record<string, unknown> }> = [];
+  let pageToken = '';
+
+  try {
+    do {
+      const params = new URLSearchParams({
+        pageSize: '200',
+        key: FIREBASE_APPLET_CONFIG.apiKey,
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+
+      const res = await fetch(`${FIRESTORE_REST_BASE_URL}/${collectionId}?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!res.ok) {
+        if (res.status === 404) {
+          return { ok: true, status: 200, mode, docs };
+        }
+        const errBody = await res.text().catch(() => '');
+        return {
+          ok: false,
+          status: res.status,
+          mode,
+          docs,
+          error: `Firestore list ${collectionId} HTTP ${res.status}: ${errBody.slice(0, 250)}`,
+        };
+      }
+
+      const json = (await res.json()) as {
+        documents?: Array<{ name?: string; fields?: Record<string, FirestoreValue> }>;
+        nextPageToken?: string;
+      };
+
+      for (const rawDoc of json.documents || []) {
+        const parsed = fromFirestoreDocument(rawDoc);
+        const docName = String(rawDoc.name || '');
+        const docId = docName.split('/').pop() || '';
+        if (parsed && docId) {
+          docs.push({ id: docId, fields: parsed });
+        }
+      }
+
+      pageToken = json.nextPageToken || '';
+    } while (pageToken);
+
+    return { ok: true, status: 200, mode, docs };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 500,
+      mode,
+      docs,
+      error: err instanceof Error ? err.message : 'List collection failed',
+    };
+  }
 }
 
 export async function runFirestoreQuery(
@@ -1033,9 +1129,21 @@ export async function syncDatabaseSnapshotToFirestore(
   await Promise.all(demoDocPaths.map((p) => deleteFirestoreDoc(p, userFirebaseIdToken).catch(() => false)));
 
   const result = await commitFirestoreWrites(writes, userFirebaseIdToken);
+
+  // Also sync full durable vault (users with passwordHash, comics with covers/pages, collections)
+  const vaultResult = await persistSnapshotChangesToFirestore({
+    snapshot,
+    fullVaultSync: true,
+    userFirebaseIdToken,
+  });
+
   return {
     ...result,
-    attempted: writes.length,
+    success: result.success && vaultResult.persisted,
+    vaultPersisted: vaultResult.persisted,
+    vaultWritten: vaultResult.written,
+    vaultError: vaultResult.error,
+    attempted: writes.length + vaultResult.written,
     projectId: FIREBASE_APPLET_CONFIG.projectId,
     databaseId: FIREBASE_APPLET_CONFIG.firestoreDatabaseId,
   };
@@ -1075,6 +1183,9 @@ export async function getFirestoreLiveStatus(userFirebaseIdToken?: string) {
     'adRequests',
     'gstSettings',
     'platformSettings',
+    'server_users',
+    'server_comics',
+    'server_comic_assets',
   ];
 
   const liveCounts: Record<string, number> = {};
@@ -1105,8 +1216,598 @@ export async function getFirestoreLiveStatus(userFirebaseIdToken?: string) {
     serviceAccountConfigured: Boolean(parseServiceAccountFromEnv()),
     publishedComicsInFirestore: publishedProbe.docs.length,
     liveCounts,
+    cloudVaultStatus: lastCloudSyncStatus,
     checkedAt: new Date().toISOString(),
     error: publishedProbe.ok ? undefined : publishedProbe.error,
+  };
+}
+
+// =============================================================================
+// FULL SERVER VAULT PERSISTENCE & HYDRATION (USERS/PASSWORDS + COMICS/PAGES)
+// =============================================================================
+
+const ASSET_PTR_PREFIX = 'asset://';
+const ASSET_INLINE_LIMIT = 16_000;
+const ASSET_CHUNK_SIZE = 380_000;
+
+export interface CloudSyncStatusSnapshot {
+  ok: boolean;
+  mode: CredentialMode;
+  revision: number;
+  lastHydratedAt?: string;
+  lastSyncedAt?: string;
+  error?: string;
+}
+
+let lastCloudSyncStatus: CloudSyncStatusSnapshot = {
+  ok: false,
+  mode: 'public_api_key',
+  revision: 0,
+};
+
+export function getLastCloudSyncStatus(): CloudSyncStatusSnapshot {
+  return { ...lastCloudSyncStatus };
+}
+
+function externalizeLargeString(
+  assetKey: string,
+  rawValue: string | undefined,
+  ownerComicId: string,
+  assetWrites: CommitWriteItem[]
+): string | undefined {
+  if (!rawValue || typeof rawValue !== 'string') return rawValue;
+  if (rawValue.startsWith(ASSET_PTR_PREFIX) || rawValue.length <= ASSET_INLINE_LIMIT) {
+    return rawValue;
+  }
+
+  const safeKey = sanitizeFirestoreId(assetKey);
+  const totalChunks = Math.ceil(rawValue.length / ASSET_CHUNK_SIZE);
+  for (let idx = 0; idx < totalChunks; idx += 1) {
+    const slice = rawValue.slice(idx * ASSET_CHUNK_SIZE, (idx + 1) * ASSET_CHUNK_SIZE);
+    assetWrites.push({
+      docPath: `server_comic_assets/${safeKey}__${idx}`,
+      fields: {
+        assetKey: safeKey,
+        comicId: ownerComicId,
+        chunkIndex: idx,
+        totalChunks,
+        data: slice,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  return `${ASSET_PTR_PREFIX}${safeKey}:${totalChunks}`;
+}
+
+function restoreAssetString(
+  rawValue: unknown,
+  assetChunksMap: Map<string, Map<number, string>>
+): string | undefined {
+  if (typeof rawValue !== 'string') return undefined;
+  if (!rawValue.startsWith(ASSET_PTR_PREFIX)) return rawValue;
+  const spec = rawValue.slice(ASSET_PTR_PREFIX.length);
+  const colonIdx = spec.lastIndexOf(':');
+  if (colonIdx <= 0) return rawValue;
+  const assetKey = spec.slice(0, colonIdx);
+  const totalChunks = Math.max(1, Number(spec.slice(colonIdx + 1)) || 1);
+  const chunks = assetChunksMap.get(assetKey);
+  if (!chunks) return rawValue;
+  const parts: string[] = [];
+  for (let i = 0; i < totalChunks; i += 1) {
+    const part = chunks.get(i);
+    if (part === undefined) return rawValue;
+    parts.push(part);
+  }
+  return parts.join('');
+}
+
+function buildFullUserVaultWriteItems(user: User): CommitWriteItem[] {
+  const safeUserId = sanitizeFirestoreId(user.id);
+  const writes: CommitWriteItem[] = [];
+  const clone: Record<string, unknown> = {
+    ...user,
+    id: user.id,
+    email: user.email,
+    bookmarks: Array.isArray(user.bookmarks) ? user.bookmarks : [],
+    favorites: Array.isArray(user.favorites) ? user.favorites : [],
+    readingHistory: Array.isArray(user.readingHistory)
+      ? user.readingHistory.slice(0, 20)
+      : [],
+  };
+  delete clone.password;
+  if (typeof clone.avatar === 'string' && clone.avatar.length > ASSET_INLINE_LIMIT) {
+    clone.avatar = externalizeLargeString(`usr_avatar_${safeUserId}`, clone.avatar, `user_${safeUserId}`, writes);
+  }
+  writes.push({
+    docPath: `server_users/${safeUserId}`,
+    fields: {
+      payload: clone,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  return writes;
+}
+
+function buildFullComicVaultWriteItems(comic: Comic): CommitWriteItem[] {
+  const safeComicId = sanitizeFirestoreId(comic.id);
+  const writes: CommitWriteItem[] = [];
+
+  const serializedCover = externalizeLargeString(
+    `comic_${safeComicId}_cover`,
+    comic.coverImage,
+    safeComicId,
+    writes
+  );
+
+  const serializedAttachedPages = Array.isArray(comic.attachedPages)
+    ? comic.attachedPages.map((p, idx) => ({
+        ...p,
+        imageUrl:
+          externalizeLargeString(
+            `comic_${safeComicId}_att_${idx}_${sanitizeFirestoreId(p.id)}`,
+            p.imageUrl,
+            safeComicId,
+            writes
+          ) || '',
+      }))
+    : undefined;
+
+  const serializedChapters = (comic.chapters || []).map((ch, chIdx) => ({
+    ...ch,
+    episodes: (ch.episodes || []).map((ep, epIdx) => ({
+      ...ep,
+      coverImage: externalizeLargeString(
+        `comic_${safeComicId}_ch${chIdx}_ep${epIdx}_cov`,
+        ep.coverImage,
+        safeComicId,
+        writes
+      ),
+      pages: (ep.pages || []).map((pg, pgIdx) => ({
+        ...pg,
+        imageUrl:
+          externalizeLargeString(
+            `comic_${safeComicId}_ch${chIdx}_ep${epIdx}_pg${pgIdx}`,
+            pg.imageUrl,
+            safeComicId,
+            writes
+          ) || '',
+      })),
+    })),
+  }));
+
+  const comicPayload: Record<string, unknown> = {
+    ...comic,
+    coverImage: serializedCover || comic.coverImage,
+    chapters: serializedChapters,
+  };
+  if (serializedAttachedPages) {
+    comicPayload.attachedPages = serializedAttachedPages;
+  } else {
+    delete comicPayload.attachedPages;
+  }
+
+  writes.push({
+    docPath: `server_comics/${safeComicId}`,
+    fields: {
+      comicId: comic.id,
+      payload: comicPayload,
+      updatedAt: comic.updatedAt || new Date().toISOString(),
+    },
+  });
+
+  return writes;
+}
+
+export type VaultCollectionKey =
+  | 'authorApplications'
+  | 'purchases'
+  | 'paymentTransactions'
+  | 'comments'
+  | 'ratings'
+  | 'votes'
+  | 'notifications'
+  | 'reports'
+  | 'deleteRequests'
+  | 'adRequests'
+  | 'copyrightDocs'
+  | 'settings'
+  | 'activityLogs'
+  | 'otps';
+
+const ALL_VAULT_COLLECTION_KEYS: VaultCollectionKey[] = [
+  'authorApplications',
+  'purchases',
+  'paymentTransactions',
+  'comments',
+  'ratings',
+  'votes',
+  'notifications',
+  'reports',
+  'deleteRequests',
+  'adRequests',
+  'copyrightDocs',
+  'settings',
+  'activityLogs',
+  'otps',
+];
+
+function buildVaultCollectionWrites(snapshot: DatabaseSchema, keys: VaultCollectionKey[]): CommitWriteItem[] {
+  const nowIso = new Date().toISOString();
+  const writes: CommitWriteItem[] = [];
+
+  for (const key of keys) {
+    if (key === 'settings') {
+      writes.push({
+        docPath: 'server_collections/settings',
+        fields: {
+          settings: snapshot.settings,
+          gstSettings: snapshot.gstSettings,
+          creditNotes: snapshot.creditNotes || [],
+          updatedAt: nowIso,
+        },
+      });
+    } else if (key === 'otps') {
+      writes.push({
+        docPath: 'server_collections/otps',
+        fields: {
+          otps: snapshot.otps || {},
+          adminOtp: snapshot.adminOtp || null,
+          updatedAt: nowIso,
+        },
+      });
+    } else {
+      const items = Array.isArray((snapshot as any)[key]) ? ((snapshot as any)[key] as unknown[]) : [];
+      writes.push({
+        docPath: `server_collections/${key}`,
+        fields: {
+          items,
+          updatedAt: nowIso,
+        },
+      });
+    }
+  }
+
+  return writes;
+}
+
+export async function fetchCloudSyncRevision(
+  userFirebaseIdToken?: string
+): Promise<{ ok: boolean; revision: number; mode: CredentialMode; exists: boolean }> {
+  const authCtx = await resolveAuthContext(userFirebaseIdToken);
+  if (authCtx.mode === 'public_api_key' || !authCtx.bearerToken) {
+    return { ok: false, revision: 0, mode: authCtx.mode, exists: false };
+  }
+
+  const doc = await fetchFirestoreDocument('server_meta/sync_state', authCtx.bearerToken);
+  if (!doc) {
+    return { ok: true, revision: 0, mode: authCtx.mode, exists: false };
+  }
+  return {
+    ok: true,
+    revision: Number(doc.revision) || 0,
+    mode: authCtx.mode,
+    exists: true,
+  };
+}
+
+export async function persistSnapshotChangesToFirestore(params: {
+  snapshot: DatabaseSchema;
+  users?: User[];
+  comics?: Comic[];
+  deletedComicIds?: string[];
+  deletedUserIds?: string[];
+  collections?: VaultCollectionKey[];
+  fullVaultSync?: boolean;
+  revision?: number;
+  userFirebaseIdToken?: string;
+}): Promise<{ persisted: boolean; mode: CredentialMode; written: number; revision: number; error?: string }> {
+  const authCtx = await resolveAuthContext(params.userFirebaseIdToken);
+  if (authCtx.mode === 'public_api_key' || !authCtx.bearerToken) {
+    lastCloudSyncStatus = {
+      ...lastCloudSyncStatus,
+      ok: false,
+      mode: authCtx.mode,
+    };
+    return {
+      persisted: false,
+      mode: authCtx.mode,
+      written: 0,
+      revision: params.revision || lastCloudSyncStatus.revision,
+      error: 'No server credentials (service account or project ADC) available in this runtime.',
+    };
+  }
+
+  const writes: CommitWriteItem[] = [];
+  const comicEpisodeLookup = new Map<string, string>();
+  for (const c of params.snapshot.comics || []) {
+    for (const ch of c.chapters || []) {
+      for (const ep of ch.episodes || []) {
+        comicEpisodeLookup.set(ep.id, c.id);
+      }
+    }
+  }
+
+  const targetUsers = params.fullVaultSync ? params.snapshot.users || [] : params.users || [];
+  const targetComics = params.fullVaultSync ? params.snapshot.comics || [] : params.comics || [];
+  const targetCollections = params.fullVaultSync ? ALL_VAULT_COLLECTION_KEYS : params.collections || [];
+
+  for (const u of targetUsers) {
+    writes.push(...buildFullUserVaultWriteItems(u));
+    writes.push(...buildUserWriteItems(u));
+  }
+
+  for (const c of targetComics) {
+    writes.push(...buildFullComicVaultWriteItems(c));
+    writes.push(...buildComicAndEpisodeWriteItems(c));
+  }
+
+  if (targetCollections.length > 0) {
+    writes.push(...buildVaultCollectionWrites(params.snapshot, targetCollections));
+  }
+
+  // Delete removed comics / users in vault & public mirror
+  for (const delComicId of params.deletedComicIds || []) {
+    const safeCid = sanitizeFirestoreId(delComicId);
+    await deleteFirestoreDoc(`server_comics/${safeCid}`, params.userFirebaseIdToken).catch(() => false);
+    await deleteFirestoreDoc(`comics/${safeCid}`, params.userFirebaseIdToken).catch(() => false);
+  }
+  for (const delUserId of params.deletedUserIds || []) {
+    const safeUid = sanitizeFirestoreId(delUserId);
+    await deleteFirestoreDoc(`server_users/${safeUid}`, params.userFirebaseIdToken).catch(() => false);
+    await deleteFirestoreDoc(`users/${safeUid}/private/info`, params.userFirebaseIdToken).catch(() => false);
+    await deleteFirestoreDoc(`users/${safeUid}`, params.userFirebaseIdToken).catch(() => false);
+  }
+
+  const nextRevision =
+    typeof params.revision === 'number' && params.revision > 0
+      ? params.revision
+      : Math.max(Date.now(), (lastCloudSyncStatus.revision || 0) + 1);
+
+  writes.push({
+    docPath: 'server_meta/sync_state',
+    fields: {
+      revision: nextRevision,
+      updatedAt: new Date().toISOString(),
+      usersCount: (params.snapshot.users || []).length,
+      comicsCount: (params.snapshot.comics || []).length,
+    },
+  });
+
+  const commitRes = await commitFirestoreWrites(writes, params.userFirebaseIdToken);
+  lastCloudSyncStatus = {
+    ok: commitRes.success,
+    mode: commitRes.mode,
+    revision: commitRes.success ? nextRevision : lastCloudSyncStatus.revision,
+    lastHydratedAt: lastCloudSyncStatus.lastHydratedAt,
+    lastSyncedAt: commitRes.success ? new Date().toISOString() : lastCloudSyncStatus.lastSyncedAt,
+    error: commitRes.error,
+  };
+
+  if (!commitRes.success) {
+    console.warn(`[FirestoreVault] Persist failed (${commitRes.mode}):`, commitRes.error);
+  }
+
+  return {
+    persisted: commitRes.success,
+    mode: commitRes.mode,
+    written: commitRes.written,
+    revision: lastCloudSyncStatus.revision,
+    error: commitRes.error,
+  };
+}
+
+export async function hydrateDatabaseFromFirestore(
+  fallbackData: DatabaseSchema,
+  userFirebaseIdToken?: string
+): Promise<{
+  hydrated: boolean;
+  seeded: boolean;
+  revision: number;
+  mode: CredentialMode;
+  data: DatabaseSchema;
+  error?: string;
+}> {
+  const authCtx = await resolveAuthContext(userFirebaseIdToken);
+  if (authCtx.mode === 'public_api_key' || !authCtx.bearerToken) {
+    lastCloudSyncStatus = {
+      ...lastCloudSyncStatus,
+      ok: false,
+      mode: authCtx.mode,
+    };
+    return {
+      hydrated: false,
+      seeded: false,
+      revision: 0,
+      mode: authCtx.mode,
+      data: fallbackData,
+    };
+  }
+
+  const [syncMetaDoc, usersRes, comicsRes, assetsRes, collectionsRes] = await Promise.all([
+    fetchFirestoreDocument('server_meta/sync_state', authCtx.bearerToken),
+    listFirestoreCollection('server_users', userFirebaseIdToken),
+    listFirestoreCollection('server_comics', userFirebaseIdToken),
+    listFirestoreCollection('server_comic_assets', userFirebaseIdToken),
+    listFirestoreCollection('server_collections', userFirebaseIdToken),
+  ]);
+
+  if (!usersRes.ok || !comicsRes.ok || !assetsRes.ok || !collectionsRes.ok) {
+    const err = usersRes.error || comicsRes.error || assetsRes.error || collectionsRes.error;
+    lastCloudSyncStatus = {
+      ...lastCloudSyncStatus,
+      ok: false,
+      mode: authCtx.mode,
+      error: err,
+    };
+    return {
+      hydrated: false,
+      seeded: false,
+      revision: 0,
+      mode: authCtx.mode,
+      data: fallbackData,
+      error: err,
+    };
+  }
+
+  const hasCloudData =
+    Boolean(syncMetaDoc) ||
+    usersRes.docs.length > 0 ||
+    comicsRes.docs.length > 0 ||
+    collectionsRes.docs.length > 0;
+
+  // First-ever boot on App Hosting with empty cloud vault: seed cloud vault from fallbackData
+  if (!hasCloudData) {
+    const seedRes = await persistSnapshotChangesToFirestore({
+      snapshot: fallbackData,
+      fullVaultSync: true,
+      revision: 1,
+      userFirebaseIdToken,
+    });
+    lastCloudSyncStatus = {
+      ok: seedRes.persisted,
+      mode: authCtx.mode,
+      revision: seedRes.revision,
+      lastHydratedAt: new Date().toISOString(),
+      lastSyncedAt: seedRes.persisted ? new Date().toISOString() : undefined,
+      error: seedRes.error,
+    };
+    return {
+      hydrated: seedRes.persisted,
+      seeded: seedRes.persisted,
+      revision: seedRes.revision,
+      mode: authCtx.mode,
+      data: fallbackData,
+      error: seedRes.error,
+    };
+  }
+
+  // Reconstruct asset chunks map
+  const assetChunksMap = new Map<string, Map<number, string>>();
+  for (const assetDoc of assetsRes.docs) {
+    const f = assetDoc.fields;
+    const key = typeof f.assetKey === 'string' ? f.assetKey : '';
+    const idx = Number(f.chunkIndex);
+    const data = typeof f.data === 'string' ? f.data : '';
+    if (!key || !Number.isFinite(idx)) continue;
+    let map = assetChunksMap.get(key);
+    if (!map) {
+      map = new Map<number, string>();
+      assetChunksMap.set(key, map);
+    }
+    map.set(idx, data);
+  }
+
+  const nextData: DatabaseSchema = {
+    ...fallbackData,
+  };
+
+  // Restore users (including passwordHash, lockout counters, bookmarks, etc.)
+  if (usersRes.docs.length > 0) {
+    const restoredUsers: User[] = [];
+    for (const docItem of usersRes.docs) {
+      const payload = docItem.fields.payload as Record<string, unknown> | undefined;
+      if (!payload || typeof payload !== 'object') continue;
+      const userObj = { ...(payload as unknown as User) };
+      if (typeof userObj.avatar === 'string' && userObj.avatar.startsWith(ASSET_PTR_PREFIX)) {
+        userObj.avatar = restoreAssetString(userObj.avatar, assetChunksMap) || userObj.avatar;
+      }
+      if (!Array.isArray(userObj.bookmarks)) userObj.bookmarks = [];
+      if (!Array.isArray(userObj.favorites)) userObj.favorites = [];
+      if (!Array.isArray(userObj.readingHistory)) userObj.readingHistory = [];
+      restoredUsers.push(userObj);
+    }
+
+    // Ensure usr_admin exists with authoritative details
+    const hasAdmin = restoredUsers.some((u) => u.id === 'usr_admin' || u.role === 'admin');
+    if (!hasAdmin) {
+      const fallbackAdmin = fallbackData.users.find((u) => u.id === 'usr_admin' || u.role === 'admin');
+      if (fallbackAdmin) restoredUsers.unshift(fallbackAdmin);
+    }
+    nextData.users = restoredUsers;
+  }
+
+  // Restore comics (with full coverImage, attachedPages, chapters, episodes, pages)
+  const restoredComics: Comic[] = [];
+  for (const docItem of comicsRes.docs) {
+    const payload = docItem.fields.payload as Record<string, unknown> | undefined;
+    if (!payload || typeof payload !== 'object') continue;
+    const comicObj = { ...(payload as unknown as Comic) };
+    comicObj.coverImage =
+      restoreAssetString(comicObj.coverImage, assetChunksMap) ||
+      comicObj.coverImage ||
+      '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+
+    if (Array.isArray(comicObj.attachedPages)) {
+      comicObj.attachedPages = comicObj.attachedPages.map((p) => ({
+        ...p,
+        imageUrl: restoreAssetString(p.imageUrl, assetChunksMap) || p.imageUrl,
+      }));
+    }
+
+    comicObj.chapters = (comicObj.chapters || []).map((ch) => ({
+      ...ch,
+      episodes: (ch.episodes || []).map((ep) => ({
+        ...ep,
+        coverImage: restoreAssetString(ep.coverImage, assetChunksMap) || ep.coverImage,
+        pages: (ep.pages || []).map((pg) => ({
+          ...pg,
+          imageUrl: restoreAssetString(pg.imageUrl, assetChunksMap) || pg.imageUrl,
+        })),
+      })),
+    }));
+
+    restoredComics.push(comicObj);
+  }
+  restoredComics.sort(
+    (a, b) =>
+      new Date(b.createdAt || b.updatedAt || 0).getTime() -
+      new Date(a.createdAt || a.updatedAt || 0).getTime()
+  );
+  nextData.comics = restoredComics;
+
+  // Restore collections
+  for (const colDoc of collectionsRes.docs) {
+    const id = colDoc.id as VaultCollectionKey;
+    if (id === 'settings') {
+      if (colDoc.fields.settings && typeof colDoc.fields.settings === 'object') {
+        nextData.settings = colDoc.fields.settings as unknown as PlatformSettings;
+      }
+      if (colDoc.fields.gstSettings && typeof colDoc.fields.gstSettings === 'object') {
+        nextData.gstSettings = colDoc.fields.gstSettings as any;
+      }
+      if (Array.isArray(colDoc.fields.creditNotes)) {
+        nextData.creditNotes = colDoc.fields.creditNotes as any[];
+      }
+    } else if (id === 'otps') {
+      if (colDoc.fields.otps && typeof colDoc.fields.otps === 'object') {
+        nextData.otps = colDoc.fields.otps as any;
+      }
+      if (colDoc.fields.adminOtp && typeof colDoc.fields.adminOtp === 'object') {
+        nextData.adminOtp = colDoc.fields.adminOtp as any;
+      } else {
+        delete nextData.adminOtp;
+      }
+    } else if (Array.isArray(colDoc.fields.items)) {
+      (nextData as any)[id] = colDoc.fields.items;
+    }
+  }
+
+  const revision = Number(syncMetaDoc?.revision) || 1;
+  lastCloudSyncStatus = {
+    ok: true,
+    mode: authCtx.mode,
+    revision,
+    lastHydratedAt: new Date().toISOString(),
+    lastSyncedAt: lastCloudSyncStatus.lastSyncedAt,
+  };
+
+  return {
+    hydrated: true,
+    seeded: false,
+    revision,
+    mode: authCtx.mode,
+    data: nextData,
   };
 }
 

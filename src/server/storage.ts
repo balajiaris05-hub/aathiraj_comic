@@ -25,6 +25,12 @@ import {
   getDefaultGstBusinessSettings,
   ensurePurchaseGstFields,
 } from '../utils/gstUtils';
+import {
+  hydrateDatabaseFromFirestore,
+  fetchCloudSyncRevision,
+  persistSnapshotChangesToFirestore,
+  type VaultCollectionKey,
+} from './firestoreAdmin';
 
 export interface MigrationAuditReport {
   migrationId: string;
@@ -188,6 +194,11 @@ No portion of any comic hosted on this platform may be reproduced, mirrored, syn
 
 export class StorageEngine {
   private data: DatabaseSchema;
+  private cloudRevision = 0;
+  private lastRevisionCheckMs = 0;
+  private initPromise: Promise<{ hydrated: boolean; mode: string; error?: string }> | null = null;
+  private freshPromise: Promise<void> | null = null;
+  private persistQueue: Promise<unknown> = Promise.resolve();
 
   constructor() {
     this.data = this.loadAndMigrateData();
@@ -582,6 +593,102 @@ export class StorageEngine {
         db.activityLogs = db.activityLogs.slice(0, 150);
       }
     });
+  }
+
+  public async initFromCloud(): Promise<{ hydrated: boolean; mode: string; error?: string }> {
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+    this.initPromise = (async () => {
+      try {
+        const res = await hydrateDatabaseFromFirestore(this.data);
+        if (res.hydrated) {
+          this.data = res.data;
+          this.cloudRevision = res.revision || 1;
+          this.lastRevisionCheckMs = Date.now();
+          this.saveData(this.data);
+          this.writeFirestoreCollectionSnapshots(this.data);
+          console.log(
+            `[StorageEngine] Cloud vault ${res.seeded ? 'seeded' : 'hydrated'} (${res.mode}, rev=${this.cloudRevision}, users=${this.data.users.length}, comics=${this.data.comics.length}).`
+          );
+        } else if (res.error && res.mode !== 'public_api_key') {
+          console.warn(`[StorageEngine] Cloud hydration warning (${res.mode}):`, res.error);
+        }
+        return { hydrated: res.hydrated, mode: res.mode, error: res.error };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn('[StorageEngine] Cloud hydration skipped:', message);
+        return { hydrated: false, mode: 'public_api_key', error: message };
+      }
+    })();
+    return this.initPromise;
+  }
+
+  public async ensureFreshFromCloud(force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.lastRevisionCheckMs < 4000) {
+      return;
+    }
+    if (this.freshPromise) {
+      return this.freshPromise;
+    }
+    this.freshPromise = (async () => {
+      try {
+        this.lastRevisionCheckMs = Date.now();
+        const revCheck = await fetchCloudSyncRevision();
+        if (!revCheck.ok || !revCheck.exists) return;
+        if (revCheck.revision > this.cloudRevision) {
+          const res = await hydrateDatabaseFromFirestore(this.data);
+          if (res.hydrated) {
+            this.data = res.data;
+            this.cloudRevision = res.revision;
+            this.saveData(this.data);
+            console.log(
+              `[StorageEngine] Synced newer cloud revision rev=${this.cloudRevision} (users=${this.data.users.length}, comics=${this.data.comics.length}).`
+            );
+          }
+        }
+      } catch {
+        // Ignore transient revision check errors
+      } finally {
+        this.freshPromise = null;
+      }
+    })();
+    return this.freshPromise;
+  }
+
+  public persistChanges(opts: {
+    users?: User[];
+    comics?: Comic[];
+    deletedComicIds?: string[];
+    deletedUserIds?: string[];
+    collections?: VaultCollectionKey[];
+    fullVaultSync?: boolean;
+    userFirebaseIdToken?: string;
+  }): Promise<{ persisted: boolean; mode: string; written: number; revision: number; error?: string }> {
+    const run = async () => {
+      const nextRevision = Math.max(Date.now(), this.cloudRevision + 1);
+      const res = await persistSnapshotChangesToFirestore({
+        snapshot: this.data,
+        users: opts.users,
+        comics: opts.comics,
+        deletedComicIds: opts.deletedComicIds,
+        deletedUserIds: opts.deletedUserIds,
+        collections: opts.collections,
+        fullVaultSync: opts.fullVaultSync,
+        revision: nextRevision,
+        userFirebaseIdToken: opts.userFirebaseIdToken,
+      });
+      if (res.persisted) {
+        this.cloudRevision = res.revision;
+        this.lastRevisionCheckMs = Date.now();
+      }
+      return res;
+    };
+
+    const next = this.persistQueue.then(run, run);
+    this.persistQueue = next.catch(() => undefined);
+    return next;
   }
 }
 

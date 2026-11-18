@@ -28,7 +28,6 @@ import {
   PaymentTransaction,
   GstBusinessSettings,
   CreditNoteRecord,
-  DeleteRequest,
 } from './src/types/comic.ts';
 import {
   securityHeadersMiddleware,
@@ -69,29 +68,18 @@ import {
 import {
   extractFirebaseIdToken,
   mirrorWritesInBackground,
-  deleteFirestoreDoc,
-  buildUserWriteItems,
-  buildComicAndEpisodeWriteItems,
-  buildEpisodeWriteItem,
-  buildPurchaseWriteItem,
-  buildCommentWriteItem,
-  buildRatingWriteItem,
-  buildVoteWriteItem,
   buildNotificationWriteItem,
-  buildAuthorApplicationWriteItem,
-  buildDeleteRequestWriteItem,
-  buildReportWriteItem,
-  buildGstSettingsWriteItem,
-  buildPlatformSettingsWriteItem,
-  buildAdRequestWriteItem,
   syncDatabaseSnapshotToFirestore,
   getFirestoreLiveStatus,
-  sanitizeFirestoreId,
 } from './src/server/firestoreAdmin.ts';
 
 dotenv.config({ override: true });
 
 async function startServer() {
+  await db.initFromCloud().catch((err) => {
+    console.warn('[Aathirai_Comic] Cloud initialization warning:', err instanceof Error ? err.message : err);
+  });
+
   const app = express();
   const port = process.env.PORT || 3000;
 
@@ -279,6 +267,7 @@ async function startServer() {
         attempts: 0,
       };
     });
+    await db.persistChanges({ collections: ['otps'] });
 
     if (targetChannel === 'email') {
       const emailResult = await sendAdminOtpEmail(targetDestination, otp);
@@ -423,6 +412,7 @@ async function startServer() {
       });
     }
 
+    await db.ensureFreshFromCloud(true);
     const snapshot = db.getSnapshot();
     const activeOtp = snapshot.adminOtp;
 
@@ -483,6 +473,7 @@ async function startServer() {
       'admin_auth',
       check.adminUser.id
     );
+    await db.persistChanges({ collections: ['otps', 'activityLogs'] });
 
     return res.json({
       success: true,
@@ -715,6 +706,7 @@ async function startServer() {
     paymentId?: string;
     firebaseIdToken?: string;
   }) => {
+    await db.ensureFreshFromCloud();
     let subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
       userId: params.userId,
       email: params.email,
@@ -919,13 +911,11 @@ async function startServer() {
             'purchase',
             verifiedPay.paymentId
           );
-          const writes = [
-            ...(syncedUser ? buildUserWriteItems(syncedUser) : []),
-            ...(syncedPurchase ? [buildPurchaseWriteItem(syncedPurchase)] : []),
-          ];
-          if (writes.length > 0) {
-            mirrorWritesInBackground('razorpay_api_verify', writes, params.firebaseIdToken);
-          }
+          await db.persistChanges({
+            users: syncedUser ? [syncedUser] : [],
+            collections: ['purchases', 'paymentTransactions', 'settings', 'activityLogs'],
+            userFirebaseIdToken: params.firebaseIdToken,
+          });
         }
 
         subStatus = getReaderSubscriptionStatus(db.getSnapshot(), {
@@ -1179,6 +1169,7 @@ async function startServer() {
       return res.status(400).json({ error: 'Please enter a valid Gmail address.' });
     }
 
+    await db.ensureFreshFromCloud(true);
     const snapshot = db.getSnapshot();
     const existing = snapshot.users.find(
       (u: User) => u.email && u.email.toLowerCase() === cleanEmail
@@ -1201,6 +1192,7 @@ async function startServer() {
     db.mutate(d => {
       d.otps[otpKey] = createOtpEntry(otp);
     });
+    await db.persistChanges({ collections: ['otps'] });
 
     const emailDelivery = await sendEmailVerificationOtpEmail({
       to: cleanEmail,
@@ -1243,6 +1235,7 @@ async function startServer() {
       return res.status(400).json({ error: 'Please enter a valid Gmail address.' });
     }
 
+    await db.ensureFreshFromCloud(true);
     const otpKey = `reg_email:${cleanEmail}`;
     const snapshot = db.getSnapshot();
     const otpCheck = verifyOtpAgainstKeys(snapshot.otps, [otpKey], otp);
@@ -1258,6 +1251,7 @@ async function startServer() {
     db.mutate(d => {
       delete d.otps[otpKey];
     });
+    await db.persistChanges({ collections: ['otps'] });
 
     const emailVerificationToken = createVerificationProofToken('reg_email', cleanEmail);
     return res.json({
@@ -1314,6 +1308,7 @@ async function startServer() {
     db.mutate(d => {
       d.otps[otpKey] = createOtpEntry(otp);
     });
+    await db.persistChanges({ collections: ['otps'] });
 
     const smsDelivery = await sendOtpSms({
       phone: formattedPhone,
@@ -1367,6 +1362,7 @@ async function startServer() {
     }
 
     if (!firebasePhoneVerified) {
+      await db.ensureFreshFromCloud(true);
       const otpKey = `reg_mobile:${phoneKey}`;
       const snapshot = db.getSnapshot();
       const otpCheck = verifyOtpAgainstKeys(snapshot.otps, [otpKey], otp);
@@ -1380,6 +1376,7 @@ async function startServer() {
       db.mutate(d => {
         delete d.otps[otpKey];
       });
+      await db.persistChanges({ collections: ['otps'] });
     }
 
     const mobileVerificationToken = createVerificationProofToken(
@@ -1469,6 +1466,7 @@ async function startServer() {
       });
     }
 
+    await db.ensureFreshFromCloud(true);
     const nowIso = new Date().toISOString();
     const hashedPass = hashPassword(String(password));
 
@@ -1610,15 +1608,16 @@ async function startServer() {
       name: finalUser.name,
     });
 
-    mirrorWritesInBackground(
-      'auth_register',
-      buildUserWriteItems(finalUser),
-      fbToken
-    );
+    const cloudPersist = await db.persistChanges({
+      users: [finalUser],
+      collections: ['notifications', 'activityLogs', 'otps'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
       storedInBackend: true,
+      cloudPersisted: cloudPersist.persisted,
       verified: true,
       emailDelivered: welcomeDelivery.sent,
       smtpConfigured: welcomeDelivery.configured,
@@ -1744,11 +1743,11 @@ async function startServer() {
       userWithPremium.id
     );
 
-    mirrorWritesInBackground(
-      'auth_verify_otp',
-      buildUserWriteItems(userWithPremium),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      users: [userWithPremium],
+      collections: ['activityLogs', 'otps'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
@@ -1774,12 +1773,13 @@ async function startServer() {
       });
     }
 
+    await db.ensureFreshFromCloud();
     let matchedUser: User | undefined;
     let matchedBy: 'gmail_and_mobile' | 'gmail' | 'mobile' = 'gmail';
     const now = Date.now();
 
-    db.mutate(d => {
-      matchedUser = d.users.find((u: User) => {
+    const findMatchingUser = (d: any) =>
+      d.users.find((u: User) => {
         const emailMatch = Boolean(rawEmailInput && u.email && u.email.toLowerCase() === rawEmailInput);
         const phoneMatch = Boolean(cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode));
         if (emailMatch && phoneMatch) {
@@ -1797,6 +1797,17 @@ async function startServer() {
         return false;
       });
 
+    db.mutate(d => {
+      matchedUser = findMatchingUser(d);
+    });
+    if (!matchedUser) {
+      await db.ensureFreshFromCloud(true);
+      db.mutate(d => {
+        matchedUser = findMatchingUser(d);
+      });
+    }
+
+    db.mutate(() => {
       if (matchedUser && matchedUser.lockedUntil) {
         const lockTime = new Date(matchedUser.lockedUntil).getTime();
         if (!Number.isFinite(lockTime) || lockTime <= now) {
@@ -1919,8 +1930,18 @@ async function startServer() {
       }
     }
 
+    await db.ensureFreshFromCloud();
     let user: User | undefined;
     let lockError: { status: number; body: any } | null = null;
+
+    const existingLocalUser = db.getSnapshot().users.find(u => {
+      if (cleanEmail && u.email.toLowerCase() === cleanEmail) return true;
+      if (cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode)) return true;
+      return false;
+    });
+    if (!existingLocalUser) {
+      await db.ensureFreshFromCloud(true);
+    }
 
     db.mutate(d => {
       user = d.users.find(u => {
@@ -2088,6 +2109,9 @@ async function startServer() {
     });
 
     if (lockError) {
+      if (user) {
+        await db.persistChanges({ users: [user] });
+      }
       return res.status((lockError as { status: number; body: any }).status).json((lockError as { status: number; body: any }).body);
     }
 
@@ -2122,15 +2146,16 @@ async function startServer() {
       enrichedUser.id
     );
 
-    mirrorWritesInBackground(
-      'auth_login',
-      buildUserWriteItems(enrichedUser),
-      fbToken
-    );
+    const cloudPersist = await db.persistChanges({
+      users: [enrichedUser],
+      collections: ['activityLogs'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
       storedInBackend: true,
+      cloudPersisted: cloudPersist.persisted,
       razorpayVerified: reconciled.razorpayVerified,
       verificationSource: reconciled.verificationSource,
       user: sanitizeUserForClient(enrichedUser, true),
@@ -2224,6 +2249,7 @@ async function startServer() {
       });
     }
 
+    await db.ensureFreshFromCloud(true);
     const snapshot = db.getSnapshot();
     const matchedUser = snapshot.users.find((u: User) => {
       if (resolvedChannel === 'email') {
@@ -2257,6 +2283,7 @@ async function startServer() {
       if (targetPhoneKey.length >= 6) d.otps[targetPhoneKey] = otpEntry;
       if (inputPhoneKey.length >= 6) d.otps[inputPhoneKey] = otpEntry;
     });
+    await db.persistChanges({ collections: ['otps'] });
 
     if (resolvedChannel === 'email') {
       const emailDelivery = await sendPasswordResetOtpEmail({
@@ -2349,6 +2376,7 @@ async function startServer() {
   });
 
   app.post('/api/auth/verify-reset-otp', authRateLimiter, async (req, res) => {
+    await db.ensureFreshFromCloud(true);
     const { email, phone, countryCode, otp } = req.body;
     const cleanEmail = (email || '').trim().toLowerCase();
     const phoneKey = getPhoneOtpKey(phone, countryCode);
@@ -2423,6 +2451,7 @@ async function startServer() {
       return res.status(400).json({ error: 'New Password and Confirm Password do not match.' });
     }
 
+    await db.ensureFreshFromCloud(true);
     const snapshot = db.getSnapshot();
     const preMatchedUser = snapshot.users.find((u: User) => {
       const emailMatch = Boolean(cleanEmail && u.email.toLowerCase() === cleanEmail);
@@ -2495,14 +2524,16 @@ async function startServer() {
       updatedUser.id
     );
 
-    mirrorWritesInBackground(
-      'auth_reset_password',
-      buildUserWriteItems(updatedUser),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const cloudPersist = await db.persistChanges({
+      users: [updatedUser],
+      collections: ['otps', 'activityLogs'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
+      cloudPersisted: cloudPersist.persisted,
       verifiedVia: firebasePhoneVerified ? 'firebase_sms' : 'backend_otp',
       email: updatedUser.email,
       phone: updatedUser.phone,
@@ -2607,14 +2638,15 @@ async function startServer() {
       premiumExpiresAt: subStatus.expiresAt,
       premiumPaymentDetail: subStatus.premiumPaymentDetail,
     };
-    mirrorWritesInBackground(
-      'auth_update_profile',
-      buildUserWriteItems(updatedWithSub),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    const cloudPersist = await db.persistChanges({
+      users: [updatedWithSub],
+      userFirebaseIdToken: fbToken,
+    });
     return res.json({
       success: true,
       storedInBackend: true,
+      cloudPersisted: cloudPersist.persisted,
       user: sanitizeUserForClient(updatedWithSub, false),
     });
   });
@@ -2756,7 +2788,8 @@ async function startServer() {
     });
   };
 
-  app.get('/api/comics', (req, res) => {
+  app.get('/api/comics', async (req, res) => {
+    await db.ensureFreshFromCloud();
     db.mutate(d => normalizeSubmittedComics(d));
     const { search, genre, access, sort, authorId, includePending, role } = req.query;
     let comics = [...db.getSnapshot().comics];
@@ -2827,9 +2860,15 @@ async function startServer() {
     return res.json({ comics });
   });
 
-  app.get('/api/comics/:id', (req, res) => {
+  app.get('/api/comics/:id', async (req, res) => {
+    await db.ensureFreshFromCloud();
     db.mutate(d => normalizeSubmittedComics(d));
-    const comic = db.getSnapshot().comics.find(c => c.id === req.params.id || c.slug === req.params.id);
+    let comic = db.getSnapshot().comics.find(c => c.id === req.params.id || c.slug === req.params.id);
+    if (!comic) {
+      await db.ensureFreshFromCloud(true);
+      db.mutate(d => normalizeSubmittedComics(d));
+      comic = db.getSnapshot().comics.find(c => c.id === req.params.id || c.slug === req.params.id);
+    }
     if (!comic) return res.status(404).json({ error: 'Comic not found' });
     return res.json({ comic });
   });
@@ -2960,11 +2999,18 @@ async function startServer() {
         (newEpisode as Episode).id
       );
 
+      const fbToken = extractFirebaseIdToken(req.headers.authorization);
       const gmailBroadcast = await broadcastComicReleaseNotification({
         comic: updatedComic as Comic,
         episode: newEpisode as Episode,
         releaseType: 'new_episode',
-        firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+        firebaseIdToken: fbToken,
+      });
+
+      const persistResult = await db.persistChanges({
+        comics: [updatedComic as Comic],
+        collections: ['notifications', 'activityLogs'],
+        userFirebaseIdToken: fbToken,
       });
 
       return res.json({
@@ -2973,6 +3019,8 @@ async function startServer() {
         chapter: targetChapter,
         episode: newEpisode,
         gmailBroadcast,
+        cloudPersisted: persistResult.persisted,
+        cloudPersistWarning: persistResult.persisted ? undefined : persistResult.error,
         message: `Episode "${(newEpisode as Episode).title}" published directly to "${(targetChapter as Chapter).title}" with ${(newEpisode as Episode).pages.length} pages!`,
       });
     }
@@ -3069,30 +3117,33 @@ async function startServer() {
       newComic.id
     );
 
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
     const gmailBroadcast = await broadcastComicReleaseNotification({
       comic: newComic,
       episode: newComic.chapters[0]?.episodes[0] || null,
       releaseType: 'new_comic',
-      firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      firebaseIdToken: fbToken,
     });
 
-    mirrorWritesInBackground(
-      'admin_publish_direct',
-      buildComicAndEpisodeWriteItems(newComic),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    const persistResult = await db.persistChanges({
+      comics: [newComic],
+      collections: ['notifications', 'activityLogs'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
       comic: newComic,
       episode: newComic.chapters[0].episodes[0],
       gmailBroadcast,
+      cloudPersisted: persistResult.persisted,
+      cloudPersistWarning: persistResult.persisted ? undefined : persistResult.error,
       message: `"${newComic.title}" published directly to the website with ${constructedPages.length} pages!`,
     });
   });
 
   // Author requests deletion (series, chapter, or episode) from admin
-  app.post('/api/author/comics/request-delete', (req, res) => {
+  app.post('/api/author/comics/request-delete', async (req, res) => {
     const { comicId, chapterId, episodeId, targetType = 'series', reason, authorId, authorName } = req.body;
     let targetComic: Comic | null = null;
     let createdRequest: any = null;
@@ -3171,16 +3222,17 @@ async function startServer() {
 
     if (!targetComic || !createdRequest) return res.status(404).json({ error: 'Comic series or target item not found' });
     db.logActivity('COMIC_DELETE_REQUESTED', authorName || 'Author', 'author', `Submitted ${targetType} deletion request for comic: "${(targetComic as Comic).title}"`, 'comic', comicId);
-    mirrorWritesInBackground(
-      'delete_request_submit',
-      [buildDeleteRequestWriteItem(createdRequest)],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      comics: [targetComic as Comic],
+      collections: ['deleteRequests', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, comic: targetComic, deleteRequest: createdRequest });
   });
 
   // GET all Delete Requests for Admin Portal & Author Status Sync
-  app.get('/api/admin/delete-requests', (req, res) => {
+  app.get('/api/admin/delete-requests', async (req, res) => {
+    await db.ensureFreshFromCloud();
     let requests: any[] = [];
 
     db.mutate(d => {
@@ -3287,10 +3339,12 @@ async function startServer() {
   });
 
   // Admin approves or rejects author's deletion request
-  app.post('/api/admin/delete-requests/:id/action', (req, res) => {
+  app.post('/api/admin/delete-requests/:id/action', async (req, res) => {
     const { action, adminNote } = req.body; // action: 'approve' | 'reject'
     let updatedRequest: any = null;
     let actionMessage = '';
+    let updatedComicForPersist: Comic | null = null;
+    let deletedSeriesId: string | null = null;
 
     db.mutate(d => {
       if (!d.deleteRequests) d.deleteRequests = [];
@@ -3310,6 +3364,7 @@ async function startServer() {
         if (action === 'approve') {
           if (delReq.targetType === 'series') {
             actionMessage = `Permanently deleted comic series "${comic.title}".`;
+            deletedSeriesId = comic.id;
             d.comics.splice(comicIdx, 1);
             // Also resolve any other pending requests for this comic series
             d.deleteRequests.forEach(r => {
@@ -3324,6 +3379,7 @@ async function startServer() {
               actionMessage = `Deleted Chapter "${comic.chapters[chIdx].title}" from series "${comic.title}".`;
               comic.chapters.splice(chIdx, 1);
               comic.updatedAt = new Date().toISOString();
+              updatedComicForPersist = comic;
             }
           } else if (delReq.targetType === 'episode' && delReq.episodeId) {
             let deleted = false;
@@ -3333,6 +3389,7 @@ async function startServer() {
                 actionMessage = `Deleted Episode "${ch.episodes[epIdx].title}" from "${ch.title}".`;
                 ch.episodes.splice(epIdx, 1);
                 comic.updatedAt = new Date().toISOString();
+                updatedComicForPersist = comic;
                 deleted = true;
                 break;
               }
@@ -3346,6 +3403,7 @@ async function startServer() {
           if (comic.moderationStatus === 'delete_requested') {
             comic.moderationStatus = 'approved';
           }
+          updatedComicForPersist = comic;
           actionMessage = `Rejected deletion request for "${comic.title}". Content remains intact.`;
         }
       }
@@ -3363,16 +3421,18 @@ async function startServer() {
     );
 
     const fbToken = extractFirebaseIdToken(req.headers.authorization);
-    mirrorWritesInBackground('delete_request_action', [buildDeleteRequestWriteItem(updatedRequest as DeleteRequest)], fbToken);
-    if (action === 'approve' && (updatedRequest as DeleteRequest).targetType === 'series') {
-      deleteFirestoreDoc(`comics/${sanitizeFirestoreId((updatedRequest as DeleteRequest).comicId)}`, fbToken);
-    }
+    await db.persistChanges({
+      comics: updatedComicForPersist ? [updatedComicForPersist] : [],
+      deletedComicIds: deletedSeriesId ? [deletedSeriesId] : [],
+      collections: ['deleteRequests', 'activityLogs'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({ success: true, deleteRequest: updatedRequest, message: actionMessage || 'Deletion request updated successfully.' });
   });
 
   // Author submits full comic for admin review & approval
-  app.post('/api/author/comics/submit-for-review', (req, res) => {
+  app.post('/api/author/comics/submit-for-review', async (req, res) => {
     const {
       comicId,
       title,
@@ -3554,15 +3614,16 @@ async function startServer() {
       (targetComic as Comic).id
     );
 
-    mirrorWritesInBackground(
-      'author_submit_comic',
-      buildComicAndEpisodeWriteItems(targetComic as Comic),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    const persistResult = await db.persistChanges({
+      comics: [targetComic as Comic],
+      collections: ['activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({
       success: true,
       comic: targetComic,
+      cloudPersisted: persistResult.persisted,
       message: 'Comic submitted successfully! The administrator will review and approve it for automatic publishing on the website.',
     });
   });
@@ -3571,6 +3632,7 @@ async function startServer() {
   app.post('/api/admin/comics/:id/moderate-submission', async (req, res) => {
     const { action, adminNote } = req.body; // action: 'approve' | 'reject' | 'pending'
     let moderatedComic: Comic | null = null;
+    let modifiedAuthorUser: User | null = null;
 
     db.mutate(d => {
       normalizeSubmittedComics(d);
@@ -3617,6 +3679,7 @@ async function startServer() {
           );
           if (authorUser) {
             authorUser.role = 'author';
+            modifiedAuthorUser = authorUser;
           }
         } else if (action === 'reject') {
           // Sync rejection note to author's application if applicable so it's visible across their Author pages
@@ -3653,21 +3716,23 @@ async function startServer() {
       req.params.id
     );
 
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
     let gmailBroadcast: any = null;
     if (action === 'approve') {
       gmailBroadcast = await broadcastComicReleaseNotification({
         comic: comicObj,
         episode: comicObj.chapters?.[0]?.episodes?.[0] || null,
         releaseType: 'new_comic',
-        firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+        firebaseIdToken: fbToken,
       });
     }
 
-    mirrorWritesInBackground(
-      'admin_moderate_comic',
-      buildComicAndEpisodeWriteItems(comicObj),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      comics: [comicObj],
+      users: modifiedAuthorUser ? [modifiedAuthorUser] : [],
+      collections: ['authorApplications', 'notifications', 'activityLogs'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
@@ -3681,7 +3746,7 @@ async function startServer() {
   });
 
   // Admin Paywall Toggle: Put any whole comic, chapter, or episode behind paywall (or make free)
-  app.post('/api/admin/paywall-toggle', (req, res) => {
+  app.post('/api/admin/paywall-toggle', async (req, res) => {
     const { comicId, chapterId, episodeId, isPremium, priceInr = 10 } = req.body;
     let targetComic: Comic | null = null;
     let changeSummary = '';
@@ -3756,11 +3821,11 @@ async function startServer() {
     if (!targetComic) return res.status(404).json({ error: 'Comic not found' });
 
     db.logActivity('PAYWALL_UPDATED', 'admin@aathirai.com', 'admin', `Admin updated paywall: ${changeSummary}`, 'paywall', comicId);
-    mirrorWritesInBackground(
-      'admin_paywall_toggle',
-      buildComicAndEpisodeWriteItems(targetComic as Comic),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      comics: [targetComic as Comic],
+      collections: ['notifications', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({
       success: true,
@@ -3882,13 +3947,13 @@ async function startServer() {
       firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
 
-    mirrorWritesInBackground(
-      'comic_create',
-      buildComicAndEpisodeWriteItems(newComic),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    const persistResult = await db.persistChanges({
+      comics: [newComic],
+      collections: ['notifications', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
-    return res.json({ success: true, comic: newComic, gmailBroadcast });
+    return res.json({ success: true, comic: newComic, gmailBroadcast, cloudPersisted: persistResult.persisted });
   });
 
   // Helper to ensure author only edits/deletes their own comics and cannot modify admin comics
@@ -3902,7 +3967,7 @@ async function startServer() {
     return true;
   }
 
-  app.put('/api/comics/:id', (req, res) => {
+  app.put('/api/comics/:id', async (req, res) => {
     const { authorId, authorName } = req.body;
     let updated: Comic | null = null;
     let isForbidden = false;
@@ -3928,15 +3993,14 @@ async function startServer() {
       return res.status(403).json({ error: 'Access Denied: You are only permitted to edit your own comic series.' });
     }
     if (!updated) return res.status(404).json({ error: 'Comic not found' });
-    mirrorWritesInBackground(
-      'comic_update',
-      buildComicAndEpisodeWriteItems(updated as Comic),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      comics: [updated as Comic],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, comic: updated });
   });
 
-  app.delete('/api/comics/:id', (req, res) => {
+  app.delete('/api/comics/:id', async (req, res) => {
     const { authorId, authorName } = req.query;
     let isForbidden = false;
     let deletedTitle = '';
@@ -3962,14 +4026,19 @@ async function startServer() {
     }
 
     db.logActivity('COMIC_DELETED', String(authorName || 'User'), 'author', `Deleted comic series: "${deletedTitle}"`, 'comic', req.params.id);
-    deleteFirestoreDoc(`comics/${sanitizeFirestoreId(req.params.id)}`, extractFirebaseIdToken(req.headers.authorization));
+    await db.persistChanges({
+      deletedComicIds: [req.params.id],
+      collections: ['activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, message: `"${deletedTitle}" was deleted successfully.` });
   });
 
   // Chapter & Episode Management with Strict Author Ownership Protection
-  app.post('/api/comics/:id/chapters', (req, res) => {
+  app.post('/api/comics/:id/chapters', async (req, res) => {
     const { title, synopsis, authorId, authorName } = req.body;
     let addedChapter: any = null;
+    let targetComic: Comic | null = null;
     let isForbidden = false;
 
     db.mutate(d => {
@@ -3990,20 +4059,26 @@ async function startServer() {
         };
         comic.chapters.push(addedChapter);
         comic.updatedAt = new Date().toISOString();
+        targetComic = comic;
       }
     });
 
     if (isForbidden) {
       return res.status(403).json({ error: 'Access Denied: Authors can only add chapters to their own comic books.' });
     }
-    if (!addedChapter) return res.status(404).json({ error: 'Comic not found' });
+    if (!addedChapter || !targetComic) return res.status(404).json({ error: 'Comic not found' });
+    await db.persistChanges({
+      comics: [targetComic],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, chapter: addedChapter });
   });
 
   // Edit Chapter
-  app.put('/api/comics/:comicId/chapters/:chapId', (req, res) => {
+  app.put('/api/comics/:comicId/chapters/:chapId', async (req, res) => {
     const { title, synopsis, authorId, authorName } = req.body;
     let updatedChapter: any = null;
+    let targetComic: Comic | null = null;
     let isForbidden = false;
 
     db.mutate(d => {
@@ -4019,20 +4094,26 @@ async function startServer() {
           if (synopsis !== undefined) ch.synopsis = synopsis;
           comic.updatedAt = new Date().toISOString();
           updatedChapter = ch;
+          targetComic = comic;
         }
       }
     });
 
     if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only edit your own chapters.' });
-    if (!updatedChapter) return res.status(404).json({ error: 'Chapter not found' });
+    if (!updatedChapter || !targetComic) return res.status(404).json({ error: 'Chapter not found' });
+    await db.persistChanges({
+      comics: [targetComic],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, chapter: updatedChapter });
   });
 
   // Delete Chapter
-  app.delete('/api/comics/:comicId/chapters/:chapId', (req, res) => {
+  app.delete('/api/comics/:comicId/chapters/:chapId', async (req, res) => {
     const { authorId, authorName } = req.query;
     let isForbidden = false;
     let deletedTitle = '';
+    let targetComic: Comic | null = null;
 
     db.mutate(d => {
       const comic = d.comics.find(c => c.id === req.params.comicId);
@@ -4046,12 +4127,17 @@ async function startServer() {
           deletedTitle = comic.chapters[idx].title;
           comic.chapters.splice(idx, 1);
           comic.updatedAt = new Date().toISOString();
+          targetComic = comic;
         }
       }
     });
 
     if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only delete your own chapters.' });
-    if (!deletedTitle) return res.status(404).json({ error: 'Chapter not found' });
+    if (!deletedTitle || !targetComic) return res.status(404).json({ error: 'Chapter not found' });
+    await db.persistChanges({
+      comics: [targetComic],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, message: `"${deletedTitle}" deleted successfully.` });
   });
 
@@ -4127,6 +4213,7 @@ async function startServer() {
     if (!addedEpisode) return res.status(404).json({ error: 'Chapter or comic not found' });
     db.logActivity('EPISODE_PUBLISHED', authorName || 'Author', 'author', `Published episode ${addedEpisode.title} with ${(addedEpisode as Episode).pages.length} pages.`, 'episode', addedEpisode.id);
 
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
     const parentComic = db.getSnapshot().comics.find(c => c.id === req.params.comicId);
     let gmailBroadcast: any = null;
     if (parentComic) {
@@ -4134,32 +4221,20 @@ async function startServer() {
         comic: parentComic,
         episode: addedEpisode as Episode,
         releaseType: 'new_episode',
-        firebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+        firebaseIdToken: fbToken,
       });
-      const parentChapter = parentComic.chapters.find(ch => ch.id === req.params.chapId);
-      if (parentChapter) {
-        mirrorWritesInBackground(
-          'episode_create',
-          [
-            buildEpisodeWriteItem({
-              episode: addedEpisode as Episode,
-              comicId: parentComic.id,
-              chapterId: parentChapter.id,
-              chapterNumber: parentChapter.chapterNumber,
-              chapterTitle: parentChapter.title,
-              authorId: parentComic.authorId,
-            }),
-          ],
-          extractFirebaseIdToken(req.headers.authorization)
-        );
-      }
+      await db.persistChanges({
+        comics: [parentComic],
+        collections: ['notifications', 'activityLogs'],
+        userFirebaseIdToken: fbToken,
+      });
     }
 
     return res.json({ success: true, episode: addedEpisode, comic: parentComic || null, gmailBroadcast });
   });
 
   // Edit Episode
-  app.put('/api/comics/:comicId/chapters/:chapId/episodes/:epId', (req, res) => {
+  app.put('/api/comics/:comicId/chapters/:chapId/episodes/:epId', async (req, res) => {
     const { title, synopsis, isPremium, priceInr, pages, coverImage, authorId, authorName } = req.body;
     let updatedEpisode: any = null;
     let isForbidden = false;
@@ -4201,31 +4276,21 @@ async function startServer() {
     if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only edit your own episodes.' });
     if (!updatedEpisode) return res.status(404).json({ error: 'Episode not found' });
     const comicRec = db.getSnapshot().comics.find(c => c.id === req.params.comicId);
-    const chapRec = comicRec?.chapters.find(ch => ch.id === req.params.chapId);
-    if (comicRec && chapRec) {
-      mirrorWritesInBackground(
-        'episode_update',
-        [
-          buildEpisodeWriteItem({
-            episode: updatedEpisode as Episode,
-            comicId: comicRec.id,
-            chapterId: chapRec.id,
-            chapterNumber: chapRec.chapterNumber,
-            chapterTitle: chapRec.title,
-            authorId: comicRec.authorId,
-          }),
-        ],
-        extractFirebaseIdToken(req.headers.authorization)
-      );
+    if (comicRec) {
+      await db.persistChanges({
+        comics: [comicRec],
+        userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      });
     }
     return res.json({ success: true, episode: updatedEpisode, comic: comicRec || null });
   });
 
   // Delete Episode
-  app.delete('/api/comics/:comicId/chapters/:chapId/episodes/:epId', (req, res) => {
+  app.delete('/api/comics/:comicId/chapters/:chapId/episodes/:epId', async (req, res) => {
     const { authorId, authorName } = req.query;
     let isForbidden = false;
     let deletedTitle = '';
+    let targetComic: Comic | null = null;
 
     db.mutate(d => {
       const comic = d.comics.find(c => c.id === req.params.comicId);
@@ -4241,17 +4306,18 @@ async function startServer() {
             deletedTitle = ch.episodes[idx].title;
             ch.episodes.splice(idx, 1);
             comic.updatedAt = new Date().toISOString();
+            targetComic = comic;
           }
         }
       }
     });
 
     if (isForbidden) return res.status(403).json({ error: 'Access Denied: You can only delete your own episodes.' });
-    if (!deletedTitle) return res.status(404).json({ error: 'Episode not found' });
-    deleteFirestoreDoc(
-      `comics/${sanitizeFirestoreId(req.params.comicId)}/episodes/${sanitizeFirestoreId(req.params.epId)}`,
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    if (!deletedTitle || !targetComic) return res.status(404).json({ error: 'Episode not found' });
+    await db.persistChanges({
+      comics: [targetComic],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, message: `"${deletedTitle}" deleted successfully.` });
   });
 
@@ -4259,24 +4325,37 @@ async function startServer() {
   // READER, COMMENTS, LIKES & RATINGS
   // -------------------------------------------------------------
 
-  app.get('/api/episodes/:id', (req, res) => {
+  app.get('/api/episodes/:id', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const { userId, email, phone } = req.query;
-    const snapshot = db.getSnapshot();
-    let foundEpisode: any = null;
-    let foundComic: any = null;
-    let foundChapter: any = null;
-
-    for (const c of snapshot.comics) {
-      for (const ch of c.chapters) {
-        const ep = ch.episodes.find(e => e.id === req.params.id);
-        if (ep) {
-          foundEpisode = ep;
-          foundComic = c;
-          foundChapter = ch;
-          break;
+    const findEpisodeInSnapshot = (snap: any) => {
+      let epFound: any = null;
+      let comicFound: any = null;
+      let chapFound: any = null;
+      for (const c of snap.comics) {
+        for (const ch of c.chapters) {
+          const ep = ch.episodes.find((e: any) => e.id === req.params.id);
+          if (ep) {
+            epFound = ep;
+            comicFound = c;
+            chapFound = ch;
+            break;
+          }
         }
+        if (epFound) break;
       }
-      if (foundEpisode) break;
+      return { epFound, comicFound, chapFound };
+    };
+
+    let snapshot = db.getSnapshot();
+    let { epFound: foundEpisode, comicFound: foundComic, chapFound: foundChapter } = findEpisodeInSnapshot(snapshot);
+    if (!foundEpisode) {
+      await db.ensureFreshFromCloud(true);
+      snapshot = db.getSnapshot();
+      const retried = findEpisodeInSnapshot(snapshot);
+      foundEpisode = retried.epFound;
+      foundComic = retried.comicFound;
+      foundChapter = retried.chapFound;
     }
 
     if (!foundEpisode) return res.status(404).json({ error: 'Episode not found' });
@@ -4545,7 +4624,7 @@ async function startServer() {
   });
 
   // Comments: Post, Edit, Like, Delete & Report
-  app.post('/api/episodes/:id/comments', (req, res) => {
+  app.post('/api/episodes/:id/comments', async (req, res) => {
     const { userId, userName, userAvatar, userRole = 'reader', content, parentId } = req.body;
     if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Comment content cannot be empty' });
@@ -4580,20 +4659,15 @@ async function startServer() {
     });
 
     db.logActivity('COMMENT_POSTED', userName || 'Reader', userRole, `Commented on episode ${req.params.id}`, 'comment', newComment.id);
-
-    const parentComicForComment = db.getSnapshot().comics.find(c =>
-      c.chapters.some(ch => ch.episodes.some(ep => ep.id === req.params.id))
-    );
-    mirrorWritesInBackground(
-      'comment_create',
-      [buildCommentWriteItem(newComment as any, parentComicForComment?.id || 'comic_virasen')],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      collections: ['comments', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({ success: true, comment: newComment });
   });
 
-  app.put('/api/episodes/:id/comments/:commentId', (req, res) => {
+  app.put('/api/episodes/:id/comments/:commentId', async (req, res) => {
     const { userId, content } = req.body;
     if (!content || !content.trim()) {
       return res.status(400).json({ error: 'Updated comment cannot be empty' });
@@ -4621,10 +4695,14 @@ async function startServer() {
       }
     });
     if (!updatedComment) return res.status(404).json({ error: 'Comment not found or unauthorized' });
+    await db.persistChanges({
+      collections: ['comments'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, comment: updatedComment });
   });
 
-  app.post('/api/episodes/:id/comments/:commentId/like', (req, res) => {
+  app.post('/api/episodes/:id/comments/:commentId/like', async (req, res) => {
     const { userId = 'usr_guest' } = req.body;
     let targetComment: any = null;
     db.mutate(d => {
@@ -4653,10 +4731,14 @@ async function startServer() {
       }
     });
     if (!targetComment) return res.status(404).json({ error: 'Comment not found' });
+    await db.persistChanges({
+      collections: ['comments'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, likesCount: targetComment.likesCount, likedBy: targetComment.likedBy });
   });
 
-  app.delete('/api/episodes/:id/comments/:commentId', (req, res) => {
+  app.delete('/api/episodes/:id/comments/:commentId', async (req, res) => {
     db.mutate(d => {
       d.comments = d.comments.filter(c => {
         if (c.id === req.params.commentId) {
@@ -4668,11 +4750,15 @@ async function startServer() {
         return true;
       });
     });
+    await db.persistChanges({
+      collections: ['comments'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, message: 'Comment removed' });
   });
 
   // Content & Comment Reporting
-  app.post('/api/reports', (req, res) => {
+  app.post('/api/reports', async (req, res) => {
     const { reporterId, reporterName, targetType = 'comment', targetId, episodeId, comicId, reason } = req.body;
     if (!targetId || !reason) {
       return res.status(400).json({ error: 'Target ID and report reason are required' });
@@ -4698,11 +4784,10 @@ async function startServer() {
       }
     });
     db.logActivity('CONTENT_REPORTED', reporterName || 'Reader', 'reader', `Reported ${targetType} (${targetId}): ${reason}`, 'report', report.id);
-    mirrorWritesInBackground(
-      'report_create',
-      [buildReportWriteItem(report)],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      collections: ['reports', 'comments', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, report });
   });
 
@@ -4883,7 +4968,8 @@ async function startServer() {
   }
 
   // Reader Bookmarks, Favorites, Reading Progress & Notifications
-  app.get('/api/notifications', (req, res) => {
+  app.get('/api/notifications', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const { userId, email } = req.query;
     const cleanEmail = email ? String(email).trim().toLowerCase() : '';
     const cleanUserId = userId ? String(userId).trim() : '';
@@ -4935,7 +5021,7 @@ async function startServer() {
     return res.json({ notifications: deduplicated });
   });
 
-  app.post('/api/notifications/mark-read', (req, res) => {
+  app.post('/api/notifications/mark-read', async (req, res) => {
     const { notificationId, userId, email, markAll } = req.body;
     const cleanEmail = email ? String(email).trim().toLowerCase() : '';
     const cleanUserId = userId ? String(userId).trim() : '';
@@ -4963,10 +5049,15 @@ async function startServer() {
         }
       });
     });
+    await db.persistChanges({
+      collections: ['notifications'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true });
   });
 
   app.post('/api/reader/bookmarks/toggle', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
     if (!authCtx.user || authCtx.authMethod !== 'token') {
       return res.status(401).json({ error: 'Authentication required to update bookmarks.' });
@@ -4975,6 +5066,7 @@ async function startServer() {
     if (!comicId) return res.status(400).json({ error: 'comicId is required' });
     let bookmarks: string[] = [];
     let bookmarked = false;
+    let updatedUser: User | null = null;
     db.mutate(d => {
       const u = d.users.find(x => x.id === authCtx.user!.id);
       if (u) {
@@ -4988,12 +5080,20 @@ async function startServer() {
           bookmarked = true;
         }
         bookmarks = u.bookmarks;
+        updatedUser = u;
       }
     });
+    if (updatedUser) {
+      await db.persistChanges({
+        users: [updatedUser],
+        userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      });
+    }
     return res.json({ success: true, bookmarks, bookmarked });
   });
 
   app.post('/api/reader/favorites/toggle', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
     if (!authCtx.user || authCtx.authMethod !== 'token') {
       return res.status(401).json({ error: 'Authentication required to update favorites.' });
@@ -5002,6 +5102,7 @@ async function startServer() {
     if (!comicId) return res.status(400).json({ error: 'comicId is required' });
     let favorites: string[] = [];
     let favorited = false;
+    let updatedUser: User | null = null;
     db.mutate(d => {
       const u = d.users.find(x => x.id === authCtx.user!.id);
       if (u) {
@@ -5015,12 +5116,20 @@ async function startServer() {
           favorited = true;
         }
         favorites = u.favorites;
+        updatedUser = u;
       }
     });
+    if (updatedUser) {
+      await db.persistChanges({
+        users: [updatedUser],
+        userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      });
+    }
     return res.json({ success: true, favorites, favorited });
   });
 
   app.post('/api/reader/progress', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
     if (!authCtx.user || authCtx.authMethod !== 'token') {
       return res.status(401).json({ error: 'Authentication required to save reading progress.' });
@@ -5030,6 +5139,7 @@ async function startServer() {
       return res.status(400).json({ error: 'comicId and episodeId are required' });
     }
     let readingHistory: any[] = [];
+    let updatedUser: User | null = null;
     db.mutate(d => {
       const u = d.users.find(x => x.id === authCtx.user!.id);
       if (u) {
@@ -5049,19 +5159,27 @@ async function startServer() {
         });
         u.readingHistory = u.readingHistory.slice(0, 20);
         readingHistory = u.readingHistory;
+        updatedUser = u;
       }
     });
+    if (updatedUser) {
+      await db.persistChanges({
+        users: [updatedUser],
+        userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      });
+    }
     return res.json({ success: true, readingHistory });
   });
 
   // Like / Dislike Vote
-  app.post('/api/episodes/:id/vote', (req, res) => {
+  app.post('/api/episodes/:id/vote', async (req, res) => {
     const { userId, type } = req.body; // type: 'like' | 'dislike'
     if (!userId || !['like', 'dislike'].includes(type)) {
       return res.status(400).json({ error: 'Valid userId and type are required' });
     }
 
     let result = { likesCount: 0, dislikesCount: 0, userVote: type };
+    let targetComicForPersist: Comic | null = null;
 
     db.mutate(d => {
       // Find episode
@@ -5071,6 +5189,7 @@ async function startServer() {
           const ep = ch.episodes.find(e => e.id === req.params.id);
           if (ep) {
             targetEp = ep;
+            targetComicForPersist = c;
             break;
           }
         }
@@ -5114,22 +5233,17 @@ async function startServer() {
       result.dislikesCount = targetEp.dislikesCount;
     });
 
-    const latestSnapForVote = db.getSnapshot();
-    const voteRec = latestSnapForVote.votes.find(v => v.episodeId === req.params.id && v.userId === userId);
-    const voteComic = latestSnapForVote.comics.find(c => c.chapters.some(ch => ch.episodes.some(ep => ep.id === req.params.id)));
-    if (voteRec && voteComic) {
-      mirrorWritesInBackground(
-        'vote_upsert',
-        [buildVoteWriteItem(voteRec, voteComic.id)],
-        extractFirebaseIdToken(req.headers.authorization)
-      );
-    }
+    await db.persistChanges({
+      comics: targetComicForPersist ? [targetComicForPersist] : [],
+      collections: ['votes'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({ success: true, ...result });
   });
 
   // Star Rating (1 to 5 Stars)
-  app.post('/api/episodes/:id/rate', (req, res) => {
+  app.post('/api/episodes/:id/rate', async (req, res) => {
     const { userId, stars } = req.body;
     const numStars = Number(stars);
     if (!userId || isNaN(numStars) || numStars < 1 || numStars > 5) {
@@ -5137,6 +5251,7 @@ async function startServer() {
     }
 
     let result = { averageRating: 5.0, totalRatings: 0, userRating: numStars };
+    let targetComicForPersist: Comic | null = null;
 
     db.mutate(d => {
       // Find existing rating
@@ -5172,22 +5287,18 @@ async function startServer() {
             ep.averageRating = avg;
             result.averageRating = avg;
             result.totalRatings = total;
+            targetComicForPersist = c;
             break;
           }
         }
       }
     });
 
-    const latestSnapForRating = db.getSnapshot();
-    const ratingRec = latestSnapForRating.ratings.find(r => r.episodeId === req.params.id && r.userId === userId);
-    const ratingComic = latestSnapForRating.comics.find(c => c.chapters.some(ch => ch.episodes.some(ep => ep.id === req.params.id)));
-    if (ratingRec && ratingComic) {
-      mirrorWritesInBackground(
-        'rating_upsert',
-        [buildRatingWriteItem(ratingRec, ratingComic.id)],
-        extractFirebaseIdToken(req.headers.authorization)
-      );
-    }
+    await db.persistChanges({
+      comics: targetComicForPersist ? [targetComicForPersist] : [],
+      collections: ['ratings'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({ success: true, ...result });
   });
@@ -5196,7 +5307,7 @@ async function startServer() {
   // AUTHOR APPLICATIONS & AUTHOR DASHBOARD
   // -------------------------------------------------------------
 
-  app.post('/api/author/apply', (req, res) => {
+  app.post('/api/author/apply', async (req, res) => {
     const {
       userId,
       authorName,
@@ -5307,13 +5418,11 @@ async function startServer() {
       savedApp!.id
     );
 
-    if (savedApp && updatedUser) {
-      mirrorWritesInBackground(
-        'author_apply',
-        [...buildUserWriteItems(updatedUser), buildAuthorApplicationWriteItem(savedApp)],
-        extractFirebaseIdToken(req.headers.authorization)
-      );
-    }
+    await db.persistChanges({
+      users: updatedUser ? [updatedUser] : [],
+      collections: ['authorApplications', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({
       success: true,
@@ -5324,7 +5433,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/author/update-photo', (req, res) => {
+  app.post('/api/author/update-photo', async (req, res) => {
     const { userId, email, authorName, authorAvatar } = req.body;
     if (!authorAvatar) {
       return res.status(400).json({ error: 'Please select an author photo to upload.' });
@@ -5377,6 +5486,12 @@ async function startServer() {
       }
     });
 
+    await db.persistChanges({
+      users: updatedUser ? [updatedUser] : [],
+      collections: ['authorApplications'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
+
     return res.json({
       success: true,
       user: updatedUser,
@@ -5385,7 +5500,8 @@ async function startServer() {
     });
   });
 
-  app.get('/api/authors', (_req, res) => {
+  app.get('/api/authors', async (_req, res) => {
+    await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
 
     const formatReads = (views: number) => {
@@ -5469,7 +5585,8 @@ async function startServer() {
     return res.json({ authors: combined });
   });
 
-  app.get('/api/author/me', (req, res) => {
+  app.get('/api/author/me', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const { userId, email } = req.query;
     const snapshot = db.getSnapshot();
     const app = snapshot.authorApplications.find(a =>
@@ -5478,7 +5595,8 @@ async function startServer() {
     return res.json({ application: app || null });
   });
 
-  app.get('/api/author/analytics', (req, res) => {
+  app.get('/api/author/analytics', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const { authorId } = req.query;
     const snapshot = db.getSnapshot();
     const authorComics = snapshot.comics.filter(c => c.authorId === authorId);
@@ -6043,11 +6161,11 @@ async function startServer() {
     );
 
     const fbToken = extractFirebaseIdToken(req.headers.authorization);
-    const paymentWrites = [buildPurchaseWriteItem(newPurchase)];
-    if (updatedReader) {
-      paymentWrites.unshift(...buildUserWriteItems(updatedReader));
-    }
-    mirrorWritesInBackground('payment_verify', paymentWrites, fbToken);
+    await db.persistChanges({
+      users: updatedReader ? [updatedReader] : [],
+      collections: ['purchases', 'paymentTransactions', 'notifications', 'activityLogs', 'settings'],
+      userFirebaseIdToken: fbToken,
+    });
 
     return res.json({
       success: true,
@@ -6067,7 +6185,8 @@ async function startServer() {
   app.post('/api/payments/razorpay/verify-payment', paymentRateLimiter, handleVerifyPayment);
 
   // Customer Purchases
-  app.get('/api/payments/my-purchases', (req, res) => {
+  app.get('/api/payments/my-purchases', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const { userId, email, phone } = req.query;
     const snapshot = db.getSnapshot();
     const cleanEmail = email ? String(email).trim().toLowerCase() : '';
@@ -6087,7 +6206,7 @@ async function startServer() {
   });
 
   // Razorpay Webhook Endpoint with Cryptographic Signature Verification
-  const handleRazorpayWebhook = (req: express.Request, res: express.Response) => {
+  const handleRazorpayWebhook = async (req: express.Request, res: express.Response) => {
     const signature = String(req.headers['x-razorpay-signature'] || '');
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET || '';
     const rawBody = (req as any).rawBody || JSON.stringify(req.body || {});
@@ -6235,14 +6354,10 @@ async function startServer() {
           );
           const latestSnapWebhook = db.getSnapshot();
           const syncedUser = latestSnapWebhook.users.find(u => u.id === activatedUserId);
-          const syncedPurchase = latestSnapWebhook.purchases[0];
-          const webhookWrites = [
-            ...(syncedUser ? buildUserWriteItems(syncedUser) : []),
-            ...(syncedPurchase ? [buildPurchaseWriteItem(syncedPurchase)] : []),
-          ];
-          if (webhookWrites.length > 0) {
-            mirrorWritesInBackground('razorpay_webhook', webhookWrites);
-          }
+          await db.persistChanges({
+            users: syncedUser ? [syncedUser] : [],
+            collections: ['purchases', 'paymentTransactions', 'notifications', 'activityLogs', 'settings'],
+          });
         }
       }
     }
@@ -6257,7 +6372,8 @@ async function startServer() {
   // ADMINISTRATOR DASHBOARD ROUTES
   // -------------------------------------------------------------
 
-  app.get('/api/admin/readers', (req, res) => {
+  app.get('/api/admin/readers', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
     const readers = snapshot.users.map(u => {
       const subStatus = getReaderSubscriptionStatus(snapshot, {
@@ -6297,7 +6413,7 @@ async function startServer() {
   });
 
   // Admin Database Management: Update or Grant/Revoke Reader Account, UPI & Paid Premium
-  app.put('/api/admin/readers/:id', (req, res) => {
+  app.put('/api/admin/readers/:id', async (req, res) => {
     const { name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId, role, isSuspended, suspendedReason } = req.body;
     let updatedUser: User | null = null;
 
@@ -6325,15 +6441,15 @@ async function startServer() {
 
     if (!updatedUser) return res.status(404).json({ error: 'Reader not found' });
     db.logActivity('ADMIN_UPDATED_READER', 'admin@aathirai.com', 'admin', `Updated reader ${(updatedUser as User).email} (Plan: ${paidPlan || 'unchanged'}, UPI: ${upiId || 'N/A'})`, 'user', req.params.id);
-    mirrorWritesInBackground(
-      'admin_update_reader',
-      buildUserWriteItems(updatedUser as User),
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      users: [updatedUser as User],
+      collections: ['purchases', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, reader: sanitizeUserForClient(updatedUser as User, false) });
   });
 
-  app.post('/api/admin/readers/:id/suspend', (req, res) => {
+  app.post('/api/admin/readers/:id/suspend', async (req, res) => {
     const { isSuspended, reason } = req.body;
     let updatedUser: User | null = null;
     db.mutate(d => {
@@ -6354,10 +6470,15 @@ async function startServer() {
       'user',
       req.params.id
     );
+    await db.persistChanges({
+      users: [targetUser],
+      collections: ['activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, reader: sanitizeUserForClient(targetUser, false) });
   });
 
-  app.delete('/api/admin/readers/:id', (req, res) => {
+  app.delete('/api/admin/readers/:id', async (req, res) => {
     let removedEmail = '';
     db.mutate(d => {
       const idx = d.users.findIndex((x: User) => x.id === req.params.id);
@@ -6368,7 +6489,11 @@ async function startServer() {
     });
     if (!removedEmail) return res.status(404).json({ error: 'Reader not found' });
     db.logActivity('ADMIN_DELETED_READER', 'admin@aathirai.com', 'admin', `Deleted reader account ${removedEmail}`, 'user', req.params.id);
-    deleteFirestoreDoc(`users/${sanitizeFirestoreId(req.params.id)}`, extractFirebaseIdToken(req.headers.authorization));
+    await db.persistChanges({
+      deletedUserIds: [req.params.id],
+      collections: ['activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, message: `Deleted reader account ${removedEmail}` });
   });
 
@@ -6427,7 +6552,8 @@ async function startServer() {
     });
   };
 
-  app.get('/api/admin/stats', (req, res) => {
+  app.get('/api/admin/stats', async (req, res) => {
+    await db.ensureFreshFromCloud();
     db.mutate(d => normalizeAuthorApplications(d));
     const snapshot = db.getSnapshot();
     const totalRevenueInr = snapshot.purchases
@@ -6464,7 +6590,8 @@ async function startServer() {
     });
   });
 
-  app.get('/api/admin/authors', (req, res) => {
+  app.get('/api/admin/authors', async (req, res) => {
+    await db.ensureFreshFromCloud();
     db.mutate(d => normalizeAuthorApplications(d));
     const snapshot = db.getSnapshot();
     return res.json({
@@ -6473,7 +6600,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/admin/author-applications/:id/action', (req, res) => {
+  app.post('/api/admin/author-applications/:id/action', async (req, res) => {
     const { action, adminNote } = req.body; // action: 'approve' | 'reject' | 'pending'
     if (!['approve', 'reject', 'pending'].includes(action)) {
       return res.status(400).json({ error: 'Valid action required (approve/reject/pending)' });
@@ -6559,14 +6686,11 @@ async function startServer() {
     );
 
     if (targetApp) {
-      mirrorWritesInBackground(
-        'admin_author_app_action',
-        [
-          ...(promoObj ? buildUserWriteItems(promoObj) : []),
-          buildAuthorApplicationWriteItem(targetApp as AuthorApplication),
-        ],
-        extractFirebaseIdToken(req.headers.authorization)
-      );
+      await db.persistChanges({
+        users: promoObj ? [promoObj] : [],
+        collections: ['authorApplications', 'notifications', 'activityLogs'],
+        userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      });
     }
 
     return res.json({
@@ -6576,7 +6700,8 @@ async function startServer() {
     });
   });
 
-  app.get('/api/admin/transactions', (req, res) => {
+  app.get('/api/admin/transactions', async (req, res) => {
+    await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
     const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
     const enrichedPurchases = snapshot.purchases.map((p, idx) =>
@@ -6654,7 +6779,7 @@ async function startServer() {
     return creditNote;
   };
 
-  app.post('/api/admin/transactions/:id/refund', (req, res) => {
+  app.post('/api/admin/transactions/:id/refund', async (req, res) => {
     const reason = String(req.body?.reason || 'Refunded by Administrator');
     let refunded: Purchase | null = null;
     let createdCreditNote: CreditNoteRecord | null = null;
@@ -6686,11 +6811,10 @@ async function startServer() {
       'purchase',
       req.params.id
     );
-    mirrorWritesInBackground(
-      'admin_refund_purchase',
-      [buildPurchaseWriteItem(refunded as Purchase)],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      collections: ['purchases', 'paymentTransactions', 'settings', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({
       success: true,
       message: `Transaction refunded and GST Credit Note ${createdCreditNote ? (createdCreditNote as CreditNoteRecord).creditNoteNumber : ''} issued.`,
@@ -6703,7 +6827,8 @@ async function startServer() {
   // INDIAN GST & BILLING ADMIN & EXPORT ROUTES
   // -------------------------------------------------------------
 
-  app.get('/api/admin/gst/settings', (_req, res) => {
+  app.get('/api/admin/gst/settings', async (_req, res) => {
+    await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
     const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
     const creditNotes = snapshot.creditNotes || [];
@@ -6896,11 +7021,10 @@ async function startServer() {
     );
 
     if (updatedSettings) {
-      mirrorWritesInBackground(
-        'admin_gst_settings',
-        [buildGstSettingsWriteItem(updatedSettings)],
-        extractFirebaseIdToken(req.headers.authorization)
-      );
+      await db.persistChanges({
+        collections: ['settings', 'activityLogs'],
+        userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+      });
     }
 
     return res.json({
@@ -6954,6 +7078,11 @@ async function startServer() {
       (createdNote as CreditNoteRecord).id
     );
 
+    await db.persistChanges({
+      collections: ['purchases', 'settings', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
+
     return res.json({
       success: true,
       creditNote: createdNote,
@@ -7003,11 +7132,12 @@ async function startServer() {
     return res.end(Buffer.from(pdfBytes));
   });
 
-  app.get('/api/admin/reports', (req, res) => {
+  app.get('/api/admin/reports', async (req, res) => {
+    await db.ensureFreshFromCloud();
     return res.json({ reports: db.getSnapshot().reports || [] });
   });
 
-  app.post('/api/admin/reports/:id/action', (req, res) => {
+  app.post('/api/admin/reports/:id/action', async (req, res) => {
     const { status = 'resolved' } = req.body;
     db.mutate(d => {
       const r = (d.reports || []).find(rep => rep.id === req.params.id);
@@ -7016,6 +7146,10 @@ async function startServer() {
         r.resolvedAt = new Date().toISOString();
       }
     });
+    await db.persistChanges({
+      collections: ['reports'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true });
   });
 
@@ -7023,7 +7157,7 @@ async function startServer() {
   // COMPANY AD PLACEMENT & IN-COMIC CHARACTER PROMOTION REQUESTS
   // -------------------------------------------------------------
 
-  app.post('/api/ads/request', (req, res) => {
+  app.post('/api/ads/request', async (req, res) => {
     const {
       companyName,
       contactName,
@@ -7100,11 +7234,10 @@ async function startServer() {
       newAdRequest.id
     );
 
-    mirrorWritesInBackground(
-      'ad_request_create',
-      [buildAdRequestWriteItem(newAdRequest)],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      collections: ['adRequests', 'notifications', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({
       success: true,
@@ -7114,14 +7247,15 @@ async function startServer() {
     });
   });
 
-  app.get('/api/admin/ad-requests', (_req, res) => {
+  app.get('/api/admin/ad-requests', async (_req, res) => {
+    await db.ensureFreshFromCloud();
     const adRequests = [...(db.getSnapshot().adRequests || [])].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
     return res.json({ adRequests });
   });
 
-  app.put('/api/admin/ad-requests/:id', (req, res) => {
+  app.put('/api/admin/ad-requests/:id', async (req, res) => {
     const { status, adminNote } = req.body || {};
     const allowedStatuses = new Set(['pending', 'contacted', 'approved', 'rejected']);
     let updatedReq: any = null;
@@ -7154,11 +7288,10 @@ async function startServer() {
       updatedReq.id
     );
 
-    mirrorWritesInBackground(
-      'ad_request_update',
-      [buildAdRequestWriteItem(updatedReq)],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
+    await db.persistChanges({
+      collections: ['adRequests', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({ success: true, adRequest: updatedReq });
   });
@@ -7209,27 +7342,34 @@ async function startServer() {
     });
   });
 
-  app.get('/api/admin/ratings', (req, res) => {
+  app.get('/api/admin/ratings', async (req, res) => {
+    await db.ensureFreshFromCloud();
     return res.json({ ratings: db.getSnapshot().ratings });
   });
 
-  app.delete('/api/admin/ratings/:id', (req, res) => {
+  app.delete('/api/admin/ratings/:id', async (req, res) => {
     db.mutate(d => {
       d.ratings = d.ratings.filter(r => r.id !== req.params.id);
     });
     db.logActivity('RATING_REMOVED_AUDIT', 'admin@aathirai.com', 'admin', `Admin removed rating ID: ${req.params.id}`, 'rating', req.params.id);
+    await db.persistChanges({
+      collections: ['ratings', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, message: 'Rating removed by administrator' });
   });
 
-  app.get('/api/admin/comments', (req, res) => {
+  app.get('/api/admin/comments', async (req, res) => {
+    await db.ensureFreshFromCloud();
     return res.json({ comments: db.getSnapshot().comments });
   });
 
-  app.get('/api/admin/copyright', (req, res) => {
+  app.get('/api/admin/copyright', async (req, res) => {
+    await db.ensureFreshFromCloud();
     return res.json({ copyrightDocs: db.getSnapshot().copyrightDocs });
   });
 
-  app.post('/api/admin/copyright', (req, res) => {
+  app.post('/api/admin/copyright', async (req, res) => {
     const { title, documentNumber, registeredEntity, summary, fullText, status = 'published' } = req.body;
     const newDoc = {
       id: 'cpy_' + Date.now(),
@@ -7248,36 +7388,45 @@ async function startServer() {
     });
 
     db.logActivity('COPYRIGHT_DOC_CREATED', 'admin@aathirai.com', 'admin', `Created copyright document: ${newDoc.title}`, 'copyright', newDoc.id);
+    await db.persistChanges({
+      collections: ['copyrightDocs', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
 
     return res.json({ success: true, doc: newDoc });
   });
 
-  app.delete('/api/admin/copyright/:id', (req, res) => {
+  app.delete('/api/admin/copyright/:id', async (req, res) => {
     db.mutate(d => {
       d.copyrightDocs = d.copyrightDocs.filter(c => c.id !== req.params.id);
+    });
+    await db.persistChanges({
+      collections: ['copyrightDocs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
     return res.json({ success: true });
   });
 
-  app.get('/api/admin/settings', (req, res) => {
+  app.get('/api/admin/settings', async (req, res) => {
+    await db.ensureFreshFromCloud();
     return res.json({ settings: db.getSnapshot().settings });
   });
 
-  app.put('/api/admin/settings', (req, res) => {
+  app.put('/api/admin/settings', async (req, res) => {
     db.mutate(d => {
       d.settings = { ...d.settings, ...req.body };
     });
     const updatedSettings = db.getSnapshot().settings;
-    mirrorWritesInBackground(
-      'admin_platform_settings',
-      [buildPlatformSettingsWriteItem(updatedSettings)],
-      extractFirebaseIdToken(req.headers.authorization)
-    );
     db.logActivity('SETTINGS_UPDATED', 'admin@aathirai.com', 'admin', 'Updated website settings and pricing.', 'settings', 'global');
+    await db.persistChanges({
+      collections: ['settings', 'activityLogs'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
     return res.json({ success: true, settings: updatedSettings });
   });
 
-  app.get('/api/admin/logs', (req, res) => {
+  app.get('/api/admin/logs', async (req, res) => {
+    await db.ensureFreshFromCloud();
     return res.json({ logs: db.getSnapshot().activityLogs });
   });
 

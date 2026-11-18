@@ -1880,6 +1880,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         )}
                         <input
                           type={loginMethod === 'gmail' ? 'text' : 'tel'}
+                          name="username"
+                          autoComplete="username"
                           placeholder={
                             loginMethod === 'gmail'
                               ? 'Enter Gmail address or mobile number'
@@ -2117,6 +2119,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                               <input
                                 type={showLoginPassword ? 'text' : 'password'}
+                                name="password"
+                                autoComplete="current-password"
                                 required
                                 placeholder="Enter your account password"
                                 value={loginPassword}
@@ -2319,6 +2323,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
                           <input
                             type="email"
+                            name="username"
+                            autoComplete="username"
                             required
                             placeholder="Enter your Gmail address"
                             value={regEmail}
@@ -2525,6 +2531,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                           <input
                             type={showRegPassword ? 'text' : 'password'}
+                            name="new-password"
+                            autoComplete="new-password"
                             required
                             placeholder="Create password"
                             value={regPassword}
@@ -2549,6 +2557,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                           <input
                             type={showRegConfirmPassword ? 'text' : 'password'}
+                            name="confirm-password"
+                            autoComplete="new-password"
                             required
                             placeholder="Confirm password"
                             value={regConfirmPassword}
@@ -2822,6 +2832,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   {/* Step C: Enter New Password & Confirm Password -> Update Backend & Return to Login */}
                   {resetStep === 'set_new_password' && (
                     <form onSubmit={handleSaveNewPassword} className="space-y-4">
+                      <input
+                        type="text"
+                        name="username"
+                        autoComplete="username"
+                        value={resetEmail || resetPhone || resetCredential}
+                        readOnly
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        className="sr-only"
+                      />
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
@@ -2831,6 +2851,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                             <input
                               type={showNewPassword ? 'text' : 'password'}
+                              name="new-password"
+                              autoComplete="new-password"
                               required
                               placeholder="Enter new password"
                               value={newPassword}
@@ -2855,6 +2877,8 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
                             <input
                               type={showConfirmNewPassword ? 'text' : 'password'}
+                              name="confirm-new-password"
+                              autoComplete="new-password"
                               required
                               placeholder="Confirm new password"
                               value={confirmNewPassword}

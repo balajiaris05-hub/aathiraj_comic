@@ -933,6 +933,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                 <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                 <input
                   type="text"
+                  name="username"
+                  autoComplete="username"
                   required
                   placeholder="Enter email address or phone number"
                   value={credential}
@@ -1001,6 +1003,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                       <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                       <input
                         type={showLoginPassword ? 'text' : 'password'}
+                        name="password"
+                        autoComplete="current-password"
                         required
                         placeholder="Enter account password"
                         value={loginPassword}
@@ -1160,6 +1164,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                     <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                     <input
                       type="email"
+                      name="username"
+                      autoComplete="username"
                       required
                       placeholder="Enter your Gmail address"
                       value={email}
@@ -1295,6 +1301,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                   <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                   <input
                     type={showRegPassword ? 'text' : 'password'}
+                    name="new-password"
+                    autoComplete="new-password"
                     required
                     placeholder="Create password"
                     value={regPassword}
@@ -1318,6 +1326,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                   <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                   <input
                     type={showRegConfirmPassword ? 'text' : 'password'}
+                    name="confirm-password"
+                    autoComplete="new-password"
                     required
                     placeholder="Confirm password"
                     value={regConfirmPassword}
@@ -1579,12 +1589,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
             {resetStep === 'set_new_password' && (
               <form onSubmit={handleResetPassword} className="space-y-3">
+                <input
+                  type="text"
+                  name="username"
+                  autoComplete="username"
+                  value={resetEmail || resetPhone || resetCredential}
+                  readOnly
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  className="sr-only"
+                />
                 <div>
                   <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
                     New Password
                   </label>
                   <input
                     type="password"
+                    name="new-password"
+                    autoComplete="new-password"
                     required
                     placeholder="Enter new password"
                     value={newPassword}
@@ -1598,6 +1620,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
                   </label>
                   <input
                     type="password"
+                    name="confirm-new-password"
+                    autoComplete="new-password"
                     required
                     placeholder="Confirm new password"
                     value={confirmNewPassword}

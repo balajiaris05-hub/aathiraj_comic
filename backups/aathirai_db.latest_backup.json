@@ -96,14 +96,25 @@
     ]
   },
   "creditNotes": [],
-  "activityLogs": [],
+  "activityLogs": [
+    {
+      "id": "log_1794867815710_wzo",
+      "timestamp": "2026-11-16T22:23:35.710Z",
+      "action": "ADMIN_OTP_REQUESTED",
+      "actorEmail": "balajiaris05@gmail.com",
+      "actorRole": "admin",
+      "details": "Admin identity verified in DB for SMS 2FA OTP to +91 ******0780 (Firebase Phone Auth handshake).",
+      "targetType": "admin_auth",
+      "targetId": "usr_admin"
+    }
+  ],
   "migrationReport": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-16T04:30:57.277Z",
-    "completedAt": "2026-11-16T04:30:57.278Z",
+    "startedAt": "2026-11-18T22:22:20.369Z",
+    "completedAt": "2026-11-18T22:22:20.370Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "3d46aae2434ba76bcf4ff91747404af84768dfb3ce9a2d9715dcc8b5e5c24e20",
+    "backupSha256": "ccb5010e78ead2780d0d53d36541a93d5bb0f993359a3220f478c79f1273f5ac",
     "status": "verified",
     "counts": {
       "users": 1,
@@ -120,11 +131,11 @@
       "reports": 0,
       "deleteRequests": 0,
       "copyrightDocs": 2,
-      "activityLogs": 0
+      "activityLogs": 1
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: 3d46aae2434ba76b...)",
+      "Backed up aathirai_db.json (SHA-256: ccb5010e78ead278...)",
       "Migrated 1 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",
