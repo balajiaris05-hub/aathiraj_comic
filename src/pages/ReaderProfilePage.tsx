@@ -3712,7 +3712,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               onClick={() => onSelectComic(c)}
                               className="flex items-center gap-2.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-amber-500 transition-colors"
                             >
-                              <img src={c.coverImage} alt={c.title} className="w-8 h-11 rounded object-cover shrink-0" />
+                              <img src={c.coverImage} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-8 h-11 rounded object-cover shrink-0" />
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</div>
                                 <div className="text-[10px] text-slate-500 truncate">{c.authorName}</div>
@@ -3740,7 +3740,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               onClick={() => onSelectComic(c)}
                               className="flex items-center gap-2.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-rose-500 transition-colors"
                             >
-                              <img src={c.coverImage} alt={c.title} className="w-8 h-11 rounded object-cover shrink-0" />
+                              <img src={c.coverImage} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-8 h-11 rounded object-cover shrink-0" />
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</div>
                                 <div className="text-[10px] text-slate-500 truncate">{c.authorName}</div>

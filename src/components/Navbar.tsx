@@ -51,13 +51,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
   const [notifMenuOpen, setNotifMenuOpen] = useState(false);
 
   const navItems = [
-    { id: 'home', label: 'Home' },
-    { id: 'books', label: 'Books' },
-    { id: 'authors', label: 'Authors' },
-    { id: 'premium', label: 'Premium (₹49 / ₹249)' },
-    { id: 'about', label: 'About Us' },
-    { id: 'terms', label: 'Terms & Conditions' },
-    { id: 'copyright', label: 'Copyright' },
+    { id: 'home', label: 'Home', href: '/' },
+    { id: 'books', label: 'Books', href: '/books' },
+    { id: 'authors', label: 'Authors', href: '/authors' },
+    { id: 'premium', label: 'Premium (₹49 / ₹249)', href: '/premium' },
+    { id: 'about', label: 'About Us', href: '/about' },
+    { id: 'terms', label: 'Terms & Conditions', href: '/terms' },
+    { id: 'copyright', label: 'Copyright', href: '/copyright' },
   ];
 
   return (
@@ -282,9 +282,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
             </div>
 
             {/* Brand Logo */}
-            <button
-              type="button"
-              onClick={() => setCurrentTab('home')}
+            <a
+              href="/"
+              onClick={(e) => {
+                if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                  e.preventDefault();
+                  setCurrentTab('home');
+                }
+              }}
               className="flex items-center gap-1.5 sm:gap-2.5 group text-left cursor-pointer shrink-0"
             >
               <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-gradient-to-tr from-rose-600 to-amber-500 flex items-center justify-center text-white shadow-md shadow-rose-600/20 group-hover:scale-105 transition-transform shrink-0">
@@ -295,18 +300,24 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                   Aathirai<span className="text-rose-600 dark:text-rose-500">_Comic</span>
                 </span>
                 <p className="text-[7px] sm:text-[9px] tracking-tight sm:tracking-wider text-slate-500 dark:text-slate-400 uppercase font-semibold whitespace-nowrap leading-tight">
-                  Manga &amp; Webtoon Network
+                  Tamil &amp; Indian Comics
                 </p>
               </div>
-            </button>
+            </a>
           </div>
 
           {/* MAIN NAVIGATION LINKS (DESKTOP) */}
-          <nav className="hidden lg:flex items-center gap-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
+          <nav aria-label="Main Navigation" className="hidden lg:flex items-center gap-4 text-xs font-semibold text-slate-600 dark:text-slate-300">
             {navItems.map((item) => (
-              <button
+              <a
                 key={item.id}
-                onClick={() => setCurrentTab(item.id)}
+                href={item.href}
+                onClick={(e) => {
+                  if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                    e.preventDefault();
+                    setCurrentTab(item.id);
+                  }
+                }}
                 className={`py-1 transition-colors hover:text-rose-600 dark:hover:text-rose-400 whitespace-nowrap cursor-pointer ${
                   currentTab === item.id
                     ? 'text-rose-600 dark:text-rose-400 border-b-2 border-rose-600 dark:border-rose-400 font-bold'
@@ -314,7 +325,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                 }`}
               >
                 {item.label}
-              </button>
+              </a>
             ))}
           </nav>
 
@@ -387,11 +398,23 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                         return (
                           <div
                             key={n.id}
+                            role="button"
+                            tabIndex={0}
                             onClick={() => {
                               markNotificationRead(n.id);
                               setNotifMenuOpen(false);
                               if (onNotificationClick) {
                                 onNotificationClick(n);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                markNotificationRead(n.id);
+                                setNotifMenuOpen(false);
+                                if (onNotificationClick) {
+                                  onNotificationClick(n);
+                                }
                               }
                             }}
                             className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all hover:border-rose-500/50 ${

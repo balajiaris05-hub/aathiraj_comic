@@ -405,7 +405,7 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
                     }}
                     className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-rose-500 cursor-pointer"
                   >
-                    <img src={c.coverImage} alt={c.title} className="w-12 h-16 rounded-lg object-cover" />
+                    <img src={c.coverImage} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-12 h-16 rounded-lg object-cover" />
                     <div className="min-w-0">
                       <h5 className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</h5>
                       <span className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5">

@@ -112,7 +112,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
   );
 
   return (
-    <div className="space-y-10 pb-24">
+    <article className="space-y-10 pb-24">
       {/* Back button */}
       <button
         onClick={onBack}
@@ -205,7 +205,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
           <div className="relative aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl bg-slate-950 border border-slate-200 dark:border-slate-800">
             <img
               src={comic.coverImage}
-              alt={comic.title}
+              alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
             />
@@ -228,7 +228,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
             {/* Zero-Pill Metadata Line */}
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
               <span className="font-semibold text-rose-600 dark:text-rose-400">
-                {comic.genre.join(' · ')}
+                Tamil &amp; Indian Comic · {comic.genre.join(' · ')}
               </span>
               <span aria-hidden="true">·</span>
               <span>Status: <strong className="text-slate-700 dark:text-slate-300">{comic.status}</strong></span>
@@ -422,9 +422,11 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                 className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm"
               >
                 {/* Chapter Header */}
-                <div
+                <button
+                  type="button"
                   onClick={() => toggleChapter(chapter.id)}
-                  className="p-4 sm:p-5 flex items-center justify-between cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                  aria-expanded={isExpanded}
+                  className="w-full text-left p-4 sm:p-5 flex items-center justify-between cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center font-bold text-xs">
@@ -471,10 +473,10 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                       <ChevronDown className="w-5 h-5 text-slate-400" />
                     )}
                   </div>
-                </div>
+                </button>
 
-                {/* Episode Items Inside Chapter */}
-                {isExpanded && (
+                {/* Episode Items Inside Chapter (always rendered cleanly in DOM for search crawlers) */}
+                {isExpanded ? (
                   <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60 bg-slate-50/50 dark:bg-slate-950/40">
                     {chapter.episodes.map((episode) => {
                       const isEpPaywalled =
@@ -494,7 +496,7 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                           >
                             <img
                               src={episode.coverImage || episode.pages?.[0]?.imageUrl || comic.coverImage}
-                              alt={episode.title}
+                              alt={`${comic.title} - ${episode.title} Tamil comic preview - Aathirai Comic`}
                               className="w-10 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
                             />
 
@@ -550,7 +552,21 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                       );
                     })}
                   </div>
-                )}
+                ) : chapter.episodes.length > 0 ? (
+                  <ul className="px-4 sm:px-5 py-2.5 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/40 dark:bg-slate-950/30 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400">
+                    {chapter.episodes.map((episode) => (
+                      <li key={episode.id}>
+                        <button
+                          type="button"
+                          onClick={() => handleReadClick(episode.id)}
+                          className="hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer text-left"
+                        >
+                          Ep {episode.episodeNumber}: {episode.title}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             );
           })}
@@ -600,6 +616,6 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
           }}
         />
       )}
-    </div>
+    </article>
   );
 };

@@ -163,8 +163,8 @@ export const HomePage: React.FC<HomePageProps> = ({
       <section className="relative overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 text-white shadow-2xl">
         <div className="absolute inset-0 z-0">
           <img
-            src="/src/assets/images/tamil_nadu_temple_anime_1794618935009.jpg"
-            alt="Anime-style Tamil Nadu twilight landscape with Dravidian temple gopurams and coastline"
+            src="/assets/og-hero-banner.jpg"
+            alt="Aathirai Comic - Tamil Nadu temple twilight banner for original Tamil & Indian comics"
             referrerPolicy="no-referrer"
             className="w-full h-full object-cover object-center opacity-50 scale-105"
           />
@@ -175,15 +175,15 @@ export const HomePage: React.FC<HomePageProps> = ({
         <div className="relative z-10 max-w-4xl px-6 py-16 sm:px-12 sm:py-24 space-y-6">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold backdrop-blur-md">
             <Sparkles className="w-3.5 h-3.5 text-rose-400" />
-            <span>India’s Leading Digital Comic &amp; Manga Network</span>
+            <span>Online Tamil Comics &amp; Indian Digital Comics Network</span>
           </div>
 
           <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight font-heading text-balance">
-            Discover, Read &amp; Publish Original Comics in Full Glory
+            Aathirai Comic: Read Original Tamil &amp; Indian Comics Online
           </h1>
 
           <p className="text-sm sm:text-base text-slate-300 max-w-2xl leading-relaxed">
-            Step into mythological epics, futuristic cyberpunk realms, and heartfelt stories across India and beyond. Empowering creators with direct author publishing and Indian INR payments.
+            Discover mythological epics, futuristic realms, and original graphic stories on Aathirai Comic. Read online Tamil comics and Indian digital comics free or with instant INR access.
           </p>
 
           {/* Instant Debounced Search Bar */}
@@ -263,7 +263,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 {item.coverImage && (
                   <img
                     src={item.coverImage}
-                    alt={item.comicTitle}
+                    alt={`${item.comicTitle} Tamil comic cover - Aathirai Comic`}
                     className="w-12 h-16 rounded-lg object-cover shrink-0"
                   />
                 )}
@@ -271,9 +271,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <span className="text-[10px] uppercase font-bold tracking-wider text-rose-600 dark:text-rose-400">
                     Ch.{item.chapterNumber} Ep.{item.episodeNumber} · Page {item.pageIndex + 1}/{item.totalPages}
                   </span>
-                  <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate group-hover:text-rose-500 transition-colors">
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white truncate group-hover:text-rose-500 transition-colors">
                     {item.episodeTitle}
-                  </h4>
+                  </h3>
                   <p className="text-[11px] text-slate-500 truncate">{item.comicTitle}</p>
                 </div>
                 <Play className="w-4 h-4 text-rose-500 shrink-0" />
@@ -395,16 +395,16 @@ export const HomePage: React.FC<HomePageProps> = ({
                 >
                   <img
                     src={comic.coverImage}
-                    alt={comic.title}
+                    alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
                     className="w-12 h-16 rounded-lg object-cover shrink-0"
                   />
                   <div className="min-w-0 flex-1">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-rose-600 dark:text-rose-400">
                       Ep {latest.episodeNumber} · {latest.releaseDate}
                     </span>
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate group-hover:text-rose-500 transition-colors">
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white truncate group-hover:text-rose-500 transition-colors">
                       {latest.title}
-                    </h4>
+                    </h3>
                     <p className="text-[11px] text-slate-500 truncate">{comic.title}</p>
                   </div>
                   <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-rose-500 group-hover:translate-x-1 transition-all shrink-0" />
@@ -513,7 +513,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   {creator.coverImage ? (
                     <img
                       src={creator.coverImage}
-                      alt={creator.name}
+                      alt={`${creator.name} - Tamil & Indian comic creator on Aathirai Comic`}
                       className="w-12 h-12 rounded-xl object-cover border border-emerald-500/30"
                     />
                   ) : (
@@ -522,9 +522,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                     </div>
                   )}
                   <div className="min-w-0">
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white truncate">
                       {creator.name}
-                    </h4>
+                    </h3>
                     <p className="text-[11px] text-slate-500 truncate">
                       {Array.from(creator.genres).slice(0, 2).join(' · ') || 'Original Comic Creator'}
                     </p>

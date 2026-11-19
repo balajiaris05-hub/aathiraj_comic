@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Comic } from '../types/comic';
 import { ComicCard } from '../components/ComicCard';
-import { matchesComicSearchQuery } from '../utils/seo';
+import { matchesComicSearchQuery, getComicPath } from '../utils/seo';
 import {
   Search,
   ArrowUpDown,
@@ -279,57 +279,67 @@ export const BooksPage: React.FC<BooksPageProps> = ({
           {paginatedComics.map((comic) => {
             const epCount = comic.chapters.reduce((acc, ch) => acc + ch.episodes.length, 0);
             return (
-              <div
+              <article
                 key={comic.id}
-                onClick={() => onSelectComic(comic)}
-                className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-500 transition-all flex flex-col sm:flex-row items-start sm:items-center gap-5 cursor-pointer group shadow-sm"
+                className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-500 transition-all shadow-sm group"
               >
-                <img
-                  src={comic.coverImage}
-                  alt={comic.title}
-                  className="w-24 h-32 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-800"
-                />
-                <div className="flex-1 min-w-0 space-y-2">
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="font-bold text-rose-600 dark:text-rose-400">
-                      {comic.genre.join(' · ')}
+                <a
+                  href={getComicPath(comic)}
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      onSelectComic(comic);
+                    }
+                  }}
+                  className="flex flex-col sm:flex-row items-start sm:items-center gap-5 cursor-pointer"
+                >
+                  <img
+                    src={comic.coverImage}
+                    alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
+                    className="w-24 h-32 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-800"
+                  />
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-bold text-rose-600 dark:text-rose-400">
+                        {comic.genre.join(' · ')}
+                      </span>
+                      <span>·</span>
+                      <span className="font-semibold text-slate-500">{comic.status}</span>
+                      <span>·</span>
+                      <span
+                        className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                          comic.accessType === 'premium'
+                            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {comic.accessType === 'premium' ? 'PREMIUM (₹49 / ₹249)' : 'FREE SERIES'}
+                      </span>
+                    </div>
+                    <h2 className="text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors font-heading">
+                      {comic.title}
+                    </h2>
+                    <p className="text-xs text-slate-500">By {comic.authorName}</p>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
+                      {comic.description}
+                    </p>
+                  </div>
+                  <div className="flex sm:flex-col items-end justify-between gap-2 text-xs text-slate-500 shrink-0">
+                    <span className="flex items-center gap-1 font-bold text-amber-500">
+                      <Star className="w-3.5 h-3.5 fill-amber-500" />
+                      <span>{comic.averageRating}</span>
                     </span>
-                    <span>·</span>
-                    <span className="font-semibold text-slate-500">{comic.status}</span>
-                    <span>·</span>
-                    <span
-                      className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                        comic.accessType === 'premium'
-                          ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                          : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                      }`}
-                    >
-                      {comic.accessType === 'premium' ? 'PREMIUM (₹49 / ₹249)' : 'FREE SERIES'}
+                    <span className="flex items-center gap-1">
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>{comic.totalViews.toLocaleString()}</span>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <BookOpen className="w-3.5 h-3.5" />
+                      <span>{epCount} Episodes</span>
                     </span>
                   </div>
-                  <h3 className="text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors font-heading">
-                    {comic.title}
-                  </h3>
-                  <p className="text-xs text-slate-500">By {comic.authorName}</p>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
-                    {comic.description}
-                  </p>
-                </div>
-                <div className="flex sm:flex-col items-end justify-between gap-2 text-xs text-slate-500 shrink-0">
-                  <span className="flex items-center gap-1 font-bold text-amber-500">
-                    <Star className="w-3.5 h-3.5 fill-amber-500" />
-                    <span>{comic.averageRating}</span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>{comic.totalViews.toLocaleString()}</span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>{epCount} Episodes</span>
-                  </span>
-                </div>
-              </div>
+                </a>
+              </article>
             );
           })}
         </div>

@@ -7430,16 +7430,25 @@ async function startServer() {
     return res.json({ logs: db.getSnapshot().activityLogs });
   });
 
+  // Serve bundled asset images directly in both dev and production for legacy cover URLs
+  app.use('/src/assets/images', express.static(path.resolve('src/assets/images')));
+
   // -------------------------------------------------------------
   // DYNAMIC SEARCH ENGINE OPTIMIZATION (/robots.txt, /sitemap.xml, SSR META)
   // -------------------------------------------------------------
 
   const getPublicBaseUrl = (req: express.Request) => {
+    const rawHost = ((req.headers['x-forwarded-host'] as string) || req.get('host') || '')
+      .split(',')[0]
+      .trim();
+    const isLocalHost = !rawHost || /^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(rawHost);
+    if (!isLocalHost) {
+      const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const proto = protoHeader.split(',')[0].trim();
+      return `${proto}://${rawHost}`.replace(/\/+$/, '');
+    }
     if (process.env.APP_URL) return process.env.APP_URL.replace(/\/+$/, '');
-    const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
-    const proto = protoHeader.split(',')[0].trim();
-    const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'aathiraicomic.app';
-    return `${proto}://${host}`.replace(/\/+$/, '');
+    return 'https://aathiraicomic--aathiraicomic.us-east4.hosted.app';
   };
 
   const escapeXml = (str: string) =>
@@ -7456,6 +7465,66 @@ async function startServer() {
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+
+  const resolveServerSeoImageUrl = (
+    imageUrl: string | undefined,
+    baseUrl: string,
+    comicSlugOrId?: string
+  ) => {
+    const cleanBase = baseUrl.replace(/\/+$/, '');
+    const trimmed = String(imageUrl || '').trim();
+    if (!trimmed) return `${cleanBase}/assets/og-hero-banner.jpg`;
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (trimmed.startsWith('data:image/')) {
+      return comicSlugOrId
+        ? `${cleanBase}/api/comics/${encodeURIComponent(comicSlugOrId)}/og-image`
+        : `${cleanBase}/assets/og-hero-banner.jpg`;
+    }
+    if (trimmed.startsWith('/')) return `${cleanBase}${trimmed}`;
+    return `${cleanBase}/${trimmed}`;
+  };
+
+  const buildBookMetaDescription = (comic: Comic) => {
+    const genres = (comic.genre || []).slice(0, 3).join(', ') || 'Tamil & Indian Comic';
+    const raw = `${comic.title} by ${comic.authorName} (${genres}). ${
+      comic.description || 'Read this original Tamil & Indian digital comic online on Aathirai Comic.'
+    }`
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (raw.length <= 155) return raw;
+    return `${raw.slice(0, 152).replace(/\s+\S*$/, '')}...`;
+  };
+
+  // Serve data-URI comic covers as clean HTTP images for Open Graph / Twitter cards
+  app.get('/api/comics/:slugOrId/og-image', async (req, res) => {
+    await db.ensureFreshFromCloud().catch(() => {});
+    const slugOrId = decodeURIComponent(req.params.slugOrId || '').trim().toLowerCase();
+    const matched = db
+      .getSnapshot()
+      .comics.find(
+        c =>
+          (c.slug && c.slug.toLowerCase() === slugOrId) ||
+          c.id.toLowerCase() === slugOrId
+      );
+    const imgSrc = matched?.bannerImage || matched?.coverImage || '';
+    const dataMatch = imgSrc.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (dataMatch) {
+      try {
+        const mimeType = dataMatch[1];
+        const buf = Buffer.from(dataMatch[2], 'base64');
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.send(buf);
+      } catch {
+        // Fallback below
+      }
+    }
+    const fallbackBanner = path.resolve('public', 'assets', 'og-hero-banner.jpg');
+    if (fs.existsSync(fallbackBanner)) {
+      return res.sendFile(fallbackBanner);
+    }
+    return res.status(404).end();
+  });
 
   app.get('/robots.txt', (req, res) => {
     const baseUrl = getPublicBaseUrl(req);
@@ -7477,11 +7546,19 @@ async function startServer() {
     );
   });
 
-  app.get('/sitemap.xml', (req, res) => {
+  app.get('/sitemap.xml', async (req, res) => {
+    await db.ensureFreshFromCloud().catch(() => {});
     const baseUrl = getPublicBaseUrl(req);
     const liveComics = db
       .getSnapshot()
       .comics.filter(c => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested');
+
+    const latestTimestamp =
+      liveComics
+        .map(c => (c.updatedAt || c.createdAt || '').split('T')[0])
+        .filter(Boolean)
+        .sort()
+        .pop() || new Date().toISOString().split('T')[0];
 
     const standardGenres = [
       'Action',
@@ -7498,31 +7575,28 @@ async function startServer() {
     );
 
     const staticEntries = [
-      { loc: `${baseUrl}/`, changefreq: 'daily', priority: '1.0' },
-      { loc: `${baseUrl}/books`, changefreq: 'daily', priority: '0.95' },
-      { loc: `${baseUrl}/books?q=tamil+comic`, changefreq: 'daily', priority: '0.9' },
-      { loc: `${baseUrl}/books?q=indian+comic`, changefreq: 'daily', priority: '0.9' },
-      { loc: `${baseUrl}/books?q=aathirai+comic`, changefreq: 'daily', priority: '0.9' },
-      { loc: `${baseUrl}/books?q=general+comic`, changefreq: 'daily', priority: '0.85' },
-      { loc: `${baseUrl}/authors`, changefreq: 'weekly', priority: '0.8' },
-      { loc: `${baseUrl}/premium`, changefreq: 'weekly', priority: '0.75' },
-      { loc: `${baseUrl}/about`, changefreq: 'monthly', priority: '0.6' },
+      { loc: `${baseUrl}/`, lastmod: latestTimestamp, changefreq: 'daily', priority: '1.0' },
+      { loc: `${baseUrl}/books`, lastmod: latestTimestamp, changefreq: 'daily', priority: '0.95' },
+      { loc: `${baseUrl}/authors`, lastmod: latestTimestamp, changefreq: 'weekly', priority: '0.8' },
+      { loc: `${baseUrl}/premium`, lastmod: latestTimestamp, changefreq: 'weekly', priority: '0.75' },
+      { loc: `${baseUrl}/about`, lastmod: latestTimestamp, changefreq: 'monthly', priority: '0.6' },
     ];
 
     const genreEntries = allGenres.map(g => ({
       loc: `${baseUrl}/books?genre=${encodeURIComponent(g)}`,
+      lastmod: latestTimestamp,
       changefreq: 'daily',
       priority: '0.85',
     }));
 
     const comicEntries = liveComics.map(c => ({
       loc: `${baseUrl}/comic/${encodeURIComponent(c.slug || c.id)}`,
-      lastmod: (c.updatedAt || c.createdAt || new Date().toISOString()).split('T')[0],
+      lastmod: (c.updatedAt || c.createdAt || latestTimestamp).split('T')[0],
       changefreq: 'weekly',
       priority: '0.9',
     }));
 
-    const allUrls = [...staticEntries, ...genreEntries, ...comicEntries];
+    const allUrls = [...staticEntries, ...comicEntries, ...genreEntries];
     const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${allUrls
       .map(
         (u: any) =>
@@ -7535,93 +7609,176 @@ async function startServer() {
     res.type('application/xml').send(xml);
   });
 
-  // -------------------------------------------------------------
-  // VITE DEV SERVER OR STATIC PRODUCTION BUILD
-  // -------------------------------------------------------------
+  const injectDynamicSeoHtml = async (rawHtml: string, req: express.Request): Promise<string> => {
+    await db.ensureFreshFromCloud().catch(() => {});
+    const baseUrl = getPublicBaseUrl(req);
+    const reqPath = req.path || '/';
+    const liveComics = db
+      .getSnapshot()
+      .comics.filter(c => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested');
+    const allGenres = Array.from(new Set(liveComics.flatMap(c => c.genre || []).filter(Boolean)));
+    const allTitles = liveComics.map(c => c.title).filter(Boolean);
 
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static('dist', { index: false }));
-    app.get('*', (req, res) => {
-      const distIndexPath = path.resolve('dist', 'index.html');
-      try {
-        let html = fs.readFileSync(distIndexPath, 'utf8');
-        const baseUrl = getPublicBaseUrl(req);
-        const reqPath = req.path || '/';
-        const liveComics = db
-          .getSnapshot()
-          .comics.filter(c => c.moderationStatus === 'approved' || c.moderationStatus === 'delete_requested');
-        const allGenres = Array.from(new Set(liveComics.flatMap(c => c.genre || []).filter(Boolean)));
-        const allTitles = liveComics.map(c => c.title).filter(Boolean);
+    let pageTitle = 'Aathirai Comic | Read Original Tamil & Indian Comics Online';
+    let pageDesc =
+      'Explore Aathirai Comic to read digital comics online. Discover original Tamil comic and Indian comic series across mythology, action, and manga.';
+    let ogType = 'website';
+    let ogImage = `${baseUrl}/assets/og-hero-banner.jpg`;
+    let ogImageAlt = 'Aathirai Comic - Original Tamil & Indian Digital Comics Banner';
+    let matchedComic: Comic | undefined;
 
-        let pageTitle = 'Aathirai_Comic – Tamil Comics, Indian Comics & Webtoons';
-        let pageDesc =
-          'Read Tamil comics, Indian comics, webtoons, and manga on Aathirai_Comic. Explore action, mythology, fantasy, and general comics free or premium.';
-        let matchedComic: Comic | undefined;
+    if (reqPath.startsWith('/comic/')) {
+      const slug = decodeURIComponent(reqPath.slice('/comic/'.length)).replace(/\/+$/, '');
+      matchedComic = liveComics.find(
+        c => (c.slug && c.slug.toLowerCase() === slug.toLowerCase()) || c.id === slug
+      );
+      if (matchedComic) {
+        pageTitle = `${matchedComic.title} - Read Tamil & Indian Comic | Aathirai Comic`;
+        pageDesc = buildBookMetaDescription(matchedComic);
+        ogType = 'book';
+        ogImage = resolveServerSeoImageUrl(
+          matchedComic.bannerImage || matchedComic.coverImage,
+          baseUrl,
+          matchedComic.slug || matchedComic.id
+        );
+        ogImageAlt = `${matchedComic.title} Tamil comic cover - Aathirai Comic`;
+      }
+    } else if (reqPath === '/books') {
+      const qParam = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      const genreParam = typeof req.query.genre === 'string' ? req.query.genre.trim() : '';
+      if (qParam) {
+        pageTitle = `${qParam} - Read Tamil & Indian Comics | Aathirai Comic`;
+        pageDesc = `Browse "${qParam}" on Aathirai Comic. Read online Tamil comics, Indian digital comics, and original series.`;
+      } else if (genreParam && genreParam !== 'All') {
+        pageTitle = `${genreParam} Tamil & Indian Comics | Aathirai Comic`;
+        pageDesc = `Read ${genreParam} Tamil comics and Indian digital comics online on Aathirai Comic. Free and premium series.`;
+      } else {
+        pageTitle = 'Browse Tamil & Indian Comic Books Online | Aathirai Comic';
+        pageDesc =
+          'Browse all Tamil comics, Indian digital comics, mythology, action, fantasy, and manga series on Aathirai Comic.';
+      }
+    } else if (reqPath === '/authors') {
+      pageTitle = 'Tamil & Indian Comic Creators & Authors | Aathirai Comic';
+      pageDesc =
+        'Meet original Tamil and Indian comic book authors, illustrators, and storytellers publishing digital comics on Aathirai Comic.';
+    } else if (reqPath === '/premium') {
+      pageTitle = 'Premium Plans (₹49 / ₹249) - Read Digital Comics | Aathirai Comic';
+      pageDesc =
+        'Unlock unlimited online Tamil comics and Indian digital comics on Aathirai Comic with ₹49 Monthly or ₹249 6-Month passes.';
+    } else if (reqPath === '/about') {
+      pageTitle = 'About Aathirai Comic | Tamil & Indian Digital Comics Platform';
+      pageDesc =
+        'Learn how Aathirai Comic empowers Tamil comic and Indian comic creators with digital publishing and direct reader access.';
+    }
 
-        if (reqPath.startsWith('/comic/')) {
-          const slug = decodeURIComponent(reqPath.slice('/comic/'.length)).replace(/\/+$/, '');
-          matchedComic = liveComics.find(
-            c => (c.slug && c.slug.toLowerCase() === slug.toLowerCase()) || c.id === slug
-          );
-          if (matchedComic) {
-            pageTitle = `${matchedComic.title} – Tamil & Indian Comic | Aathirai_Comic`;
-            pageDesc = `${matchedComic.title} (${(matchedComic.genre || []).join(', ')}) by ${matchedComic.authorName}. Read on Aathirai_Comic.`;
-          }
-        } else if (reqPath === '/books') {
-          const qParam = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-          const genreParam = typeof req.query.genre === 'string' ? req.query.genre.trim() : '';
-          if (qParam) {
-            pageTitle = `${qParam} – Tamil & Indian Comics | Aathirai_Comic`;
-            pageDesc = `Browse "${qParam}" comic books on Aathirai_Comic. Discover Tamil comics, Indian comics, and general comic series.`;
-          } else if (genreParam && genreParam !== 'All') {
-            pageTitle = `${genreParam} Comics – Tamil & Indian Books | Aathirai_Comic`;
-            pageDesc = `Read ${genreParam} comics on Aathirai_Comic. Explore Tamil comics, Indian comics, and serialized webtoons.`;
-          } else {
-            pageTitle = 'Books – Tamil Comics, Indian Comics & All Series | Aathirai_Comic';
-          }
-        }
+    const keywords = Array.from(
+      new Set([
+        'Aathirai Comic',
+        'Aathirai Comics',
+        'Tamil comic',
+        'Indian comic',
+        'online Tamil comics',
+        'Indian digital comics',
+        'read digital comics online',
+        ...allGenres.map(g => `${g} comics`),
+        ...allGenres,
+        ...allTitles,
+      ])
+    )
+      .slice(0, 45)
+      .join(', ');
 
-        const keywords = Array.from(
-          new Set([
+    const canonicalUrl = matchedComic
+      ? `${baseUrl}/comic/${encodeURIComponent(matchedComic.slug || matchedComic.id)}`
+      : `${baseUrl}${reqPath === '/' ? '/' : reqPath}`;
+
+    const dynamicJsonLd = matchedComic
+      ? {
+          '@context': 'https://schema.org',
+          '@type': ['ComicSeries', 'Book'],
+          '@id': `${canonicalUrl}#comic`,
+          name: matchedComic.title,
+          url: canonicalUrl,
+          inLanguage: ['ta', 'en'],
+          genre: matchedComic.genre,
+          image: ogImage,
+          keywords: [
+            ...(matchedComic.genre || []),
             'Tamil comic',
-            'Tamil comics',
-            'Aathirai comic',
-            'Aathirai_Comic',
             'Indian comic',
-            'Indian comics',
-            'general comic',
-            'comic book',
-            ...allGenres.map(g => `${g} comics`),
-            ...allGenres,
-            ...allTitles,
-          ])
-        )
-          .slice(0, 45)
-          .join(', ');
-
-        const canonicalUrl = `${baseUrl}${reqPath === '/' ? '/' : reqPath}`;
-        const dynamicJsonLd = matchedComic
-          ? {
-              '@context': 'https://schema.org',
-              '@type': 'Book',
-              name: matchedComic.title,
-              url: canonicalUrl,
-              inLanguage: ['en-IN', 'ta-IN'],
-              genre: matchedComic.genre,
-              description: matchedComic.description,
-              author: { '@type': 'Person', name: matchedComic.authorName },
-              publisher: { '@type': 'Organization', name: 'Aathirai_Comic' },
-            }
-          : {
-              '@context': 'https://schema.org',
+            'online Tamil comics',
+            'Aathirai Comic',
+          ].join(', '),
+          description: matchedComic.description,
+          author: { '@type': 'Person', name: matchedComic.authorName },
+          publisher: {
+            '@type': 'Organization',
+            name: 'Aathirai Comic',
+            url: `${baseUrl}/`,
+          },
+          numberOfEpisodes: matchedComic.chapters.reduce((s, ch) => s + (ch.episodes?.length || 0), 0),
+          numberOfPages: matchedComic.chapters.reduce((s, ch) => s + (ch.episodes?.length || 0), 0),
+          hasPart: matchedComic.chapters.map(ch => ({
+            '@type': 'ComicIssue',
+            name: `Chapter ${ch.chapterNumber}: ${ch.title}`,
+            issueNumber: ch.chapterNumber,
+            description: ch.synopsis || `${matchedComic!.title} Chapter ${ch.chapterNumber}`,
+            hasPart: (ch.episodes || []).map(ep => ({
+              '@type': 'Chapter',
+              name: `Episode ${ep.episodeNumber}: ${ep.title}`,
+              position: ep.episodeNumber,
+              description: ep.synopsis || ep.title,
+            })),
+          })),
+          aggregateRating: {
+            '@type': 'AggregateRating',
+            ratingValue: matchedComic.averageRating || 5,
+            ratingCount: Math.max(1, matchedComic.totalViews || 1),
+          },
+        }
+      : {
+          '@context': 'https://schema.org',
+          '@graph': [
+            {
+              '@type': 'Organization',
+              '@id': `${baseUrl}/#organization`,
+              name: 'Aathirai Comic',
+              alternateName: ['Aathirai Comic', 'Aathirai Comics', 'Aathirai_Comic'],
+              url: `${baseUrl}/`,
+              logo: `${baseUrl}/assets/og-hero-banner.jpg`,
+              email: 'aathiraicomic@gmail.com',
+              description:
+                'Original Tamil comic and Indian digital comic publishing network for online Tamil comics and graphic novels.',
+            },
+            {
+              '@type': 'WebSite',
+              '@id': `${baseUrl}/#website`,
+              name: 'Aathirai Comic',
+              alternateName: ['Aathirai Comic', 'Aathirai Comics'],
+              url: `${baseUrl}/`,
+              inLanguage: ['ta', 'en'],
+              keywords,
+              publisher: { '@id': `${baseUrl}/#organization` },
+              potentialAction: {
+                '@type': 'SearchAction',
+                target: {
+                  '@type': 'EntryPoint',
+                  urlTemplate: `${baseUrl}/books?q={search_term_string}`,
+                },
+                'query-input': 'required name=search_term_string',
+              },
+            },
+            {
               '@type': 'CollectionPage',
+              '@id': `${canonicalUrl}#collection`,
               name: pageTitle,
               url: canonicalUrl,
-              inLanguage: ['en-IN', 'ta-IN'],
+              inLanguage: ['ta', 'en'],
               keywords,
+              description: pageDesc,
               mainEntity: {
                 '@type': 'ItemList',
-                name: 'Aathirai_Comic – Tamil, Indian & General Comic Books',
+                name: 'Aathirai Comic – Tamil & Indian Digital Comics Catalog',
                 numberOfItems: liveComics.length,
                 itemListElement: liveComics.slice(0, 50).map((c, idx) => ({
                   '@type': 'ListItem',
@@ -7630,56 +7787,116 @@ async function startServer() {
                   url: `${baseUrl}/comic/${encodeURIComponent(c.slug || c.id)}`,
                 })),
               },
-            };
+            },
+          ],
+        };
 
-        const noscriptCatalog = liveComics.length > 0
-          ? `<noscript><section><h1>${escapeHtmlAttr(pageTitle)}</h1><p>${escapeHtmlAttr(pageDesc)}</p><ul>${liveComics
-              .slice(0, 50)
-              .map(
-                c =>
-                  `<li><a href="/comic/${encodeURIComponent(c.slug || c.id)}">${escapeHtmlAttr(c.title)}</a> — ${escapeHtmlAttr(
-                    (c.genre || []).join(', ')
-                  )} by ${escapeHtmlAttr(c.authorName)}</li>`
-              )
-              .join('')}</ul></section></noscript>`
-          : `<noscript><section><h1>${escapeHtmlAttr(pageTitle)}</h1><p>${escapeHtmlAttr(pageDesc)}</p></section></noscript>`;
+    const noscriptHtml = matchedComic
+      ? `<noscript><header><nav><a href="/">Aathirai Comic</a> | <a href="/books">Browse Tamil &amp; Indian Comics</a> | <a href="/authors">Authors</a></nav></header><main><article><h1>${escapeHtmlAttr(
+          matchedComic.title
+        )}</h1><p>By ${escapeHtmlAttr(matchedComic.authorName)} · ${escapeHtmlAttr(
+          (matchedComic.genre || []).join(', ')
+        )}</p><img src="${escapeHtmlAttr(ogImage)}" alt="${escapeHtmlAttr(
+          `${matchedComic.title} Tamil comic cover - Aathirai Comic`
+        )}" /><p>${escapeHtmlAttr(matchedComic.description)}</p><h2>Chapters &amp; Episodes</h2><ul>${matchedComic.chapters
+          .map(
+            ch =>
+              `<li><strong>Chapter ${ch.chapterNumber}: ${escapeHtmlAttr(ch.title)}</strong>${
+                ch.synopsis ? ` — ${escapeHtmlAttr(ch.synopsis)}` : ''
+              }<ul>${(ch.episodes || [])
+                .map(ep => `<li>Episode ${ep.episodeNumber}: ${escapeHtmlAttr(ep.title)}</li>`)
+                .join('')}</ul></li>`
+          )
+          .join('')}</ul></article></main><footer><a href="/">Aathirai Comic</a></footer></noscript>`
+      : `<noscript><header><nav><a href="/">Home</a> | <a href="/books">Books</a> | <a href="/authors">Authors</a> | <a href="/premium">Premium</a> | <a href="/about">About</a></nav></header><main><h1>Aathirai Comic — Read Original Tamil &amp; Indian Comics Online</h1><p>${escapeHtmlAttr(
+          pageDesc
+        )}</p>${
+          liveComics.length > 0
+            ? `<section><h2>Tamil &amp; Indian Digital Comics</h2>${liveComics
+                .slice(0, 50)
+                .map(
+                  c =>
+                    `<article><h3><a href="/comic/${encodeURIComponent(c.slug || c.id)}">${escapeHtmlAttr(
+                      c.title
+                    )}</a></h3><p>${escapeHtmlAttr((c.genre || []).join(', '))} by ${escapeHtmlAttr(
+                      c.authorName
+                    )} — ${escapeHtmlAttr(c.description || '')}</p></article>`
+                )
+                .join('')}</section>`
+            : ''
+        }</main><footer>Aathirai Comic — Tamil &amp; Indian Digital Comics</footer></noscript>`;
 
-        html = html
-          .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtmlAttr(pageTitle)}</title>`)
-          .replace(
-            /<meta\s+name="description"[\s\S]*?\/>/i,
-            `<meta name="description" content="${escapeHtmlAttr(pageDesc)}" />`
-          )
-          .replace(
-            /<meta\s+name="keywords"[\s\S]*?\/>/i,
-            `<meta name="keywords" content="${escapeHtmlAttr(keywords)}" />`
-          )
-          .replace(
-            /<link\s+rel="canonical"[\s\S]*?\/>/i,
-            `<link rel="canonical" href="${escapeHtmlAttr(canonicalUrl)}" />`
-          )
-          .replace(
-            /<meta\s+property="og:title"[\s\S]*?\/>/i,
-            `<meta property="og:title" content="${escapeHtmlAttr(pageTitle)}" />`
-          )
-          .replace(
-            /<meta\s+property="og:description"[\s\S]*?\/>/i,
-            `<meta property="og:description" content="${escapeHtmlAttr(pageDesc)}" />`
-          )
-          .replace(
-            /<meta\s+name="twitter:title"[\s\S]*?\/>/i,
-            `<meta name="twitter:title" content="${escapeHtmlAttr(pageTitle)}" />`
-          )
-          .replace(
-            /<meta\s+name="twitter:description"[\s\S]*?\/>/i,
-            `<meta name="twitter:description" content="${escapeHtmlAttr(pageDesc)}" />`
-          )
-          .replace(
-            '</head>',
-            `<script id="aathirai-dynamic-jsonld" type="application/ld+json">${JSON.stringify(dynamicJsonLd)}</script>\n</head>`
-          )
-          .replace('</body>', `${noscriptCatalog}\n</body>`);
+    let html = rawHtml
+      .replace(/<script\s+id="aathirai-base-jsonld"[^>]*>[\s\S]*?<\/script>/i, '')
+      .replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtmlAttr(pageTitle)}</title>`)
+      .replace(
+        /<meta\s+name="description"[\s\S]*?\/>/i,
+        `<meta name="description" content="${escapeHtmlAttr(pageDesc)}" />`
+      )
+      .replace(
+        /<meta\s+name="keywords"[\s\S]*?\/>/i,
+        `<meta name="keywords" content="${escapeHtmlAttr(keywords)}" />`
+      )
+      .replace(
+        /<link\s+rel="canonical"[\s\S]*?\/>/i,
+        `<link rel="canonical" href="${escapeHtmlAttr(canonicalUrl)}" />`
+      )
+      .replace(
+        /<meta\s+property="og:title"[\s\S]*?\/>/i,
+        `<meta property="og:title" content="${escapeHtmlAttr(pageTitle)}" />`
+      )
+      .replace(
+        /<meta\s+property="og:description"[\s\S]*?\/>/i,
+        `<meta property="og:description" content="${escapeHtmlAttr(pageDesc)}" />`
+      )
+      .replace(
+        /<meta\s+property="og:image"[\s\S]*?\/>/i,
+        `<meta property="og:image" content="${escapeHtmlAttr(ogImage)}" />`
+      )
+      .replace(
+        /<meta\s+property="og:image:alt"[\s\S]*?\/>/i,
+        `<meta property="og:image:alt" content="${escapeHtmlAttr(ogImageAlt)}" />`
+      )
+      .replace(
+        /<meta\s+property="og:url"[\s\S]*?\/>/i,
+        `<meta property="og:url" content="${escapeHtmlAttr(canonicalUrl)}" />`
+      )
+      .replace(
+        /<meta\s+property="og:type"[\s\S]*?\/>/i,
+        `<meta property="og:type" content="${escapeHtmlAttr(ogType)}" />`
+      )
+      .replace(
+        /<meta\s+name="twitter:title"[\s\S]*?\/>/i,
+        `<meta name="twitter:title" content="${escapeHtmlAttr(pageTitle)}" />`
+      )
+      .replace(
+        /<meta\s+name="twitter:description"[\s\S]*?\/>/i,
+        `<meta name="twitter:description" content="${escapeHtmlAttr(pageDesc)}" />`
+      )
+      .replace(
+        /<meta\s+name="twitter:image"[\s\S]*?\/>/i,
+        `<meta name="twitter:image" content="${escapeHtmlAttr(ogImage)}" />`
+      )
+      .replace(
+        '</head>',
+        `<script id="aathirai-dynamic-jsonld" type="application/ld+json">${JSON.stringify(dynamicJsonLd)}</script>\n</head>`
+      )
+      .replace('</body>', `${noscriptHtml}\n</body>`);
 
+    return html;
+  };
+
+  // -------------------------------------------------------------
+  // VITE DEV SERVER OR STATIC PRODUCTION BUILD
+  // -------------------------------------------------------------
+
+  if (process.env.NODE_ENV === 'production') {
+    app.use(express.static('dist', { index: false }));
+    app.get('*', async (req, res) => {
+      const distIndexPath = path.resolve('dist', 'index.html');
+      try {
+        const rawHtml = fs.readFileSync(distIndexPath, 'utf8');
+        const html = await injectDynamicSeoHtml(rawHtml, req);
         return res.type('html').send(html);
       } catch {
         return res.sendFile(distIndexPath);
@@ -7690,6 +7907,35 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+
+    app.use(async (req, res, next) => {
+      const reqPath = req.path || '/';
+      const accept = String(req.headers.accept || '');
+      const isHtmlPageRequest =
+        req.method === 'GET' &&
+        !reqPath.startsWith('/api/') &&
+        !reqPath.startsWith('/@') &&
+        !reqPath.startsWith('/src/') &&
+        !reqPath.startsWith('/node_modules/') &&
+        !reqPath.startsWith('/assets/') &&
+        !path.extname(reqPath) &&
+        (accept.includes('text/html') || accept.includes('*/*') || accept === '');
+
+      if (!isHtmlPageRequest) {
+        return next();
+      }
+
+      try {
+        const devIndexPath = path.resolve('index.html');
+        const template = fs.readFileSync(devIndexPath, 'utf8');
+        const transformed = await vite.transformIndexHtml(req.originalUrl, template);
+        const seoHtml = await injectDynamicSeoHtml(transformed, req);
+        return res.status(200).set({ 'Content-Type': 'text/html' }).end(seoHtml);
+      } catch {
+        return next();
+      }
+    });
+
     app.use(vite.middlewares);
   }
 

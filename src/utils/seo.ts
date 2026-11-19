@@ -1,5 +1,10 @@
 import { Comic } from '../types/comic';
 
+export const DEFAULT_HOME_TITLE = 'Aathirai Comic | Read Original Tamil & Indian Comics Online';
+export const DEFAULT_HOME_DESCRIPTION =
+  'Explore Aathirai Comic to read digital comics online. Discover original Tamil comic and Indian comic series across mythology, action, and manga.';
+export const DEFAULT_OG_IMAGE_PATH = '/assets/og-hero-banner.jpg';
+
 const PLATFORM_UMBRELLA_TERMS = new Set([
   'tamil',
   'tamil comic',
@@ -11,6 +16,8 @@ const PLATFORM_UMBRELLA_TERMS = new Set([
   'indian',
   'indian comic',
   'indian comics',
+  'indian digital comics',
+  'online tamil comics',
   'general',
   'general comic',
   'general comics',
@@ -26,17 +33,18 @@ const PLATFORM_UMBRELLA_TERMS = new Set([
 ]);
 
 const BASE_SEO_KEYWORDS = [
+  'Aathirai Comic',
+  'Aathirai Comics',
   'Tamil comic',
-  'Tamil comics',
-  'Aathirai comic',
-  'Aathirai_Comic',
   'Indian comic',
+  'online Tamil comics',
+  'Indian digital comics',
+  'read digital comics online',
+  'Tamil comics',
   'Indian comics',
-  'general comic',
-  'comic book',
+  'Aathirai_Comic',
   'Tamil manga',
   'Indian webtoons',
-  'read Tamil comics online',
   'Tamil graphic novels',
   'Action comics',
   'Fantasy comics',
@@ -47,6 +55,51 @@ const BASE_SEO_KEYWORDS = [
   'Slice of Life comics',
   'Horror comics',
 ];
+
+export function getComicSlug(comic: Pick<Comic, 'id' | 'slug'>): string {
+  return encodeURIComponent((comic.slug || comic.id).trim());
+}
+
+export function getComicPath(comic: Pick<Comic, 'id' | 'slug'>): string {
+  return `/comic/${getComicSlug(comic)}`;
+}
+
+export function resolveSeoImageUrl(
+  imageUrl: string | undefined,
+  origin: string,
+  comicSlugOrId?: string
+): string {
+  const cleanOrigin = origin.replace(/\/+$/, '');
+  const trimmed = (imageUrl || '').trim();
+  if (!trimmed) {
+    return `${cleanOrigin}${DEFAULT_OG_IMAGE_PATH}`;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('data:image/')) {
+    return comicSlugOrId
+      ? `${cleanOrigin}/api/comics/${encodeURIComponent(comicSlugOrId)}/og-image`
+      : `${cleanOrigin}${DEFAULT_OG_IMAGE_PATH}`;
+  }
+  if (trimmed.startsWith('/')) {
+    return `${cleanOrigin}${trimmed}`;
+  }
+  return `${cleanOrigin}/${trimmed}`;
+}
+
+export function formatBookSeoTitle(bookTitle: string): string {
+  return `${bookTitle} - Read Tamil & Indian Comic | Aathirai Comic`;
+}
+
+export function formatBookSeoDescription(comic: Comic): string {
+  const genres = (comic.genre || []).slice(0, 3).join(', ') || 'Tamil & Indian Comic';
+  const base = `${comic.title} by ${comic.authorName} (${genres}). ${
+    comic.description || 'Read this original Tamil & Indian digital comic online on Aathirai Comic.'
+  }`.replace(/\s+/g, ' ').trim();
+  if (base.length <= 155) return base;
+  return `${base.slice(0, 152).replace(/\s+\S*$/, '')}...`;
+}
 
 /**
  * Smart multi-term search matcher for Tamil, Indian, Aathirai, general comic,
@@ -67,8 +120,7 @@ export function matchesComicSearchQuery(comic: Comic, rawQuery: string): boolean
       ch.title || '',
       ...(ch.episodes || []).map((ep) => `${ep.title || ''} ${ep.synopsis || ''}`),
     ]),
-    // Platform-wide editorial taxonomy so broad searches for Tamil/Indian/Aathirai/General comics always surface the catalog
-    'tamil comic tamil comics aathirai comic aathirai_comic indian comic indian comics general comic comic book manga webtoon',
+    'tamil comic tamil comics online tamil comics aathirai comic aathirai comics aathirai_comic indian comic indian comics indian digital comics general comic comic book manga webtoon',
   ];
 
   const corpus = searchableParts.join(' ').toLowerCase();
@@ -108,6 +160,12 @@ function setCanonicalLink(url: string) {
 }
 
 function setDynamicJsonLd(payload: Record<string, unknown>) {
+  // Remove static placeholder script if present so crawlers see one clean dynamic graph
+  const baseScript = document.getElementById('aathirai-base-jsonld');
+  if (baseScript) {
+    baseScript.remove();
+  }
+
   let script = document.getElementById('aathirai-dynamic-jsonld') as HTMLScriptElement | null;
   if (!script) {
     script = document.createElement('script');
@@ -136,49 +194,61 @@ export function updateDocumentSeo({
   if (typeof document === 'undefined' || typeof window === 'undefined') return;
 
   const origin = window.location.origin;
-  const canonicalUrl = `${origin}${window.location.pathname}`;
+  const pathname = window.location.pathname || '/';
+  const canonicalUrl = selectedComic
+    ? `${origin}${getComicPath(selectedComic)}`
+    : `${origin}${pathname}`;
+
   const liveGenres = Array.from(
     new Set(comics.flatMap((c) => c.genre || []).filter(Boolean))
   );
   const liveTitles = comics.map((c) => c.title).filter(Boolean);
 
-  let title = 'Aathirai_Comic – Tamil Comics, Indian Comics & Webtoons';
-  let description =
-    'Read Tamil comics, Indian comics, webtoons, and manga on Aathirai_Comic. Explore action, mythology, fantasy, and general comics free or premium.';
+  let title = DEFAULT_HOME_TITLE;
+  let description = DEFAULT_HOME_DESCRIPTION;
+  let ogType = 'website';
+  let ogImage = `${origin}${DEFAULT_OG_IMAGE_PATH}`;
+  let ogImageAlt = 'Aathirai Comic - Original Tamil & Indian Digital Comics Banner';
 
   if (selectedComic) {
-    const genreLabel = (selectedComic.genre || []).join(', ') || 'Comic Series';
-    title = `${selectedComic.title} – Tamil & Indian Comic | Aathirai_Comic`;
-    description = `${selectedComic.title} (${genreLabel}) by ${selectedComic.authorName}. Read on Aathirai_Comic — Tamil, Indian, and general comic book network.`;
+    title = formatBookSeoTitle(selectedComic.title);
+    description = formatBookSeoDescription(selectedComic);
+    ogType = 'book';
+    ogImage = resolveSeoImageUrl(
+      selectedComic.bannerImage || selectedComic.coverImage,
+      origin,
+      selectedComic.slug || selectedComic.id
+    );
+    ogImageAlt = `${selectedComic.title} Tamil comic cover - Aathirai Comic`;
   } else if (currentTab === 'books') {
     const cleanSearch = (booksSearch || '').trim();
     const cleanGenre = booksGenre && booksGenre !== 'All' ? booksGenre : '';
 
     if (cleanSearch) {
-      title = `${cleanSearch} – Tamil & Indian Comics | Aathirai_Comic`;
-      description = `Search results for "${cleanSearch}" on Aathirai_Comic. Discover Tamil comics, Indian comics, general comics, and matching series.`;
+      title = `${cleanSearch} - Read Tamil & Indian Comics | Aathirai Comic`;
+      description = `Browse "${cleanSearch}" on Aathirai Comic. Read online Tamil comics, Indian digital comics, and original series.`;
     } else if (cleanGenre) {
-      title = `${cleanGenre} Comics – Tamil & Indian Books | Aathirai_Comic`;
-      description = `Browse ${cleanGenre} comic books on Aathirai_Comic. Read free and premium Tamil comics, Indian comics, and original series.`;
+      title = `${cleanGenre} Tamil & Indian Comics | Aathirai Comic`;
+      description = `Read ${cleanGenre} Tamil comics and Indian digital comics online on Aathirai Comic. Free and premium series.`;
     } else {
-      title = 'Books – Tamil Comics, Indian Comics & All Series | Aathirai_Comic';
+      title = 'Browse Tamil & Indian Comic Books Online | Aathirai Comic';
       description =
         liveTitles.length > 0
-          ? `Explore ${liveTitles.slice(0, 4).join(', ')} and all Tamil comics, Indian comics, and general comic categories on Aathirai_Comic.`
-          : 'Browse all Tamil comics, Indian comics, and general comic books across action, mythology, fantasy, sci-fi, and slice-of-life on Aathirai_Comic.';
+          ? `Read ${liveTitles.slice(0, 3).join(', ')} and all Tamil & Indian digital comics online on Aathirai Comic.`
+          : 'Browse all Tamil comics, Indian digital comics, mythology, action, fantasy, and manga series on Aathirai Comic.';
     }
   } else if (currentTab === 'authors') {
-    title = 'Comic Creators & Authors – Aathirai_Comic India';
+    title = 'Tamil & Indian Comic Creators & Authors | Aathirai Comic';
     description =
-      'Meet Tamil and Indian comic book authors, illustrators, and storytellers publishing original series on Aathirai_Comic.';
+      'Meet original Tamil and Indian comic book authors, illustrators, and storytellers publishing digital comics on Aathirai Comic.';
   } else if (currentTab === 'premium') {
-    title = 'Premium Plans (₹49 / ₹249) – Unlimited Comics | Aathirai_Comic';
+    title = 'Premium Plans (₹49 / ₹249) - Read Digital Comics | Aathirai Comic';
     description =
-      'Unlock all Tamil comics, Indian comics, and exclusive episodes with Aathirai_Comic ₹49 Monthly or ₹249 6-Month Unlimited Pass via Razorpay.';
+      'Unlock unlimited online Tamil comics and Indian digital comics on Aathirai Comic with ₹49 Monthly or ₹249 6-Month passes.';
   } else if (currentTab === 'about') {
-    title = 'About Aathirai_Comic – Tamil & Indian Digital Comics';
+    title = 'About Aathirai Comic | Tamil & Indian Digital Comics Platform';
     description =
-      'Learn about Aathirai_Comic, an Indian digital comic publishing platform built for Tamil comic readers, creators, and global manga fans.';
+      'Learn how Aathirai Comic empowers Tamil comic and Indian comic creators with digital publishing and direct reader access.';
   }
 
   const combinedKeywords = Array.from(
@@ -189,7 +259,7 @@ export function updateDocumentSeo({
       ...liveTitles,
     ])
   )
-    .slice(0, 40)
+    .slice(0, 45)
     .join(', ');
 
   document.title = title;
@@ -197,21 +267,36 @@ export function updateDocumentSeo({
   setMetaTag('name', 'keywords', combinedKeywords);
   setMetaTag('property', 'og:title', title);
   setMetaTag('property', 'og:description', description);
+  setMetaTag('property', 'og:image', ogImage);
+  setMetaTag('property', 'og:image:alt', ogImageAlt);
   setMetaTag('property', 'og:url', canonicalUrl);
+  setMetaTag('property', 'og:type', ogType);
+  setMetaTag('property', 'og:site_name', 'Aathirai Comic');
+  setMetaTag('name', 'twitter:card', 'summary_large_image');
   setMetaTag('name', 'twitter:title', title);
   setMetaTag('name', 'twitter:description', description);
+  setMetaTag('name', 'twitter:image', ogImage);
   setCanonicalLink(canonicalUrl);
 
   if (selectedComic) {
     const epCount = selectedComic.chapters?.reduce((s, ch) => s + (ch.episodes?.length || 0), 0) || 0;
+    const bookUrl = `${origin}${getComicPath(selectedComic)}`;
     setDynamicJsonLd({
       '@context': 'https://schema.org',
-      '@type': 'Book',
+      '@type': ['ComicSeries', 'Book'],
+      '@id': `${bookUrl}#comic`,
       name: selectedComic.title,
-      url: `${origin}/comic/${selectedComic.slug || selectedComic.id}`,
-      inLanguage: ['en-IN', 'ta-IN'],
+      url: bookUrl,
+      inLanguage: ['ta', 'en'],
       genre: selectedComic.genre,
-      keywords: [...(selectedComic.genre || []), 'Tamil comic', 'Indian comic', 'Aathirai comic'].join(', '),
+      image: ogImage,
+      keywords: [
+        ...(selectedComic.genre || []),
+        'Tamil comic',
+        'Indian comic',
+        'online Tamil comics',
+        'Aathirai Comic',
+      ].join(', '),
       description: selectedComic.description,
       author: {
         '@type': 'Person',
@@ -219,9 +304,23 @@ export function updateDocumentSeo({
       },
       publisher: {
         '@type': 'Organization',
-        name: 'Aathirai_Comic',
+        name: 'Aathirai Comic',
+        url: `${origin}/`,
       },
+      numberOfEpisodes: epCount,
       numberOfPages: epCount,
+      hasPart: (selectedComic.chapters || []).map((ch) => ({
+        '@type': 'ComicIssue',
+        name: `Chapter ${ch.chapterNumber}: ${ch.title}`,
+        issueNumber: ch.chapterNumber,
+        description: ch.synopsis || `${selectedComic.title} Chapter ${ch.chapterNumber}`,
+        hasPart: (ch.episodes || []).map((ep) => ({
+          '@type': 'Chapter',
+          name: `Episode ${ep.episodeNumber}: ${ep.title}`,
+          position: ep.episodeNumber,
+          description: ep.synopsis || ep.title,
+        })),
+      })),
       aggregateRating: {
         '@type': 'AggregateRating',
         ratingValue: selectedComic.averageRating || 5,
@@ -231,32 +330,74 @@ export function updateDocumentSeo({
   } else {
     setDynamicJsonLd({
       '@context': 'https://schema.org',
-      '@type': 'CollectionPage',
-      name: title,
-      url: canonicalUrl,
-      inLanguage: ['en-IN', 'ta-IN'],
-      keywords: combinedKeywords,
-      description,
-      mainEntity: {
-        '@type': 'ItemList',
-        name: 'Aathirai_Comic Books – Tamil, Indian & General Comics Catalog',
-        numberOfItems: comics.length,
-        itemListElement: comics.slice(0, 50).map((comic, idx) => ({
-          '@type': 'ListItem',
-          position: idx + 1,
-          url: `${origin}/comic/${comic.slug || comic.id}`,
-          name: comic.title,
-          item: {
-            '@type': 'Book',
-            name: comic.title,
-            genre: comic.genre,
-            author: {
-              '@type': 'Person',
-              name: comic.authorName,
-            },
+      '@graph': [
+        {
+          '@type': 'Organization',
+          '@id': `${origin}/#organization`,
+          name: 'Aathirai Comic',
+          alternateName: ['Aathirai Comic', 'Aathirai Comics', 'Aathirai_Comic'],
+          url: `${origin}/`,
+          logo: `${origin}${DEFAULT_OG_IMAGE_PATH}`,
+          email: 'aathiraicomic@gmail.com',
+          description:
+            'Original Tamil comic and Indian digital comic publishing network for online Tamil comics and graphic novels.',
+        },
+        {
+          '@type': 'WebSite',
+          '@id': `${origin}/#website`,
+          name: 'Aathirai Comic',
+          alternateName: ['Aathirai Comic', 'Aathirai Comics'],
+          url: `${origin}/`,
+          inLanguage: ['ta', 'en'],
+          keywords: combinedKeywords,
+          publisher: {
+            '@id': `${origin}/#organization`,
           },
-        })),
-      },
+          potentialAction: {
+            '@type': 'SearchAction',
+            target: {
+              '@type': 'EntryPoint',
+              urlTemplate: `${origin}/books?q={search_term_string}`,
+            },
+            'query-input': 'required name=search_term_string',
+          },
+        },
+        {
+          '@type': 'CollectionPage',
+          '@id': `${canonicalUrl}#collection`,
+          name: title,
+          url: canonicalUrl,
+          inLanguage: ['ta', 'en'],
+          keywords: combinedKeywords,
+          description,
+          mainEntity: {
+            '@type': 'ItemList',
+            name: 'Aathirai Comic – Tamil & Indian Digital Comics Catalog',
+            numberOfItems: comics.length,
+            itemListElement: comics.slice(0, 50).map((comic, idx) => ({
+              '@type': 'ListItem',
+              position: idx + 1,
+              url: `${origin}${getComicPath(comic)}`,
+              name: comic.title,
+              item: {
+                '@type': ['ComicSeries', 'Book'],
+                name: comic.title,
+                genre: comic.genre,
+                inLanguage: ['ta', 'en'],
+                image: resolveSeoImageUrl(comic.coverImage, origin, comic.slug || comic.id),
+                author: {
+                  '@type': 'Person',
+                  name: comic.authorName,
+                },
+                publisher: {
+                  '@type': 'Organization',
+                  name: 'Aathirai Comic',
+                },
+              },
+            })),
+          },
+        },
+      ],
     });
   }
 }

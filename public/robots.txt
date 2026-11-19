@@ -9,4 +9,4 @@ Disallow: /api/admin/
 Disallow: /api/admin-auth/
 Disallow: /admin
 
-Sitemap: https://aathiraicomic.app/sitemap.xml
+Sitemap: /sitemap.xml

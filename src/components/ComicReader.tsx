@@ -895,7 +895,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   >
                     <img
                       src={p.imageUrl}
-                      alt={`Page ${p.pageNumber || idx + 1}`}
+                      alt={`${data.comic.title} - ${data.episode.title} page ${p.pageNumber || idx + 1} Tamil comic - Aathirai Comic`}
                       loading="lazy"
                       className="w-full h-auto block select-none pointer-events-none"
                     />
@@ -920,7 +920,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                         >
                           <img
                             src={pg.imageUrl}
-                            alt={`Page ${currentPageIndex + idx + 1}`}
+                            alt={`${data.comic.title} - ${data.episode.title} page ${currentPageIndex + idx + 1} Tamil comic - Aathirai Comic`}
                             className="w-full h-auto block select-none pointer-events-none"
                           />
                         </div>
@@ -960,7 +960,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   <div className="w-full rounded-xl overflow-hidden shadow-2xl border border-slate-800 bg-slate-900 flex justify-center">
                     <img
                       src={pages[currentPageIndex].imageUrl}
-                      alt={`Page ${currentPageIndex + 1}`}
+                      alt={`${data.comic.title} - ${data.episode.title} page ${currentPageIndex + 1} Tamil comic - Aathirai Comic`}
                       className={`${
                         readingMode === 'single' ? 'max-h-[80vh] w-auto object-contain' : 'w-full h-auto'
                       } block select-none pointer-events-none`}

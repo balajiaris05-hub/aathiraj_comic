@@ -37,27 +37,63 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
             <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3">Explore Platform</h4>
             <ul className="space-y-2">
               <li>
-                <button onClick={() => setCurrentTab('home')} className="hover:text-rose-400 transition-colors">
+                <a
+                  href="/"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('home');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
                   Home Showcase
-                </button>
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('books')} className="hover:text-rose-400 transition-colors">
+                <a
+                  href="/books"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('books');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
                   All Comic Books &amp; Series
-                </button>
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('authors')} className="hover:text-rose-400 transition-colors">
+                <a
+                  href="/authors"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('authors');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
                   Featured Authors &amp; Studios
-                </button>
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('premium')} className="hover:text-rose-400 transition-colors">
+                <a
+                  href="/premium"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('premium');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
                   Premium Pass &amp; Pricing
-                </button>
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('become_author')} className="hover:text-rose-400 text-amber-400 font-medium transition-colors">
+                <button onClick={() => setCurrentTab('become_author')} className="hover:text-rose-400 text-amber-400 font-medium transition-colors cursor-pointer">
                   Become an Author (Creator Application)
                 </button>
               </li>
@@ -83,22 +119,49 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
             <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3">Legal &amp; Trust</h4>
             <ul className="space-y-2">
               <li>
-                <button onClick={() => setCurrentTab('about')} className="hover:text-rose-400 transition-colors">
-                  About Aathirai_Comic
-                </button>
+                <a
+                  href="/about"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('about');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
+                  About Aathirai Comic
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('terms')} className="hover:text-rose-400 transition-colors">
+                <a
+                  href="/terms"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('terms');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
                   Terms &amp; Conditions (Customer &amp; Author)
-                </button>
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('copyright')} className="hover:text-rose-400 transition-colors">
+                <a
+                  href="/copyright"
+                  onClick={(e) => {
+                    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                      e.preventDefault();
+                      setCurrentTab('copyright');
+                    }
+                  }}
+                  className="hover:text-rose-400 transition-colors"
+                >
                   Official Copyright &amp; DMCA Takedown
-                </button>
+                </a>
               </li>
               <li>
-                <button onClick={() => setCurrentTab('purchases')} className="hover:text-rose-400 transition-colors">
+                <button onClick={() => setCurrentTab('purchases')} className="hover:text-rose-400 transition-colors cursor-pointer">
                   Customer Purchase History &amp; Invoices
                 </button>
               </li>
