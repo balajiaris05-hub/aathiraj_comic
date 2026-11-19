@@ -6,7 +6,6 @@ import {
   PenTool,
   Plus,
   BookOpen,
-  IndianRupee,
   Eye,
   Star,
   Layers,
@@ -98,7 +97,6 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
   const [editCustomGenre, setEditCustomGenre] = useState('');
   const [editCover, setEditCover] = useState('');
   const [editAccessType, setEditAccessType] = useState<'free' | 'premium'>('free');
-  const [editFullPrice, setEditFullPrice] = useState(99);
   const [isSavingComicEdit, setIsSavingComicEdit] = useState(false);
   const [comicEditError, setComicEditError] = useState<string | null>(null);
 
@@ -112,7 +110,6 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
   const [editEpisodeTitle, setEditEpisodeTitle] = useState('');
   const [editEpisodeSynopsis, setEditEpisodeSynopsis] = useState('');
   const [editEpisodeIsPremium, setEditEpisodeIsPremium] = useState(false);
-  const [editEpisodePrice, setEditEpisodePrice] = useState(10);
   const [isUpdatingEpisode, setIsUpdatingEpisode] = useState(false);
 
   // Direct Chapter Upload Trigger State
@@ -148,7 +145,6 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
   const [episodeTitle, setEpisodeTitle] = useState('');
   const [episodeSynopsis, setEpisodeSynopsis] = useState('');
   const [episodeIsPremium, setEpisodeIsPremium] = useState(false);
-  const [episodePrice, setEpisodePrice] = useState(10);
   const [isPublishingEpisode, setIsPublishingEpisode] = useState(false);
 
   // Auto-select comic
@@ -255,9 +251,9 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
           coverImage: coverImageUrl,
           description: newDesc.trim(),
           accessType: newAccess,
-          fullPriceInr: newAccess === 'premium' ? 99 : 0,
-          chapterPriceInr: newAccess === 'premium' ? 30 : 0,
-          episodePriceInr: newAccess === 'premium' ? 10 : 0,
+          fullPriceInr: 0,
+          chapterPriceInr: 0,
+          episodePriceInr: 0,
           attachedFileName: coverPage?.fileName || 'Attached Comic Pages',
           attachedFileSize: `${newComicAttachedPages.length} files`,
           attachedFileType: 'IMAGE_ARCHIVE',
@@ -530,7 +526,6 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
     setEditGenres(selectedComic.genre || ['Fantasy']);
     setEditCover(selectedComic.coverImage);
     setEditAccessType(selectedComic.accessType);
-    setEditFullPrice(selectedComic.fullPriceInr || 99);
     setComicEditError(null);
     setIsEditingComicModalOpen(true);
   };
@@ -553,7 +548,7 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
           genre: editGenres,
           coverImage: editCover,
           accessType: editAccessType,
-          fullPriceInr: editAccessType === 'premium' ? editFullPrice : 0,
+          fullPriceInr: 0,
           authorId: user?.id,
           authorName: user?.name,
         }),
@@ -588,7 +583,6 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
     setEditEpisodeTitle(ep.title);
     setEditEpisodeSynopsis(ep.synopsis || '');
     setEditEpisodeIsPremium(ep.isPremium);
-    setEditEpisodePrice(ep.priceInr || 10);
   };
 
   // Save Episode Edit
@@ -606,7 +600,7 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
           title: editEpisodeTitle.trim(),
           synopsis: editEpisodeSynopsis.trim(),
           isPremium: editEpisodeIsPremium,
-          priceInr: editEpisodeIsPremium ? editEpisodePrice : 0,
+          priceInr: 0,
           authorId: user?.id || 'usr_admin',
           authorName: user?.name || 'Administrator',
         }),
@@ -672,7 +666,7 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
           title: episodeTitle.trim(),
           synopsis: episodeSynopsis.trim(),
           isPremium: episodeIsPremium,
-          priceInr: episodeIsPremium ? episodePrice : 0,
+          priceInr: 0,
           authorId: user?.id,
           authorName: user?.name,
           coverImage: episodeCoverUrl,
@@ -759,35 +753,18 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Access Type
-                  </label>
-                  <select
-                    value={editAccessType}
-                    onChange={(e: any) => setEditAccessType(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
-                  >
-                    <option value="free">100% Free</option>
-                    <option value="premium">Premium (Paywall)</option>
-                  </select>
-                </div>
-
-                {editAccessType === 'premium' && (
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Full Series Price (INR ₹)
-                    </label>
-                    <input
-                      type="number"
-                      min="10"
-                      value={editFullPrice}
-                      onChange={(e) => setEditFullPrice(Number(e.target.value))}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono"
-                    />
-                  </div>
-                )}
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Access Type
+                </label>
+                <select
+                  value={editAccessType}
+                  onChange={(e: any) => setEditAccessType(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                >
+                  <option value="free">100% Free</option>
+                  <option value="premium">Premium</option>
+                </select>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
@@ -864,56 +841,34 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
-                <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Access Model
-                  </label>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setEditEpisodeIsPremium(false)}
-                      className={`flex-1 py-2 px-3 rounded-xl font-bold border transition-all cursor-pointer ${
-                        !editEpisodeIsPremium
-                          ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                          : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
-                      }`}
-                    >
-                      Free
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditEpisodeIsPremium(true)}
-                      className={`flex-1 py-2 px-3 rounded-xl font-bold border transition-all cursor-pointer ${
-                        editEpisodeIsPremium
-                          ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
-                          : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
-                      }`}
-                    >
-                      Premium
-                    </button>
-                  </div>
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Access Model
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditEpisodeIsPremium(false)}
+                    className={`flex-1 py-2 px-3 rounded-xl font-bold border transition-all cursor-pointer ${
+                      !editEpisodeIsPremium
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                    }`}
+                  >
+                    Free
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditEpisodeIsPremium(true)}
+                    className={`flex-1 py-2 px-3 rounded-xl font-bold border transition-all cursor-pointer ${
+                      editEpisodeIsPremium
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
+                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                    }`}
+                  >
+                    Premium
+                  </button>
                 </div>
-
-                {editEpisodeIsPremium && (
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Episode Unlock Price (₹ INR)
-                    </label>
-                    <div className="relative">
-                      <IndianRupee className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="number"
-                        min="1"
-                        max="999"
-                        required
-                        value={editEpisodePrice}
-                        onChange={(e) => setEditEpisodePrice(Number(e.target.value))}
-                        className="w-full pl-8 pr-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:ring-2 focus:ring-amber-500"
-                      />
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Episode summary info */}
@@ -1498,7 +1453,7 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                         </span>
                       )}
                       {c.accessType === 'premium' ? (
-                        <span className="text-[10px] font-bold text-amber-500 ml-auto">₹{c.fullPriceInr}</span>
+                        <span className="text-[10px] font-bold text-amber-500 ml-auto">Premium</span>
                       ) : (
                         <span className="text-[10px] font-bold text-emerald-500 ml-auto">Free</span>
                       )}
@@ -1665,25 +1620,9 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                           className="rounded text-rose-600 focus:ring-rose-500"
                         />
                         <span className="font-semibold text-slate-700 dark:text-slate-300">
-                          Mark as Premium Episode (Paywall)
+                          Mark as Premium Episode
                         </span>
                       </label>
-
-                      {episodeIsPremium && (
-                        <div className="flex items-center gap-1.5 text-xs">
-                          <span className="text-slate-500">Price:</span>
-                          <span className="font-bold text-slate-900 dark:text-white">₹</span>
-                          <input
-                            type="number"
-                            min="5"
-                            max="100"
-                            value={episodePrice}
-                            onChange={(e) => setEpisodePrice(Number(e.target.value))}
-                            className="w-16 px-2 py-1 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
-                          />
-                          <span className="text-slate-400 font-mono">INR</span>
-                        </div>
-                      )}
                     </div>
 
                     {/* Multi-Photo & Image Upload Dropzone */}
@@ -1978,8 +1917,8 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                                           {ep.title}
                                         </span>
                                         {ep.isPremium ? (
-                                          <span className="text-[9px] bg-amber-500/10 text-amber-500 border border-amber-500/20 px-1 py-0.2 rounded font-mono font-bold">
-                                            ₹{ep.priceInr}
+                                          <span className="text-[9px] bg-amber-500/10 text-amber-500 border border-amber-500/20 px-1 py-0.2 rounded font-bold">
+                                            Premium
                                           </span>
                                         ) : (
                                           <span className="text-[9px] bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-1 py-0.2 rounded font-bold">
@@ -2257,7 +2196,7 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                   onChange={() => setNewAccess('premium')}
                   className="text-rose-600"
                 />
-                <span>Premium Paywall (INR)</span>
+                <span>Premium</span>
               </label>
             </div>
           </div>

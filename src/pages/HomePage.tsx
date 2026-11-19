@@ -27,6 +27,7 @@ import {
   CheckCircle2,
   Send,
   Building2,
+  BellRing,
   X,
 } from 'lucide-react';
 
@@ -204,6 +205,45 @@ export const HomePage: React.FC<HomePageProps> = ({
               >
                 Explore All
               </button>
+            </div>
+          </div>
+
+          {/* Release & Reader Notification Announcement */}
+          <div className="relative overflow-hidden max-w-[630px] rounded-2xl bg-gradient-to-br from-slate-950/90 via-slate-900/85 to-rose-950/55 border border-rose-500/35 ring-1 ring-white/10 p-5 sm:px-6 sm:py-5 backdrop-blur-xl shadow-2xl shadow-rose-950/30">
+            <div className="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-rose-500 via-amber-400 to-transparent" />
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-rose-500/25 to-amber-500/15 border border-rose-400/40 text-rose-300 flex items-center justify-center shrink-0 mt-0.5 shadow-inner">
+                <BellRing className="w-5 h-5" />
+              </div>
+              <div className="space-y-2 flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-rose-400">
+                    Official Reader Announcement
+                  </span>
+                  <span className="text-slate-600" aria-hidden="true">•</span>
+                  <span className="text-[11px] font-semibold text-amber-300">
+                    Continuous Publishing Schedule
+                  </span>
+                </div>
+
+                <p className="text-base sm:text-[17px] font-extrabold text-white leading-snug tracking-tight font-heading">
+                  Seamless, Frequent Comic Releases &amp; Direct Gmail Alerts
+                </p>
+
+                <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
+                  Aathirai Comic publishes fresh stories seamlessly on a frequent release schedule for uninterrupted reading enjoyment. Whenever a newly published <strong className="text-white font-semibold">episode</strong>, <strong className="text-white font-semibold">chapter</strong>, or <strong className="text-white font-semibold">new journal</strong> goes live on Aathirai Comic, you will receive instant release notifications directly through <strong className="text-amber-300 font-semibold">Gmail</strong> so you never miss a single update.
+                </p>
+
+                <div className="pt-2.5 mt-1 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="inline-flex items-center gap-1.5 text-rose-200 font-semibold">
+                    <Mail className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    <span>Notifications delivered directly to your Gmail</span>
+                  </div>
+                  <span className="text-amber-200/95 font-medium">
+                    Thank you for supporting Aathirai Comic &amp; our creators.
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -864,7 +904,7 @@ export const HomePage: React.FC<HomePageProps> = ({
           </h2>
           <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
             Submit your creator application with your sample pages. Once approved by our editorial administrator,
-            unlock your comprehensive Author Studio to manage chapters, upload episodes, set INR pricing, and earn 70%
+            unlock your comprehensive Author Studio to manage chapters, upload episodes, publish free or Premium series, and earn 70%
             revenue share with direct Indian payouts.
           </p>
           <div className="pt-2 flex flex-wrap items-center gap-3">

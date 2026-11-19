@@ -160,11 +160,6 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
                   Official Copyright &amp; DMCA Takedown
                 </a>
               </li>
-              <li>
-                <button onClick={() => setCurrentTab('purchases')} className="hover:text-rose-400 transition-colors cursor-pointer">
-                  Customer Purchase History &amp; Invoices
-                </button>
-              </li>
               <li className="pt-1">
                 <a
                   href="mailto:aathiraicomic@gmail.com?subject=Contact%20Admin%20-%20Aathirai_Comic"

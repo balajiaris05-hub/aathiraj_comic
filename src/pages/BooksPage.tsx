@@ -203,7 +203,7 @@ export const BooksPage: React.FC<BooksPageProps> = ({
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              Premium (INR ₹)
+              Premium
             </button>
           </div>
 

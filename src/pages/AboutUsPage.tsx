@@ -67,7 +67,7 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({ setCurrentTab }) => {
           </div>
           <h3 className="font-bold text-sm text-slate-900 dark:text-white">Indian Payment Freedom</h3>
           <p className="text-slate-500 leading-relaxed">
-            UPI-first checkout with Razorpay, instant unlocks for ₹10 per episode, and transparent creator payouts.
+            UPI-first checkout with Razorpay, all-access Premium passes (₹49/month or ₹249/6 months), and transparent creator payouts.
           </p>
         </div>
       </div>

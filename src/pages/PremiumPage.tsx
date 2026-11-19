@@ -249,44 +249,55 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
       )}
 
       {/* ONLY TWO PREMIUM PLANS: 1 MONTH (₹49) & 6 MONTHS (₹249) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
         
         {/* PLAN 1: 1 MONTH PREMIUM — ₹49 */}
-        <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 hover:border-rose-500/60 shadow-lg space-y-6 flex flex-col justify-between transition-all">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400">
+        <div className="p-7 sm:p-9 rounded-3xl bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 hover:border-rose-500/60 shadow-xl space-y-7 flex flex-col justify-between transition-all relative overflow-hidden">
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-black bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-slate-950 uppercase tracking-wider shadow-lg shadow-emerald-500/35 ring-1 ring-white/40">
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+              <span>Zero Ads · Pure Read</span>
+            </span>
+          </div>
+
+          <div className="space-y-5 pt-9 sm:pt-10">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400">
                 1 Month Premium Pass
               </span>
-              <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
+              <span className="px-3 py-1 rounded-md text-xs font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
                 30 Days Validity
               </span>
             </div>
 
-            <div className="flex items-baseline gap-1.5 font-mono">
-              <span className="text-4xl font-black text-slate-900 dark:text-white">₹49</span>
-              <span className="text-xs text-slate-500 font-semibold">/ 1 Month</span>
+            <div className="flex items-baseline gap-2 font-mono">
+              <span className="text-5xl font-black text-slate-900 dark:text-white">₹49</span>
+              <span className="text-sm text-slate-500 font-semibold">/ 1 Month</span>
             </div>
 
-            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
               Full unlimited access to all paywalled comics, chapters, and episodes for 1 month (30 days), linked directly to your Gmail account.
             </p>
 
-            <ul className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 pt-2">
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+            <ul className="space-y-3 text-sm text-slate-600 dark:text-slate-300 pt-2">
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <span>Unlocks 100% of paywalled comics &amp; chapters for 1 Month</span>
               </li>
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <span>Connected to your Gmail for automatic verification every time</span>
               </li>
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                <span>Receive instant notifications when a new episode, chapter, or new comic is released</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <span>Instant UPI (Google Pay, PhonePe, Paytm) &amp; Card checkout</span>
               </li>
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <span>Official payment receipt &amp; 70% creator revenue support</span>
               </li>
             </ul>
@@ -297,7 +308,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
               <button
                 type="button"
                 disabled
-                className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all ${
+                className={`w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all ${
                   user?.premiumPlan === '1_month'
                     ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
                     : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
@@ -319,7 +330,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
               <button
                 type="button"
                 onClick={openAuthModal}
-                className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer"
+                className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer"
               >
                 Subscribe 1 Month Premium — ₹49
               </button>
@@ -328,7 +339,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                 <button
                   type="button"
                   onClick={() => setCheckoutPlan('1_month')}
-                  className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
+                  className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
                 >
                   <span>Subscribe 1 Month Premium — ₹49</span>
                 </button>
@@ -342,10 +353,10 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                         `Razorpay hosted page opened for 1 Month Pass (₹49). Complete payment using your registered email (${user.email}) or phone, then click "Verify Payment Status Now".`
                       )
                     }
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-rose-500 dark:text-slate-400"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-rose-500 dark:text-slate-400"
                   >
                     <span>Prefer Razorpay hosted page?</span>
-                    <ExternalLink className="w-3 h-3" />
+                    <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 </div>
               </div>
@@ -354,48 +365,56 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
         </div>
 
         {/* PLAN 2: 6 MONTHS PREMIUM — ₹249 */}
-        <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-b from-amber-500/10 via-slate-900 to-slate-900 border-2 border-amber-500/70 shadow-2xl space-y-6 flex flex-col justify-between relative overflow-hidden">
-          <div className="absolute top-4 right-4">
-            <span className="px-2.5 py-1 rounded-md text-[10px] font-extrabold bg-amber-500 text-slate-950 uppercase tracking-wider shadow-sm">
+        <div className="p-7 sm:p-9 rounded-3xl bg-gradient-to-b from-amber-500/10 via-slate-900 to-slate-900 border-2 border-amber-500/70 shadow-2xl space-y-7 flex flex-col justify-between relative overflow-hidden">
+          <div className="absolute top-4 right-4 flex flex-wrap items-center justify-end gap-2">
+            <span className="inline-block px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-black bg-amber-500 text-slate-950 uppercase tracking-wider shadow-md">
               Best Value · Save ₹45
+            </span>
+            <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-black bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-slate-950 uppercase tracking-wider shadow-lg shadow-emerald-500/35 ring-1 ring-white/40">
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+              <span>Zero Ads · Pure Read</span>
             </span>
           </div>
 
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
+          <div className="space-y-5 pt-9 sm:pt-10">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="text-sm font-extrabold uppercase tracking-wider text-amber-400">
                 6 Months Premium Pass
               </span>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              <span className="px-3 py-1 rounded-md text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                 180 Days Validity
               </span>
             </div>
 
-            <div className="flex items-baseline gap-1.5 font-mono">
-              <span className="text-4xl font-black text-white">₹249</span>
-              <span className="text-xs text-slate-300 font-semibold">/ 6 Months</span>
+            <div className="flex items-baseline gap-2 font-mono">
+              <span className="text-5xl font-black text-white">₹249</span>
+              <span className="text-sm text-slate-300 font-semibold">/ 6 Months</span>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
+            <p className="text-sm text-slate-300 leading-relaxed">
               Half-year all-access pass! Read every paywalled comic, chapter, and premiere episode for 6 full months (180 days), verified via your Gmail.
             </p>
 
-            <ul className="space-y-2.5 text-xs text-slate-200 pt-2">
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-amber-400 shrink-0" />
+            <ul className="space-y-3 text-sm text-slate-200 pt-2">
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <span>Unlocks 100% of paywalled comics &amp; chapters for 6 Months</span>
               </li>
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Real-time Gmail &amp; Mobile verification on every comic load</span>
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>Connected to your Gmail for automatic verification every time</span>
               </li>
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>High-definition 4K manga &amp; webtoon reading mode</span>
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>Receive instant notifications when a new episode, chapter, or new comic is released</span>
               </li>
-              <li className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Priority VIP Reader badge &amp; official payment receipt</span>
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>Instant UPI (Google Pay, PhonePe, Paytm) &amp; Card checkout</span>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <Check className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>Official payment receipt &amp; 70% creator revenue support</span>
               </li>
             </ul>
           </div>
@@ -405,7 +424,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
               <button
                 type="button"
                 disabled
-                className={`w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all ${
+                className={`w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all ${
                   user?.premiumPlan === '6_months'
                     ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
                     : 'bg-slate-800 text-slate-400 cursor-not-allowed'
@@ -427,7 +446,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
               <button
                 type="button"
                 onClick={openAuthModal}
-                className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer"
+                className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer"
               >
                 Subscribe 6 Months Premium — ₹249
               </button>
@@ -436,7 +455,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                 <button
                   type="button"
                   onClick={() => setCheckoutPlan('6_months')}
-                  className="w-full py-3.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
+                  className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
                 >
                   <span>Subscribe 6 Months Premium — ₹249</span>
                 </button>
@@ -450,10 +469,10 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                         `Razorpay hosted page opened for 6 Months Pass (₹249). Complete payment using your registered email (${user.email}) or phone, then click "Verify Payment Status Now".`
                       )
                     }
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 hover:text-amber-300"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-amber-300"
                   >
                     <span>Prefer Razorpay hosted page?</span>
-                    <ExternalLink className="w-3 h-3" />
+                    <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 </div>
               </div>

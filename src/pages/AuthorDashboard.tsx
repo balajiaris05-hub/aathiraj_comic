@@ -104,7 +104,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [editCustomGenre, setEditCustomGenre] = useState('');
   const [editCover, setEditCover] = useState('');
   const [editAccessType, setEditAccessType] = useState<'free' | 'premium'>('free');
-  const [editFullPrice, setEditFullPrice] = useState(99);
   const [isSavingComicEdit, setIsSavingComicEdit] = useState(false);
   const [comicEditError, setComicEditError] = useState<string | null>(null);
 
@@ -118,7 +117,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [editEpisodeTitle, setEditEpisodeTitle] = useState('');
   const [editEpisodeSynopsis, setEditEpisodeSynopsis] = useState('');
   const [editEpisodeIsPremium, setEditEpisodeIsPremium] = useState(false);
-  const [editEpisodePrice, setEditEpisodePrice] = useState(10);
   const [isUpdatingEpisode, setIsUpdatingEpisode] = useState(false);
 
   // Direct Chapter Upload Trigger State
@@ -201,7 +199,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [episodeTitle, setEpisodeTitle] = useState('');
   const [episodeSynopsis, setEpisodeSynopsis] = useState('');
   const [episodeIsPremium, setEpisodeIsPremium] = useState(false);
-  const [episodePrice, setEpisodePrice] = useState(10);
   const [isPublishingEpisode, setIsPublishingEpisode] = useState(false);
 
   // Earnings data
@@ -496,9 +493,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           coverImage: coverImageUrl,
           description: newDesc,
           accessType: newAccess,
-          fullPriceInr: newAccess === 'premium' ? 99 : 0,
-          chapterPriceInr: newAccess === 'premium' ? 30 : 0,
-          episodePriceInr: newAccess === 'premium' ? 10 : 0,
+          fullPriceInr: 0,
+          chapterPriceInr: 0,
+          episodePriceInr: 0,
           attachedFileName: coverPage?.fileName || 'Attached Comic Pages',
           attachedFileSize: `${newComicAttachedPages.length} files`,
           attachedFileType: 'IMAGE_ARCHIVE',
@@ -627,7 +624,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setEditGenres(selectedComic.genre || ['Fantasy']);
     setEditCover(selectedComic.coverImage);
     setEditAccessType(selectedComic.accessType);
-    setEditFullPrice(selectedComic.fullPriceInr || 99);
     setComicEditError(null);
     setIsEditingComicModalOpen(true);
   };
@@ -650,7 +646,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           genre: editGenres,
           coverImage: editCover,
           accessType: editAccessType,
-          fullPriceInr: editAccessType === 'premium' ? editFullPrice : 0,
+          fullPriceInr: 0,
           authorId: user?.id,
           authorName: user?.name,
         }),
@@ -720,7 +716,6 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setEditEpisodeTitle(ep.title);
     setEditEpisodeSynopsis(ep.synopsis || '');
     setEditEpisodeIsPremium(ep.isPremium);
-    setEditEpisodePrice(ep.priceInr || 10);
   };
 
   // Save Episode Edit
@@ -738,7 +733,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           title: editEpisodeTitle.trim(),
           synopsis: editEpisodeSynopsis.trim(),
           isPremium: editEpisodeIsPremium,
-          priceInr: editEpisodeIsPremium ? editEpisodePrice : 0,
+          priceInr: 0,
           authorId: user?.id,
           authorName: user?.name,
         }),
@@ -868,7 +863,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           title: episodeTitle.trim(),
           synopsis: episodeSynopsis.trim(),
           isPremium: episodeIsPremium,
-          priceInr: episodeIsPremium ? episodePrice : 0,
+          priceInr: 0,
           authorId: user?.id,
           authorName: user?.name,
           coverImage: episodeCoverUrl,
@@ -1474,7 +1469,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                         </span>
                       )}
                       {c.accessType === 'premium' ? (
-                        <span className="text-[10px] font-bold text-amber-500 ml-auto">₹{c.fullPriceInr}</span>
+                        <span className="text-[10px] font-bold text-amber-500 ml-auto">Premium</span>
                       ) : (
                         <span className="text-[10px] font-bold text-emerald-500 ml-auto">Free</span>
                       )}
@@ -1730,25 +1725,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                           className="rounded text-rose-600 focus:ring-rose-500"
                         />
                         <span className="font-semibold text-slate-700 dark:text-slate-300">
-                          Mark as Premium Episode (Pay-per-read)
+                          Mark as Premium Episode
                         </span>
                       </label>
-
-                      {episodeIsPremium && (
-                        <div className="flex items-center gap-1.5 text-xs">
-                          <span className="text-slate-500">Price:</span>
-                          <span className="font-bold text-slate-900 dark:text-white">₹</span>
-                          <input
-                            type="number"
-                            min="5"
-                            max="100"
-                            value={episodePrice}
-                            onChange={(e) => setEpisodePrice(Number(e.target.value))}
-                            className="w-16 px-2 py-1 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
-                          />
-                          <span className="text-slate-400 font-mono">INR</span>
-                        </div>
-                      )}
                     </div>
 
                     {/* Multi-Photo & Image Upload Dropzone */}
@@ -2169,7 +2148,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
 
                               <div className="flex items-center gap-2 shrink-0">
                                 {ep.isPremium ? (
-                                  <span className="text-[10px] font-bold text-amber-500 font-mono">₹{ep.priceInr}</span>
+                                  <span className="text-[10px] font-bold text-amber-500">Premium</span>
                                 ) : (
                                   <span className="text-[10px] font-bold text-emerald-500">Free</span>
                                 )}
@@ -2476,7 +2455,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                   onChange={() => setNewAccess('premium')}
                   className="text-rose-600"
                 />
-                <span>Premium Wall (Platform subscription &amp; standard access)</span>
+                <span>Premium</span>
               </label>
             </div>
           </div>
@@ -2836,24 +2815,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       onChange={() => setEditAccessType('premium')}
                       className="text-rose-600"
                     />
-                    <span>Premium (Paywall)</span>
+                    <span>Premium</span>
                   </label>
                 </div>
-
-                {editAccessType === 'premium' && (
-                  <div className="pt-1">
-                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                      Full Comic Purchase Price (₹ INR)
-                    </label>
-                    <input
-                      type="number"
-                      min="5"
-                      value={editFullPrice}
-                      onChange={(e) => setEditFullPrice(Number(e.target.value))}
-                      className="w-32 px-3 py-1.5 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700"
-                    />
-                  </div>
-                )}
               </div>
             </div>
 
@@ -2939,25 +2903,9 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                     className="rounded text-rose-600 focus:ring-rose-500"
                   />
                   <span className="font-semibold text-slate-700 dark:text-slate-300">
-                    Premium Episode (Paywall)
+                    Premium Episode
                   </span>
                 </label>
-
-                {editEpisodeIsPremium && (
-                  <div className="flex items-center gap-2 pt-1 text-xs">
-                    <span className="text-slate-500 font-medium">Price:</span>
-                    <span className="font-bold text-slate-900 dark:text-white">₹</span>
-                    <input
-                      type="number"
-                      min="5"
-                      max="100"
-                      value={editEpisodePrice}
-                      onChange={(e) => setEditEpisodePrice(Number(e.target.value))}
-                      className="w-20 px-2 py-1 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
-                    />
-                    <span className="text-slate-400 font-mono">INR</span>
-                  </div>
-                )}
               </div>
             </div>
 

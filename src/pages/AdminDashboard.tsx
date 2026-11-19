@@ -3035,7 +3035,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {isPaywalled ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-0.5">
                               <Lock className="w-2.5 h-2.5" />
-                              <span>PAYWALL (₹{comic.fullPriceInr || 99})</span>
+                              <span>PREMIUM</span>
                             </span>
                           ) : (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-0.5">
@@ -3066,11 +3066,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </button>
                       ) : (
                         <button
-                          onClick={() => handleTogglePaywall({ comicId: comic.id, isPremium: true, priceInr: 99 })}
+                          onClick={() => handleTogglePaywall({ comicId: comic.id, isPremium: true, priceInr: 0 })}
                           className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
                         >
                           <Lock className="w-3.5 h-3.5" />
-                          <span>Put Entire Comic on Paywall (₹99)</span>
+                          <span>Put Entire Comic on Premium</span>
                         </button>
                       )}
 
@@ -3100,7 +3100,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <span className="font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-[11px]">
                           Granular Chapter &amp; Episode Paywall Toggles:
                         </span>
-                        <span className="text-[11px] text-slate-400">Put any chapter behind paywall (₹)</span>
+                        <span className="text-[11px] text-slate-400">Toggle Premium access per chapter or episode</span>
                       </div>
 
                       <div className="space-y-3">
@@ -3121,10 +3121,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   </button>
                                 ) : (
                                   <button
-                                    onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, isPremium: true, priceInr: 30 })}
+                                    onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, isPremium: true, priceInr: 0 })}
                                     className="px-2.5 py-1 text-[11px] font-bold bg-amber-500 text-slate-950 rounded"
                                   >
-                                    Put Chapter on Paywall (₹30)
+                                    Put Chapter on Premium
                                   </button>
                                 )}
                               </div>
@@ -3144,14 +3144,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                         onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: false })}
                                         className="text-emerald-500 font-bold hover:underline"
                                       >
-                                        Locked ₹{ep.priceInr} (Unlock Free)
+                                        Premium (Make Free)
                                       </button>
                                     ) : (
                                       <button
-                                        onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: true, priceInr: 10 })}
+                                        onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: true, priceInr: 0 })}
                                         className="text-amber-500 font-bold hover:underline"
                                       >
-                                        Free (Lock for ₹10)
+                                        Free (Set Premium)
                                       </button>
                                     )}
                                   </div>

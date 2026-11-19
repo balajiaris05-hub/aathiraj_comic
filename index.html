@@ -106,8 +106,22 @@
     <script>
       (function () {
         var shownError = false;
+        var bootTimer = null;
+
+        function isAppAlreadyMounted() {
+          if (window.__AATHIRAI_MOUNTED__) return true;
+          var root = document.getElementById('root');
+          if (!root) return false;
+          var bootShell = document.getElementById('aathirai-boot-shell');
+          if (!bootShell && root.childElementCount > 0) {
+            markMounted();
+            return true;
+          }
+          return false;
+        }
+
         function showBootError(msg) {
-          if (window.__AATHIRAI_MOUNTED__ || shownError) return;
+          if (isAppAlreadyMounted() || shownError) return;
           shownError = true;
           var root = document.getElementById('root');
           if (!root) return;
@@ -123,11 +137,14 @@
           if (el) el.textContent = String(msg || 'Unexpected startup interruption.');
         }
 
+        function isStaleChunkError(msg) {
+          return /dynamically imported module|importing a module script|outdated optimize dep|chunkloaderror/i.test(
+            String(msg || '')
+          );
+        }
+
         function maybeRecoverChunk(msg) {
-          var text = String(msg || '');
-          var isStaleChunk =
-            /dynamically imported module|importing a module script|outdated optimize dep|chunkloaderror/i.test(text);
-          if (isStaleChunk) {
+          if (isStaleChunkError(msg)) {
             try {
               if (!sessionStorage.getItem('aathirai_boot_reload')) {
                 sessionStorage.setItem('aathirai_boot_reload', '1');
@@ -139,38 +156,69 @@
           return false;
         }
 
-        window.addEventListener('vite:preloadError', function (ev) {
+        function onVitePreloadError(ev) {
+          if (isAppAlreadyMounted()) return;
           if (!maybeRecoverChunk('vite:preloadError')) {
             showBootError(ev && ev.payload ? ev.payload.message : 'Asset preload failed.');
           }
-        });
+        }
 
-        window.addEventListener(
-          'error',
-          function (ev) {
-            if (window.__AATHIRAI_MOUNTED__) return;
-            var msg =
-              (ev && ev.message) ||
-              (ev && ev.target && ev.target.src ? 'Failed to load script: ' + ev.target.src : '');
-            if (!msg) return;
+        function onBootError(ev) {
+          if (isAppAlreadyMounted()) return;
+          var target = ev && ev.target;
+          // Ignore non-fatal resource load failures (images, fonts, stylesheets, external optional scripts)
+          if (target && target !== window) {
+            var tag = String(target.tagName || '').toUpperCase();
+            if (tag !== 'SCRIPT') return;
+            var src = String(target.src || '');
+            if (!src || src.indexOf(window.location.origin) !== 0) return;
+            if (!maybeRecoverChunk('Failed to load script: ' + src)) {
+              showBootError('Failed to load application script.');
+            }
+            return;
+          }
+          var msg = ev && ev.message ? String(ev.message) : '';
+          if (!msg) return;
+          // Only handle genuine module/chunk boot failures or fatal uncaught startup errors before mount
+          if (isStaleChunkError(msg)) {
             if (!maybeRecoverChunk(msg)) {
               showBootError(msg);
             }
-          },
-          true
-        );
+          }
+        }
 
-        window.addEventListener('unhandledrejection', function (ev) {
-          if (window.__AATHIRAI_MOUNTED__) return;
+        function onBootRejection(ev) {
+          if (isAppAlreadyMounted()) return;
           var reason = ev && ev.reason;
           var msg = (reason && (reason.message || String(reason))) || '';
-          if (msg && !maybeRecoverChunk(msg)) {
+          if (isStaleChunkError(msg) && !maybeRecoverChunk(msg)) {
             showBootError(msg);
           }
-        });
+        }
 
-        setTimeout(function () {
-          if (window.__AATHIRAI_MOUNTED__ || shownError) return;
+        function markMounted() {
+          if (window.__AATHIRAI_MOUNTED__) return;
+          window.__AATHIRAI_MOUNTED__ = true;
+          if (bootTimer) {
+            clearTimeout(bootTimer);
+            bootTimer = null;
+          }
+          window.removeEventListener('vite:preloadError', onVitePreloadError);
+          window.removeEventListener('error', onBootError, true);
+          window.removeEventListener('unhandledrejection', onBootRejection);
+          try {
+            sessionStorage.removeItem('aathirai_boot_reload');
+          } catch (e) {}
+        }
+
+        window.__AATHIRAI_MARK_MOUNTED__ = markMounted;
+
+        window.addEventListener('vite:preloadError', onVitePreloadError);
+        window.addEventListener('error', onBootError, true);
+        window.addEventListener('unhandledrejection', onBootRejection);
+
+        bootTimer = setTimeout(function () {
+          if (isAppAlreadyMounted() || shownError) return;
           var statusEl = document.getElementById('aathirai-boot-status');
           if (statusEl) {
             statusEl.innerHTML =
