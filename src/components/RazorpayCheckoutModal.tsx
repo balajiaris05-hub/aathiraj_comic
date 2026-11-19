@@ -25,6 +25,7 @@ import {
   generateTaxInvoicePdfBytes,
   ensurePurchaseGstFields,
 } from '../utils/gstUtils';
+import { processingClass } from '../utils/buttonLoading';
 
 declare global {
   interface Window {
@@ -777,7 +778,12 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
                 type="button"
                 onClick={handleProcessPayment}
                 disabled={isProcessing || paymentMode === 'unconfigured'}
-                className="w-full py-3.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-colors shadow-lg shadow-rose-600/20 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                aria-busy={isProcessing}
+                data-loading={isProcessing ? 'true' : 'false'}
+                className={processingClass(
+                  isProcessing,
+                  'w-full py-3.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-colors shadow-lg shadow-rose-600/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap'
+                )}
               >
                 <Lock className="w-4 h-4 shrink-0" />
                 <span>

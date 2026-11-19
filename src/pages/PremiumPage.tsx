@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import { Purchase } from '../types/comic';
+import { processingClass } from '../utils/buttonLoading';
 
 const RAZORPAY_PLAN_LINKS = {
   '1_month': {
@@ -174,10 +175,16 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
           <span>{verifyNotice}</span>
           <button
             type="button"
+            disabled={verifyingGmail}
+            aria-busy={verifyingGmail}
+            data-loading={verifyingGmail ? 'true' : 'false'}
             onClick={() => handleVerifyGmailAccess()}
-            className="px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] shrink-0 cursor-pointer"
+            className={processingClass(
+              verifyingGmail,
+              'px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] shrink-0 cursor-pointer disabled:cursor-not-allowed'
+            )}
           >
-            Retry
+            {verifyingGmail ? 'Retrying...' : 'Retry'}
           </button>
         </div>
       )}
@@ -190,9 +197,14 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
               type="button"
               onClick={() => handleVerifyGmailAccess()}
               disabled={verifyingGmail}
-              className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+              aria-busy={verifyingGmail}
+              data-loading={verifyingGmail ? 'true' : 'false'}
+              className={processingClass(
+                verifyingGmail,
+                'px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer disabled:cursor-not-allowed'
+              )}
             >
-              {verifyingGmail ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
+              {verifyingGmail ? 'Verifying Payment...' : 'Verify Payment Status Now'}
             </button>
           </div>
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-sky-500/20">
@@ -207,9 +219,14 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
               type="button"
               onClick={() => handleVerifyGmailAccess(razorpayPaymentIdInput)}
               disabled={verifyingGmail || !razorpayPaymentIdInput.trim()}
-              className="px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-sky-500 text-white dark:text-slate-950 font-extrabold text-[11px] disabled:opacity-50 cursor-pointer shrink-0"
+              aria-busy={verifyingGmail}
+              data-loading={verifyingGmail ? 'true' : 'false'}
+              className={processingClass(
+                verifyingGmail,
+                'px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-sky-500 text-white dark:text-slate-950 font-extrabold text-[11px] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shrink-0'
+              )}
             >
-              Verify Razorpay ID
+              {verifyingGmail ? 'Verifying ID...' : 'Verify Razorpay ID'}
             </button>
           </div>
         </div>

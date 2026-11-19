@@ -15,6 +15,7 @@ import {
   Users,
   BookOpen,
 } from 'lucide-react';
+import { processingClass } from '../utils/buttonLoading';
 
 interface BecomeAuthorPageProps {
   setCurrentTab: (tab: string) => void;
@@ -121,6 +122,7 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     if (!authorName.trim() || !email.trim() || !sampleComicTitle.trim()) {
       setError('Please enter your Author Name, Contact Email, and Sample Comic Title.');
       return;
@@ -639,7 +641,12 @@ export const BecomeAuthorPage: React.FC<BecomeAuthorPageProps> = ({
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            aria-busy={loading}
+            data-loading={loading ? 'true' : 'false'}
+            className={processingClass(
+              loading,
+              'w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+            )}
           >
             <Send className="w-4 h-4" />
             <span>

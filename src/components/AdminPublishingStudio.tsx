@@ -31,6 +31,7 @@ import {
   ChevronUp,
   AlertTriangle
 } from 'lucide-react';
+import { processingClass } from '../utils/buttonLoading';
 
 interface AdminPublishingStudioProps {
   comics: Comic[];
@@ -800,7 +801,12 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                 <button
                   type="submit"
                   disabled={isSavingComicEdit}
-                  className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold shadow-md cursor-pointer disabled:opacity-50"
+                  aria-busy={isSavingComicEdit}
+                  data-loading={isSavingComicEdit ? 'true' : 'false'}
+                  className={processingClass(
+                    isSavingComicEdit,
+                    'px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                  )}
                 >
                   {isSavingComicEdit ? 'Saving...' : 'Save Changes'}
                 </button>
@@ -927,7 +933,12 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                 <button
                   type="submit"
                   disabled={isUpdatingEpisode}
-                  className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  aria-busy={isUpdatingEpisode}
+                  data-loading={isUpdatingEpisode ? 'true' : 'false'}
+                  className={processingClass(
+                    isUpdatingEpisode,
+                    'px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                  )}
                 >
                   {isUpdatingEpisode ? (
                     <>
@@ -1247,8 +1258,13 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                 <button
                   type="button"
                   disabled={isDeletingWarningItem}
+                  aria-busy={isDeletingWarningItem}
+                  data-loading={isDeletingWarningItem ? 'true' : 'false'}
                   onClick={handleExecuteConfirmedDelete}
-                  className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white text-xs font-black flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50"
+                  className={processingClass(
+                    isDeletingWarningItem,
+                    'px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white text-xs font-black flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                  )}
                 >
                   {isDeletingWarningItem ? (
                     <>
@@ -1380,8 +1396,13 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
               <button
                 type="button"
                 disabled={isPublishingEpisode}
+                aria-busy={isPublishingEpisode}
+                data-loading={isPublishingEpisode ? 'true' : 'false'}
                 onClick={() => handleAddEpisode()}
-                className="py-2.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/30 flex items-center gap-2 cursor-pointer"
+                className={processingClass(
+                  isPublishingEpisode,
+                  'py-2.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/30 flex items-center gap-2 cursor-pointer'
+                )}
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>{isPublishingEpisode ? 'Publishing Live...' : 'Publish Episode Live on Website'}</span>
@@ -1829,7 +1850,12 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                       <button
                         type="submit"
                         disabled={isPublishingEpisode || !selectedChapterId || !episodeTitle.trim() || episodeAttachedPages.length === 0}
-                        className="w-full sm:flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                        aria-busy={isPublishingEpisode}
+                        data-loading={isPublishingEpisode ? 'true' : 'false'}
+                        className={processingClass(
+                          isPublishingEpisode,
+                          'w-full sm:flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer'
+                        )}
                       >
                         <CheckCircle2 className="w-4 h-4" />
                         <span>{isPublishingEpisode ? 'Publishing...' : 'Publish Episode to Chapter'}</span>
@@ -2239,7 +2265,12 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
           <button
             type="submit"
             disabled={isSubmittingComic}
-            className="w-full py-4 px-6 rounded-2xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
+            aria-busy={isSubmittingComic}
+            data-loading={isSubmittingComic ? 'true' : 'false'}
+            className={processingClass(
+              isSubmittingComic,
+              'w-full py-4 px-6 rounded-2xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer'
+            )}
           >
             {isSubmittingComic ? (
               <span>Creating &amp; Publishing Series...</span>

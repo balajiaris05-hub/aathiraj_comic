@@ -42,6 +42,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
+import { processingClass } from '../utils/buttonLoading';
 
 const RAZORPAY_PROFILE_PLAN_LINKS = {
   '1_month': 'https://rzp.io/rzp/eMyTbngF',
@@ -1755,9 +1756,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   type="button"
                   onClick={handleGoogleConnectSignIn}
                   disabled={authLoading}
-                  className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shrink-0 shadow-sm transition-colors cursor-pointer"
+                  aria-busy={authLoading}
+                  data-loading={authLoading ? 'true' : 'false'}
+                  className={processingClass(
+                    authLoading,
+                    'py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shrink-0 shadow-sm transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                  )}
                 >
-                  Connect Gmail Account
+                  {authLoading ? 'Connecting...' : 'Connect Gmail Account'}
                 </button>
               </div>
 
@@ -1982,9 +1988,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                                 type="button"
                                 onClick={handleVerifyRazorpayPayment}
                                 disabled={razorpayVerifyLoading}
-                                className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-extrabold text-[11px] shrink-0 cursor-pointer"
+                                aria-busy={razorpayVerifyLoading}
+                                data-loading={razorpayVerifyLoading ? 'true' : 'false'}
+                                className={processingClass(
+                                  razorpayVerifyLoading,
+                                  'px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-extrabold text-[11px] shrink-0 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                                )}
                               >
-                                {razorpayVerifyLoading ? 'Checking Razorpay...' : 'Verify Razorpay'}
+                                {razorpayVerifyLoading ? 'Verifying Razorpay...' : 'Verify Razorpay'}
                               </button>
                             </div>
                             {razorpayVerifyError && (
@@ -2027,11 +2038,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         type="button"
                         onClick={handleVerifyCustomerIdentity}
                         disabled={authLoading}
-                        className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+                        aria-busy={authLoading}
+                        data-loading={authLoading ? 'true' : 'false'}
+                        className={processingClass(
+                          authLoading,
+                          'w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2'
+                        )}
                       >
                         <span>
                           {authLoading
-                            ? 'Checking Backend Database...'
+                            ? 'Verifying Backend Database...'
                             : 'Verify Gmail or Mobile Number in Backend Database'}
                         </span>
                         <ArrowRight className="w-4 h-4" />
@@ -2140,11 +2156,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <button
                             type="submit"
                             disabled={authLoading}
-                            className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+                            aria-busy={authLoading}
+                            data-loading={authLoading ? 'true' : 'false'}
+                            className={processingClass(
+                              authLoading,
+                              'w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2'
+                            )}
                           >
                             <span>
                               {authLoading
-                                ? 'Verifying Password & Signing In...'
+                                ? 'Logging in...'
                                 : 'Verify Password & Login to Account'}
                             </span>
                             <ArrowRight className="w-4 h-4" />
@@ -2347,11 +2368,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           type="button"
                           onClick={handleSendRegEmailOtp}
                           disabled={emailOtpSending || !regEmail.trim()}
-                          className={`px-3 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer ${
-                            emailOtpVerified
-                              ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                              : 'bg-slate-900 dark:bg-rose-600 hover:bg-slate-800 dark:hover:bg-rose-500 text-white disabled:opacity-50'
-                          }`}
+                          aria-busy={emailOtpSending}
+                          data-loading={emailOtpSending ? 'true' : 'false'}
+                          className={processingClass(
+                            emailOtpSending,
+                            `px-3 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer disabled:cursor-not-allowed ${
+                              emailOtpVerified
+                                ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                                : 'bg-slate-900 dark:bg-rose-600 hover:bg-slate-800 dark:hover:bg-rose-500 text-white disabled:opacity-50'
+                            }`
+                          )}
                         >
                           {emailOtpSending
                             ? 'Sending...'
@@ -2393,9 +2419,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             type="button"
                             onClick={handleVerifyRegEmailOtp}
                             disabled={emailOtpVerifying || emailOtpInput.length < 4}
-                            className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 disabled:opacity-50 cursor-pointer"
+                            aria-busy={emailOtpVerifying}
+                            data-loading={emailOtpVerifying ? 'true' : 'false'}
+                            className={processingClass(
+                              emailOtpVerifying,
+                              'px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer'
+                            )}
                           >
-                            {emailOtpVerifying ? 'Checking...' : 'Verify OTP'}
+                            {emailOtpVerifying ? 'Verifying...' : 'Verify OTP'}
                           </button>
                         </div>
                       )}
@@ -2454,11 +2485,16 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           type="button"
                           onClick={handleSendRegMobileOtp}
                           disabled={mobileOtpSending || regPhone.replace(/\D/g, '').length < 6}
-                          className={`px-3 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer ${
-                            mobileOtpVerified
-                              ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                              : 'bg-slate-900 dark:bg-rose-600 hover:bg-slate-800 dark:hover:bg-rose-500 text-white disabled:opacity-50'
-                          }`}
+                          aria-busy={mobileOtpSending}
+                          data-loading={mobileOtpSending ? 'true' : 'false'}
+                          className={processingClass(
+                            mobileOtpSending,
+                            `px-3 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-colors cursor-pointer disabled:cursor-not-allowed ${
+                              mobileOtpVerified
+                                ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                                : 'bg-slate-900 dark:bg-rose-600 hover:bg-slate-800 dark:hover:bg-rose-500 text-white disabled:opacity-50'
+                            }`
+                          )}
                         >
                           {mobileOtpSending
                             ? 'Sending...'
@@ -2491,9 +2527,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                             type="button"
                             onClick={handleVerifyRegMobileOtp}
                             disabled={mobileOtpVerifying || mobileOtpInput.length < 4}
-                            className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 disabled:opacity-50 cursor-pointer"
+                            aria-busy={mobileOtpVerifying}
+                            data-loading={mobileOtpVerifying ? 'true' : 'false'}
+                            className={processingClass(
+                              mobileOtpVerifying,
+                              'px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer'
+                            )}
                           >
-                            {mobileOtpVerifying ? 'Checking...' : 'Verify OTP'}
+                            {mobileOtpVerifying ? 'Verifying...' : 'Verify OTP'}
                           </button>
                         </div>
                       )}
@@ -2580,7 +2621,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   <button
                     type="submit"
                     disabled={authLoading || !emailOtpVerified || !mobileOtpVerified}
-                    className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+                    aria-busy={authLoading}
+                    data-loading={authLoading ? 'true' : 'false'}
+                    className={processingClass(
+                      authLoading,
+                      'w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer'
+                    )}
                   >
                     {authLoading
                       ? 'Creating Verified Customer Account...'
@@ -2731,7 +2777,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="submit"
                         disabled={authLoading}
-                        className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
+                        aria-busy={authLoading}
+                        data-loading={authLoading ? 'true' : 'false'}
+                        className={processingClass(
+                          authLoading,
+                          'w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer'
+                        )}
                       >
                         {authLoading
                           ? 'Verifying Database & Sending OTP...'
@@ -2788,7 +2839,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="submit"
                         disabled={authLoading}
-                        className="w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
+                        aria-busy={authLoading}
+                        data-loading={authLoading ? 'true' : 'false'}
+                        className={processingClass(
+                          authLoading,
+                          'w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer'
+                        )}
                       >
                         {authLoading ? 'Verifying OTP...' : 'Verify OTP to Enter New Password'}
                       </button>
@@ -2797,12 +2853,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         <button
                           type="button"
                           disabled={authLoading || resetResendCooldown > 0}
+                          aria-busy={authLoading}
+                          data-loading={authLoading ? 'true' : 'false'}
                           onClick={() => dispatchPasswordResetOtp(true)}
-                          className={`w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-extrabold uppercase tracking-wider border transition-all flex items-center justify-center gap-1.5 ${
-                            authLoading || resetResendCooldown > 0
-                              ? 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
-                              : 'bg-white dark:bg-slate-900 border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 cursor-pointer'
-                          }`}
+                          className={processingClass(
+                            authLoading,
+                            `w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-extrabold uppercase tracking-wider border transition-all flex items-center justify-center gap-1.5 ${
+                              authLoading || resetResendCooldown > 0
+                                ? 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                                : 'bg-white dark:bg-slate-900 border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 cursor-pointer'
+                            }`
+                          )}
                         >
                           <RefreshCw className={`w-3.5 h-3.5 ${authLoading ? 'animate-spin' : ''}`} />
                           <span>
@@ -2899,7 +2960,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="submit"
                         disabled={authLoading}
-                        className="w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
+                        aria-busy={authLoading}
+                        data-loading={authLoading ? 'true' : 'false'}
+                        className={processingClass(
+                          authLoading,
+                          'w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer'
+                        )}
                       >
                         {authLoading
                           ? 'Updating Password in Backend...'
@@ -2937,7 +3003,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   <button
                     type="submit"
                     disabled={authLoading}
-                    className="w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer"
+                    aria-busy={authLoading}
+                    data-loading={authLoading ? 'true' : 'false'}
+                    className={processingClass(
+                      authLoading,
+                      'w-full py-3.5 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all cursor-pointer'
+                    )}
                   >
                     {authLoading ? 'Verifying...' : 'Verify OTP & Complete Registration'}
                   </button>
@@ -3229,7 +3300,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="submit"
                         disabled={profileSaving}
-                        className="flex-1 py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer"
+                        aria-busy={profileSaving}
+                        data-loading={profileSaving ? 'true' : 'false'}
+                        className={processingClass(
+                          profileSaving,
+                          'flex-1 py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold cursor-pointer'
+                        )}
                       >
                         {profileSaving ? 'Saving...' : 'Save Record'}
                       </button>
@@ -3273,7 +3349,12 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     type="button"
                     onClick={handleLiveVerifyGmail}
                     disabled={verifyingStatus}
-                    className="w-full mt-2 py-2 px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-rose-500 transition-colors cursor-pointer"
+                    aria-busy={verifyingStatus}
+                    data-loading={verifyingStatus ? 'true' : 'false'}
+                    className={processingClass(
+                      verifyingStatus,
+                      'w-full mt-2 py-2 px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 hover:border-rose-500 transition-colors cursor-pointer disabled:cursor-not-allowed'
+                    )}
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${verifyingStatus ? 'animate-spin text-rose-500' : ''}`} />
                     <span>{verifyingStatus ? 'Verifying Gmail Payment...' : 'Verify Gmail Payment Status Now'}</span>
@@ -3491,9 +3572,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         type="button"
                         onClick={handleLiveVerifyGmail}
                         disabled={verifyingStatus}
-                        className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                        aria-busy={verifyingStatus}
+                        data-loading={verifyingStatus ? 'true' : 'false'}
+                        className={processingClass(
+                          verifyingStatus,
+                          'px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] shrink-0 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                        )}
                       >
-                        {verifyingStatus ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
+                        {verifyingStatus ? 'Verifying Payment...' : 'Verify Payment Status Now'}
                       </button>
                     </div>
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-sky-500/20">
@@ -3542,9 +3628,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           }
                         }}
                         disabled={verifyingStatus || !profileRazorpayId.trim()}
-                        className="px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-sky-500 text-white dark:text-slate-950 font-extrabold text-[11px] disabled:opacity-50 cursor-pointer shrink-0"
+                        aria-busy={verifyingStatus}
+                        data-loading={verifyingStatus ? 'true' : 'false'}
+                        className={processingClass(
+                          verifyingStatus,
+                          'px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-sky-500 text-white dark:text-slate-950 font-extrabold text-[11px] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shrink-0'
+                        )}
                       >
-                        Verify Razorpay ID
+                        {verifyingStatus ? 'Verifying ID...' : 'Verify Razorpay ID'}
                       </button>
                     </div>
                   </div>

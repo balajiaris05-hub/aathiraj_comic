@@ -20,6 +20,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
+import { processingClass } from '../utils/buttonLoading';
 
 interface ComicDetailsPageProps {
   comic: Comic;
@@ -180,10 +181,15 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
               type="button"
               onClick={verifyReaderGmailPaywall}
               disabled={verifyingGmail}
-              className="py-2 px-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold flex items-center gap-1.5 shrink-0 hover:border-rose-500 transition-colors cursor-pointer"
+              aria-busy={verifyingGmail}
+              data-loading={verifyingGmail ? 'true' : 'false'}
+              className={processingClass(
+                verifyingGmail,
+                'py-2 px-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold flex items-center gap-1.5 shrink-0 hover:border-rose-500 transition-colors cursor-pointer disabled:cursor-not-allowed'
+              )}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${verifyingGmail ? 'animate-spin text-rose-500' : ''}`} />
-              <span>{verifyingGmail ? 'Checking Gmail...' : 'Re-Verify Gmail'}</span>
+              <span>{verifyingGmail ? 'Verifying Gmail...' : 'Re-Verify Gmail'}</span>
             </button>
           ) : (
             <button
@@ -273,7 +279,12 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
               <button
                 onClick={() => handleReadClick(firstEpisode.id)}
                 disabled={verifyingEpisodeId === firstEpisode.id}
-                className="py-3 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-70 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer"
+                aria-busy={verifyingEpisodeId === firstEpisode.id}
+                data-loading={verifyingEpisodeId === firstEpisode.id ? 'true' : 'false'}
+                className={processingClass(
+                  verifyingEpisodeId === firstEpisode.id,
+                  'py-3 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-70 disabled:cursor-not-allowed text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 flex items-center gap-2 transition-transform hover:scale-105 cursor-pointer'
+                )}
               >
                 {!isFirstEpPaywalled || hasPaidAccess ? (
                   <Play className="w-4 h-4 fill-white" />
@@ -538,7 +549,12 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                             <button
                               onClick={() => handleReadClick(episode.id)}
                               disabled={isVerifyingEp}
-                              className="py-1.5 px-3.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-70 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                              aria-busy={isVerifyingEp}
+                              data-loading={isVerifyingEp ? 'true' : 'false'}
+                              className={processingClass(
+                                isVerifyingEp,
+                                'py-1.5 px-3.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-70 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer'
+                              )}
                             >
                               {!isEpPaywalled || hasPaidAccess ? (
                                 <Play className="w-3 h-3 fill-white" />
@@ -583,9 +599,14 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
               await verifyReaderGmailPaywall();
             }}
             disabled={verifyingGmail}
-            className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shrink-0 cursor-pointer"
+            aria-busy={verifyingGmail}
+            data-loading={verifyingGmail ? 'true' : 'false'}
+            className={processingClass(
+              verifyingGmail,
+              'px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shrink-0 cursor-pointer disabled:cursor-not-allowed'
+            )}
           >
-            {verifyingGmail ? 'Checking Razorpay...' : 'Verify Payment Status Now'}
+            {verifyingGmail ? 'Verifying Payment...' : 'Verify Payment Status Now'}
           </button>
         </div>
       )}

@@ -32,3 +32,34 @@
   background: rgba(148, 163, 184, 0.45);
 }
 
+/* Reusable button loading feedback: smooth pulse/blink + disabled wait/not-allowed cursor */
+@keyframes btnProcessingPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.btn-processing,
+button[data-loading="true"] {
+  animation: btnProcessingPulse 1.05s ease-in-out infinite !important;
+  cursor: wait !important;
+}
+
+.btn-processing:disabled,
+button[data-loading="true"]:disabled {
+  animation: btnProcessingPulse 1.05s ease-in-out infinite !important;
+  cursor: not-allowed !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-processing,
+  button[data-loading="true"],
+  .btn-processing:disabled,
+  button[data-loading="true"]:disabled {
+    animation: none !important;
+    opacity: 0.78 !important;
+  }
+}

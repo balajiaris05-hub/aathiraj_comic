@@ -4,6 +4,7 @@ import { ComicCard } from '../components/ComicCard';
 import { useAuth } from '../context/AuthContext';
 import { upsertAdRequestInFirestore } from '../services/firestoreBackend';
 import { matchesComicSearchQuery } from '../utils/seo';
+import { processingClass } from '../utils/buttonLoading';
 import {
   Search,
   Sparkles,
@@ -837,7 +838,12 @@ export const HomePage: React.FC<HomePageProps> = ({
               <button
                 type="submit"
                 disabled={isSubmittingAd}
-                className="py-2.5 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold uppercase tracking-wider flex items-center gap-2 cursor-pointer"
+                aria-busy={isSubmittingAd}
+                data-loading={isSubmittingAd ? 'true' : 'false'}
+                className={processingClass(
+                  isSubmittingAd,
+                  'py-2.5 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 font-extrabold uppercase tracking-wider flex items-center gap-2 cursor-pointer'
+                )}
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>{isSubmittingAd ? 'Submitting Request...' : 'Submit Company Ad Request'}</span>

@@ -40,6 +40,7 @@ import {
   generateMonthlyGstStatementPdfBytes,
   getGstPeriodDetails,
 } from '../utils/gstUtils';
+import { processingClass, useButtonLoadingMap } from '../utils/buttonLoading';
 import {
   Shield,
   Users,
@@ -102,6 +103,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   initialSubTab,
 }) => {
   const { user, switchDemoRole, setAuthenticatedUser, getAuthHeaders } = useAuth();
+  const { isLoading: isRowActionLoading, runWithKey: runRowAction } = useButtonLoadingMap();
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<
     'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'ad-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
@@ -308,47 +310,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Admin approves or rejects author's deletion request
   const handleModerateDeleteRequest = async (requestId: string, action: 'approve' | 'reject') => {
-    try {
-      const res = await fetch(`/api/admin/delete-requests/${requestId}/action`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, adminNote: deleteReviewNote }),
-      });
+    await runRowAction(`del-${requestId}-${action}`, async () => {
+      try {
+        const res = await fetch(`/api/admin/delete-requests/${requestId}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, adminNote: deleteReviewNote }),
+        });
 
-      const data = await res.json();
-      if (res.ok) {
-        setActionMessage(data.message);
-        setDeleteReviewNote('');
-        onRefreshComics();
-        fetchAdminData();
-        setTimeout(() => setActionMessage(null), 5000);
+        const data = await res.json();
+        if (res.ok) {
+          setActionMessage(data.message);
+          setDeleteReviewNote('');
+          onRefreshComics();
+          fetchAdminData();
+          setTimeout(() => setActionMessage(null), 5000);
+        }
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
-    }
+    });
   };
 
   const handleUpdateAdRequestStatus = async (
     requestId: string,
     status: 'pending' | 'contacted' | 'approved' | 'rejected'
   ) => {
-    try {
-      const headers = await getAuthHeaders();
-      const res = await fetch(`/api/admin/ad-requests/${requestId}`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify({ status }),
-      });
-      const data = await res.json();
-      if (res.ok && data.adRequest) {
-        await upsertAdRequestInFirestore(data.adRequest).catch(() => null);
-        setActionMessage(`Company Ad Request from "${data.adRequest.companyName}" updated to "${status}".`);
-        fetchAdminData();
-        setTimeout(() => setActionMessage(null), 5000);
+    await runRowAction(`ad-${requestId}-${status}`, async () => {
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`/api/admin/ad-requests/${requestId}`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ status }),
+        });
+        const data = await res.json();
+        if (res.ok && data.adRequest) {
+          await upsertAdRequestInFirestore(data.adRequest).catch(() => null);
+          setActionMessage(`Company Ad Request from "${data.adRequest.companyName}" updated to "${status}".`);
+          fetchAdminData();
+          setTimeout(() => setActionMessage(null), 5000);
+        }
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
-    }
+    });
   };
 
   useEffect(() => {
@@ -872,33 +878,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
 
-    try {
-      setComicRejectErrorId(null);
-      const res = await fetch(`/api/admin/comics/${comicId}/moderate-submission`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, adminNote: resolvedNote }),
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setActionMessage(data.message);
-        setComicReviewNote('');
-        setComicReviewNotes(prev => {
-          const next = { ...prev };
-          delete next[comicId];
-          return next;
+    await runRowAction(`comic-${comicId}-${action}`, async () => {
+      try {
+        setComicRejectErrorId(null);
+        const res = await fetch(`/api/admin/comics/${comicId}/moderate-submission`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, adminNote: resolvedNote }),
         });
-        if (previewQueueComic?.id === comicId) {
-          setPreviewQueueComic(null);
+
+        const data = await res.json();
+        if (res.ok) {
+          setActionMessage(data.message);
+          setComicReviewNote('');
+          setComicReviewNotes(prev => {
+            const next = { ...prev };
+            delete next[comicId];
+            return next;
+          });
+          if (previewQueueComic?.id === comicId) {
+            setPreviewQueueComic(null);
+          }
+          onRefreshComics();
+          fetchAdminData();
+          setTimeout(() => setActionMessage(null), 6000);
         }
-        onRefreshComics();
-        fetchAdminData();
-        setTimeout(() => setActionMessage(null), 6000);
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
-    }
+    });
   };
 
   // Toggle Paywall for Comic, Chapter, or Episode
@@ -930,27 +938,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Author Application Approval / Rejection / Reset to Pending
   const handleAppAction = async (appId: string, action: 'approve' | 'reject' | 'pending') => {
-    try {
-      const res = await fetch(`/api/admin/author-applications/${appId}/action`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, adminNote: reviewNote }),
-      });
-      if (res.ok) {
-        setReviewNote('');
-        setActionMessage(
-          action === 'approve'
-            ? 'Author application approved!'
-            : action === 'reject'
-              ? 'Author application rejected.'
-              : 'Author application set back to Pending Approval.'
-        );
-        fetchAdminData();
-        setTimeout(() => setActionMessage(null), 4000);
+    await runRowAction(`app-${appId}-${action}`, async () => {
+      try {
+        const res = await fetch(`/api/admin/author-applications/${appId}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, adminNote: reviewNote }),
+        });
+        if (res.ok) {
+          setReviewNote('');
+          setActionMessage(
+            action === 'approve'
+              ? 'Author application approved!'
+              : action === 'reject'
+                ? 'Author application rejected.'
+                : 'Author application set back to Pending Approval.'
+          );
+          fetchAdminData();
+          setTimeout(() => setActionMessage(null), 4000);
+        }
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
-    }
+    });
   };
 
   // Refund & GST Credit Note
@@ -1459,7 +1469,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="submit"
                 disabled={otpLoading || !adminCredentialInput.trim()}
-                className="w-full py-3.5 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                aria-busy={otpLoading}
+                data-loading={otpLoading ? 'true' : 'false'}
+                className={processingClass(
+                  otpLoading,
+                  'w-full py-3.5 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer'
+                )}
               >
                 {otpLoading ? (
                   <span>Verifying &amp; Sending OTP...</span>
@@ -1499,7 +1514,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     type="button"
                     onClick={() => dispatchAdminOtp(true)}
                     disabled={otpLoading || adminResendCooldown > 0}
-                    className="inline-flex items-center gap-1 text-xs font-bold text-amber-600 dark:text-amber-400 hover:text-amber-500 disabled:text-slate-400 disabled:cursor-not-allowed cursor-pointer"
+                    aria-busy={otpLoading}
+                    data-loading={otpLoading ? 'true' : 'false'}
+                    className={processingClass(
+                      otpLoading,
+                      'inline-flex items-center gap-1 text-xs font-bold text-amber-600 dark:text-amber-400 hover:text-amber-500 disabled:text-slate-400 disabled:cursor-not-allowed cursor-pointer'
+                    )}
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>
@@ -1545,7 +1565,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <button
                   type="submit"
                   disabled={otpLoading || adminOtpInput.length < 6}
-                  className="flex-1 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  aria-busy={otpLoading}
+                  data-loading={otpLoading ? 'true' : 'false'}
+                  className={processingClass(
+                    otpLoading,
+                    'flex-1 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer'
+                  )}
                 >
                   {otpLoading ? (
                     <span>Verifying...</span>
@@ -1642,8 +1667,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="button"
                 disabled={isDeletingComic}
+                aria-busy={isDeletingComic}
+                data-loading={isDeletingComic ? 'true' : 'false'}
                 onClick={handleConfirmDeleteComic}
-                className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-md shadow-rose-600/20 transition-all cursor-pointer"
+                className={processingClass(
+                  isDeletingComic,
+                  'py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-md shadow-rose-600/20 transition-all cursor-pointer'
+                )}
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>{isDeletingComic ? 'Deleting...' : 'Yes, Permanently Delete'}</span>
@@ -1965,19 +1995,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
+                          disabled={isRowActionLoading(`del-${req.id}-approve`) || isRowActionLoading(`del-${req.id}-reject`)}
+                          aria-busy={isRowActionLoading(`del-${req.id}-approve`)}
+                          data-loading={isRowActionLoading(`del-${req.id}-approve`) ? 'true' : 'false'}
                           onClick={() => handleModerateDeleteRequest(req.id, 'approve')}
-                          className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md transition-colors cursor-pointer flex items-center gap-1.5"
+                          className={processingClass(
+                            isRowActionLoading(`del-${req.id}-approve`),
+                            'py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs shadow-md transition-colors cursor-pointer flex items-center gap-1.5'
+                          )}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          <span>Approve &amp; Delete</span>
+                          <span>{isRowActionLoading(`del-${req.id}-approve`) ? 'Deleting...' : 'Approve & Delete'}</span>
                         </button>
                         <button
                           type="button"
+                          disabled={isRowActionLoading(`del-${req.id}-approve`) || isRowActionLoading(`del-${req.id}-reject`)}
+                          aria-busy={isRowActionLoading(`del-${req.id}-reject`)}
+                          data-loading={isRowActionLoading(`del-${req.id}-reject`) ? 'true' : 'false'}
                           onClick={() => handleModerateDeleteRequest(req.id, 'reject')}
-                          className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold text-xs transition-colors cursor-pointer flex items-center gap-1"
+                          className={processingClass(
+                            isRowActionLoading(`del-${req.id}-reject`),
+                            'py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-xs transition-colors cursor-pointer flex items-center gap-1'
+                          )}
                         >
                           <XCircle className="w-3.5 h-3.5" />
-                          <span>Reject</span>
+                          <span>{isRowActionLoading(`del-${req.id}-reject`) ? 'Rejecting...' : 'Reject'}</span>
                         </button>
                       </div>
                     </div>
@@ -2011,6 +2053,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <button
                   type="button"
                   disabled={isSyncingFirestore}
+                  aria-busy={isSyncingFirestore}
+                  data-loading={isSyncingFirestore ? 'true' : 'false'}
                   onClick={async () => {
                     setIsSyncingFirestore(true);
                     try {
@@ -2041,7 +2085,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       setIsSyncingFirestore(false);
                     }
                   }}
-                  className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                  className={processingClass(
+                    isSyncingFirestore,
+                    'py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer'
+                  )}
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <span>
@@ -2480,19 +2527,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <div className="flex sm:flex-col gap-2 shrink-0 justify-end">
                             <button
                               type="button"
+                              disabled={isRowActionLoading(`comic-${comic.id}-approve`) || isRowActionLoading(`comic-${comic.id}-reject`)}
+                              aria-busy={isRowActionLoading(`comic-${comic.id}-approve`)}
+                              data-loading={isRowActionLoading(`comic-${comic.id}-approve`) ? 'true' : 'false'}
                               onClick={() => handleModerateComicSubmission(comic.id, 'approve', currentNote)}
-                              className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                              className={processingClass(
+                                isRowActionLoading(`comic-${comic.id}-approve`),
+                                'py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs'
+                              )}
                             >
                               <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>Approve with Note</span>
+                              <span>{isRowActionLoading(`comic-${comic.id}-approve`) ? 'Approving...' : 'Approve with Note'}</span>
                             </button>
                             <button
                               type="button"
+                              disabled={isRowActionLoading(`comic-${comic.id}-approve`) || isRowActionLoading(`comic-${comic.id}-reject`)}
+                              aria-busy={isRowActionLoading(`comic-${comic.id}-reject`)}
+                              data-loading={isRowActionLoading(`comic-${comic.id}-reject`) ? 'true' : 'false'}
                               onClick={() => handleModerateComicSubmission(comic.id, 'reject', currentNote)}
-                              className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                              className={processingClass(
+                                isRowActionLoading(`comic-${comic.id}-reject`),
+                                'py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs'
+                              )}
                             >
                               <XCircle className="w-3.5 h-3.5" />
-                              <span>Reject with Reason</span>
+                              <span>{isRowActionLoading(`comic-${comic.id}-reject`) ? 'Rejecting...' : 'Reject with Reason'}</span>
                             </button>
                           </div>
                         </div>
@@ -3819,7 +3878,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="submit"
                 disabled={gstSaving}
-                className="py-2.5 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50"
+                aria-busy={gstSaving}
+                data-loading={gstSaving ? 'true' : 'false'}
+                className={processingClass(
+                  gstSaving,
+                  'py-2.5 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                )}
               >
                 {gstSaving ? 'Saving & Syncing...' : 'Save GST Profile to Database & Firestore'}
               </button>
@@ -4101,20 +4165,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <>
                           <button
                             type="button"
+                            disabled={isRowActionLoading(`app-${app.id}-approve`) || isRowActionLoading(`app-${app.id}-reject`)}
+                            aria-busy={isRowActionLoading(`app-${app.id}-approve`)}
+                            data-loading={isRowActionLoading(`app-${app.id}-approve`) ? 'true' : 'false'}
                             onClick={() => handleAppAction(app.id, 'approve')}
-                            className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                            className={processingClass(
+                              isRowActionLoading(`app-${app.id}-approve`),
+                              'py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer'
+                            )}
                           >
                             <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Approve Author</span>
+                            <span>{isRowActionLoading(`app-${app.id}-approve`) ? 'Approving...' : 'Approve Author'}</span>
                           </button>
 
                           <button
                             type="button"
+                            disabled={isRowActionLoading(`app-${app.id}-approve`) || isRowActionLoading(`app-${app.id}-reject`)}
+                            aria-busy={isRowActionLoading(`app-${app.id}-reject`)}
+                            data-loading={isRowActionLoading(`app-${app.id}-reject`) ? 'true' : 'false'}
                             onClick={() => handleAppAction(app.id, 'reject')}
-                            className="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                            className={processingClass(
+                              isRowActionLoading(`app-${app.id}-reject`),
+                              'py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer'
+                            )}
                           >
                             <XCircle className="w-3.5 h-3.5" />
-                            <span>Reject</span>
+                            <span>{isRowActionLoading(`app-${app.id}-reject`) ? 'Rejecting...' : 'Reject'}</span>
                           </button>
                         </>
                       ) : (
@@ -4876,24 +4952,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </a>
                     <button
                       type="button"
+                      disabled={isRowActionLoading(`ad-${req.id}-contacted`)}
+                      aria-busy={isRowActionLoading(`ad-${req.id}-contacted`)}
+                      data-loading={isRowActionLoading(`ad-${req.id}-contacted`) ? 'true' : 'false'}
                       onClick={() => handleUpdateAdRequestStatus(req.id, 'contacted')}
-                      className="py-1.5 px-3 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-600 dark:text-sky-400 font-bold cursor-pointer"
+                      className={processingClass(
+                        isRowActionLoading(`ad-${req.id}-contacted`),
+                        'py-1.5 px-3 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 disabled:opacity-50 disabled:cursor-not-allowed text-sky-600 dark:text-sky-400 font-bold cursor-pointer'
+                      )}
                     >
-                      Mark Contacted
+                      {isRowActionLoading(`ad-${req.id}-contacted`) ? 'Updating...' : 'Mark Contacted'}
                     </button>
                     <button
                       type="button"
+                      disabled={isRowActionLoading(`ad-${req.id}-approved`)}
+                      aria-busy={isRowActionLoading(`ad-${req.id}-approved`)}
+                      data-loading={isRowActionLoading(`ad-${req.id}-approved`) ? 'true' : 'false'}
                       onClick={() => handleUpdateAdRequestStatus(req.id, 'approved')}
-                      className="py-1.5 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 font-bold cursor-pointer"
+                      className={processingClass(
+                        isRowActionLoading(`ad-${req.id}-approved`),
+                        'py-1.5 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-600 dark:text-emerald-400 font-bold cursor-pointer'
+                      )}
                     >
-                      Approve Campaign
+                      {isRowActionLoading(`ad-${req.id}-approved`) ? 'Approving...' : 'Approve Campaign'}
                     </button>
                     <button
                       type="button"
+                      disabled={isRowActionLoading(`ad-${req.id}-rejected`)}
+                      aria-busy={isRowActionLoading(`ad-${req.id}-rejected`)}
+                      data-loading={isRowActionLoading(`ad-${req.id}-rejected`) ? 'true' : 'false'}
                       onClick={() => handleUpdateAdRequestStatus(req.id, 'rejected')}
-                      className="py-1.5 px-3 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-400 font-bold cursor-pointer"
+                      className={processingClass(
+                        isRowActionLoading(`ad-${req.id}-rejected`),
+                        'py-1.5 px-3 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-50 disabled:cursor-not-allowed text-rose-600 dark:text-rose-400 font-bold cursor-pointer'
+                      )}
                     >
-                      Decline
+                      {isRowActionLoading(`ad-${req.id}-rejected`) ? 'Declining...' : 'Decline'}
                     </button>
                   </div>
                 </div>

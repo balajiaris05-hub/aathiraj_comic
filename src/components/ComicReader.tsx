@@ -28,6 +28,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from './RazorpayCheckoutModal';
+import { processingClass } from '../utils/buttonLoading';
 
 interface ComicReaderProps {
   episodeId: string;
@@ -312,6 +313,10 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     }
   };
 
+  const [postingComment, setPostingComment] = useState(false);
+  const [postingReply, setPostingReply] = useState(false);
+  const [savingEditComment, setSavingEditComment] = useState(false);
+
   // Add Comment
   const handlePostComment = async (e: React.FormEvent, parentId?: string) => {
     e.preventDefault();
@@ -322,6 +327,13 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
     const contentToPost = parentId ? replyContent : newComment;
     if (!contentToPost.trim()) return;
+    if (parentId ? postingReply : postingComment) return;
+
+    if (parentId) {
+      setPostingReply(true);
+    } else {
+      setPostingComment(true);
+    }
 
     try {
       const headers = await getAuthHeaders();
@@ -358,12 +370,19 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      if (parentId) {
+        setPostingReply(false);
+      } else {
+        setPostingComment(false);
+      }
     }
   };
 
   // Edit Own Comment
   const handleSaveEditComment = async (commentId: string) => {
-    if (!user || !editingContent.trim()) return;
+    if (!user || !editingContent.trim() || savingEditComment) return;
+    setSavingEditComment(true);
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/episodes/${episodeId}/comments/${commentId}`, {
@@ -396,6 +415,8 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setSavingEditComment(false);
     }
   };
 
@@ -1130,11 +1151,16 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                     </span>
                     <button
                       type="submit"
-                      disabled={!user || !newComment.trim()}
-                      className="py-2 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+                      disabled={!user || !newComment.trim() || postingComment}
+                      aria-busy={postingComment}
+                      data-loading={postingComment ? 'true' : 'false'}
+                      className={processingClass(
+                        postingComment,
+                        'py-2 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer'
+                      )}
                     >
                       <Send className="w-3.5 h-3.5" />
-                      <span>Post Comment</span>
+                      <span>{postingComment ? 'Posting...' : 'Post Comment'}</span>
                     </button>
                   </div>
                 </form>
@@ -1234,10 +1260,16 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                               </button>
                               <button
                                 type="button"
+                                disabled={savingEditComment}
+                                aria-busy={savingEditComment}
+                                data-loading={savingEditComment ? 'true' : 'false'}
                                 onClick={() => handleSaveEditComment(comment.id)}
-                                className="px-3 py-1 text-[11px] font-bold bg-rose-600 text-white rounded-md"
+                                className={processingClass(
+                                  savingEditComment,
+                                  'px-3 py-1 text-[11px] font-bold bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md cursor-pointer'
+                                )}
                               >
-                                Save Edit
+                                {savingEditComment ? 'Saving...' : 'Save Edit'}
                               </button>
                             </div>
                           </div>
@@ -1292,9 +1324,15 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                               </button>
                               <button
                                 type="submit"
-                                className="px-3 py-1 text-[11px] font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-md"
+                                disabled={postingReply || !replyContent.trim()}
+                                aria-busy={postingReply}
+                                data-loading={postingReply ? 'true' : 'false'}
+                                className={processingClass(
+                                  postingReply,
+                                  'px-3 py-1 text-[11px] font-bold bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md cursor-pointer'
+                                )}
                               >
-                                Send Reply
+                                {postingReply ? 'Sending...' : 'Send Reply'}
                               </button>
                             </div>
                           </form>

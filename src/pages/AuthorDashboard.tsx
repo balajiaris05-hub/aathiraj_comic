@@ -34,6 +34,7 @@ import {
   ChevronUp,
   FolderPlus
 } from 'lucide-react';
+import { processingClass } from '../utils/buttonLoading';
 
 interface AuthorDashboardProps {
   comics: Comic[];
@@ -1216,8 +1217,13 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               <button
                 type="button"
                 disabled={isSubmittingDeleteRequest}
+                aria-busy={isSubmittingDeleteRequest}
+                data-loading={isSubmittingDeleteRequest ? 'true' : 'false'}
                 onClick={handleConfirmSubmitDeleteRequest}
-                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                className={processingClass(
+                  isSubmittingDeleteRequest,
+                  'px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                )}
               >
                 {isSubmittingDeleteRequest ? (
                   <>
@@ -1941,7 +1947,12 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       <button
                         type="submit"
                         disabled={isPublishingEpisode}
-                        className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider transition-colors disabled:opacity-50 flex items-center justify-center gap-2 shadow-md cursor-pointer"
+                        aria-busy={isPublishingEpisode}
+                        data-loading={isPublishingEpisode ? 'true' : 'false'}
+                        className={processingClass(
+                          isPublishingEpisode,
+                          'flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md cursor-pointer'
+                        )}
                       >
                         <Upload className="w-4 h-4" />
                         <span>
@@ -2493,7 +2504,12 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
           <button
             type="submit"
             disabled={isSubmittingComic}
-            className="w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+            aria-busy={isSubmittingComic}
+            data-loading={isSubmittingComic ? 'true' : 'false'}
+            className={processingClass(
+              isSubmittingComic,
+              'w-full py-3.5 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2'
+            )}
           >
             <Upload className="w-4 h-4" />
             <span>
@@ -2657,8 +2673,13 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
             <button
               type="button"
               disabled={isPublishingEpisode}
+              aria-busy={isPublishingEpisode}
+              data-loading={isPublishingEpisode ? 'true' : 'false'}
               onClick={() => handleAddEpisode()}
-              className="px-6 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50"
+              className={processingClass(
+                isPublishingEpisode,
+                'px-6 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+              )}
             >
               <Upload className="w-4 h-4" />
               <span>
@@ -2847,8 +2868,13 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               <button
                 type="button"
                 disabled={isSavingComicEdit}
+                aria-busy={isSavingComicEdit}
+                data-loading={isSavingComicEdit ? 'true' : 'false'}
                 onClick={handleSaveComicEdit}
-                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50"
+                className={processingClass(
+                  isSavingComicEdit,
+                  'px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                )}
               >
                 {isSavingComicEdit ? 'Saving...' : 'Save Comic Changes'}
               </button>
@@ -2946,8 +2972,13 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
               <button
                 type="button"
                 disabled={isUpdatingEpisode}
+                aria-busy={isUpdatingEpisode}
+                data-loading={isUpdatingEpisode ? 'true' : 'false'}
                 onClick={handleSaveEpisodeEdit}
-                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50"
+                className={processingClass(
+                  isUpdatingEpisode,
+                  'px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shadow-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                )}
               >
                 {isUpdatingEpisode ? 'Saving...' : 'Save Episode'}
               </button>
