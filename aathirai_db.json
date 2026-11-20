@@ -147,7 +147,10 @@
       "actorRole": "admin",
       "details": "Dual-OTP challenge (both) verified in backend DB for Admin Console (Protected Backend Admin Gmail + Protected Backend Admin Mobile).",
       "targetType": "admin_auth",
-      "targetId": "usr_admin"
+      "targetId": "usr_admin",
+      "category": "admin",
+      "istDayKey": "2026-11-20",
+      "istMonthKey": "2026-11"
     },
     {
       "id": "log_1795133086899_99p",
@@ -157,7 +160,10 @@
       "actorRole": "admin",
       "details": "Rejected unverified Dual-OTP credential check for Admin Console.",
       "targetType": "admin_auth",
-      "targetId": "admin_login"
+      "targetId": "admin_login",
+      "category": "admin",
+      "istDayKey": "2026-11-20",
+      "istMonthKey": "2026-11"
     },
     {
       "id": "log_1795131889953_x4b",
@@ -167,7 +173,10 @@
       "actorRole": "admin",
       "details": "Rejected unverified Dual-OTP credential check for Admin Console.",
       "targetType": "admin_auth",
-      "targetId": "admin_login"
+      "targetId": "admin_login",
+      "category": "admin",
+      "istDayKey": "2026-11-20",
+      "istMonthKey": "2026-11"
     },
     {
       "id": "log_1795131889935_ore",
@@ -177,17 +186,10 @@
       "actorRole": "admin",
       "details": "Rejected unverified Dual-OTP credential check for Customer Export Vault.",
       "targetType": "admin_auth",
-      "targetId": "customer_export"
-    },
-    {
-      "id": "log_1795041292885_0k3",
-      "timestamp": "2026-11-18T22:34:52.885Z",
-      "action": "COMIC_DELETED",
-      "actorEmail": "User",
-      "actorRole": "author",
-      "details": "Deleted comic series: \"__VERIFY_SMOKE_TEST_COMIC__\"",
-      "targetType": "comic",
-      "targetId": "comic_1795041290364"
+      "targetId": "customer_export",
+      "category": "admin",
+      "istDayKey": "2026-11-20",
+      "istMonthKey": "2026-11"
     },
     {
       "id": "log_1795041292864_089",
@@ -197,7 +199,10 @@
       "actorRole": "admin",
       "details": "Notification Bar & Gmail release alert for \"__VERIFY_SMOKE_TEST_COMIC__\" (Episode 1: Premiere Issue) (new_comic) — Sent: 1/1 (balajiaris05@gmail.com).",
       "targetType": "comic",
-      "targetId": "comic_1795041290364"
+      "targetId": "comic_1795041290364",
+      "category": "admin",
+      "istDayKey": "2026-11-19",
+      "istMonthKey": "2026-11"
     },
     {
       "id": "log_1795041290367_g3j",
@@ -207,7 +212,10 @@
       "actorRole": "admin",
       "details": "Directly published comic: \"__VERIFY_SMOKE_TEST_COMIC__\" in categories [Action] with 1 pages.",
       "targetType": "comic",
-      "targetId": "comic_1795041290364"
+      "targetId": "comic_1795041290364",
+      "category": "admin",
+      "istDayKey": "2026-11-19",
+      "istMonthKey": "2026-11"
     },
     {
       "id": "log_1794867815710_wzo",
@@ -217,16 +225,19 @@
       "actorRole": "admin",
       "details": "Admin identity verified in DB for SMS 2FA OTP to +91 ******0780 (Firebase Phone Auth handshake).",
       "targetType": "admin_auth",
-      "targetId": "usr_admin"
+      "targetId": "usr_admin",
+      "category": "admin",
+      "istDayKey": "2026-11-17",
+      "istMonthKey": "2026-11"
     }
   ],
   "migrationReport": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-20T00:09:16.816Z",
-    "completedAt": "2026-11-20T00:09:16.818Z",
+    "startedAt": "2026-11-20T05:15:53.765Z",
+    "completedAt": "2026-11-20T05:15:53.767Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "49d816c76c6124a202e2dd7e0ee90f4e7463022ffb8879c72f33544b0455618c",
+    "backupSha256": "ef0561e74073285e5f067d2dd80240ea7474a7e4fb1fad85c88a60cd60153ec5",
     "status": "verified",
     "counts": {
       "users": 1,
@@ -247,7 +258,7 @@
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: 49d816c76c6124a2...)",
+      "Backed up aathirai_db.json (SHA-256: ef0561e74073285e...)",
       "Migrated 1 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",
@@ -277,5 +288,8 @@
       "attempts": 0,
       "createdAt": 1795133369262
     }
+  },
+  "activityLogArchiveState": {
+    "pendingRetryMonths": []
   }
 }

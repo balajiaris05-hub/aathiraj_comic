@@ -443,6 +443,20 @@ export interface ActivityLog {
   details: string;
   targetType: string;
   targetId: string;
+  category?: 'admin' | 'payment_49' | 'payment_249';
+  amountInr?: 49 | 249;
+  istDayKey?: string;
+  istMonthKey?: string;
+}
+
+export interface ActivityLogArchiveState {
+  lastArchivedMonth?: string;
+  lastArchivedAt?: string;
+  lastArchivedCount?: number;
+  lastArchiveMessageId?: string;
+  pendingRetryMonths?: string[];
+  lastArchiveError?: string;
+  lastAttemptAt?: string;
 }
 
 export interface DeleteRequest {

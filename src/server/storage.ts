@@ -15,6 +15,7 @@ import {
   CopyrightDoc,
   PlatformSettings,
   ActivityLog,
+  ActivityLogArchiveState,
   DeleteRequest,
   GstBusinessSettings,
   CreditNoteRecord,
@@ -100,9 +101,185 @@ export interface DatabaseSchema {
   gstSettings: GstBusinessSettings;
   creditNotes: CreditNoteRecord[];
   activityLogs: ActivityLog[];
+  activityLogArchiveState?: ActivityLogArchiveState;
   deleteRequests: DeleteRequest[];
   adRequests: AdPlacementRequest[];
   migrationReport?: MigrationAuditReport;
+}
+
+const IST_MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+const IST_SHORT_MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/**
+ * Compute authoritative Indian Standard Time (Asia/Kolkata, UTC+5:30) date/month keys.
+ */
+export function getIstDateParts(input?: string | Date): {
+  year: number;
+  month: number;
+  day: number;
+  dayKey: string;
+  monthKey: string;
+  monthLabel: string;
+  nextRolloverLabel: string;
+} {
+  const dateObj = input instanceof Date ? input : input ? new Date(input) : new Date();
+  const safeDate = Number.isNaN(dateObj.getTime()) ? new Date() : dateObj;
+  // Shift by +5h 30m in UTC for deterministic IST calendar extraction without locale quirks
+  const istMs = safeDate.getTime() + 330 * 60 * 1000;
+  const ist = new Date(istMs);
+  const year = ist.getUTCFullYear();
+  const month = ist.getUTCMonth() + 1;
+  const day = ist.getUTCDate();
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  const nextMonthIndex = month % 12; // 0-indexed next month
+  const nextYear = month === 12 ? year + 1 : year;
+
+  return {
+    year,
+    month,
+    day,
+    dayKey: `${year}-${mm}-${dd}`,
+    monthKey: `${year}-${mm}`,
+    monthLabel: `${IST_MONTH_NAMES[month - 1]} ${year}`,
+    nextRolloverLabel: `01 ${IST_SHORT_MONTHS[nextMonthIndex]} ${nextYear} · 00:00 IST`,
+  };
+}
+
+export function formatIstMonthLabel(monthKey: string): string {
+  const m = String(monthKey || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return monthKey || 'Unknown Month';
+  const year = Number(m[1]);
+  const monthIdx = Number(m[2]) - 1;
+  if (monthIdx < 0 || monthIdx > 11) return monthKey;
+  return `${IST_MONTH_NAMES[monthIdx]} ${year}`;
+}
+
+const CONFIRMED_PAYMENT_ACTIONS = new Set([
+  'PAYMENT_CAPTURED',
+  'WEBHOOK_PAYMENT_UNLOCKED',
+  'PAYMENT_VERIFIED',
+  'SUBSCRIPTION_UNLOCKED',
+]);
+
+const ADMIN_PANEL_EXACT_ACTIONS = new Set([
+  'PAYWALL_UPDATED',
+  'COMIC_APPROVED',
+  'COMIC_REJECTED',
+  'AUTHOR_APPROVED',
+  'AUTHOR_REJECTED',
+  'USER_SUSPENDED',
+  'USER_REACTIVATED',
+  'RATING_REMOVED_AUDIT',
+  'COPYRIGHT_DOC_CREATED',
+  'SETTINGS_UPDATED',
+  'AD_REQUEST_UPDATED',
+  'GMAIL_RELEASE_ALERT_SENT',
+]);
+
+function detectAllowedPaymentAmount(
+  action: string,
+  details: string,
+  explicitAmount?: number
+): 49 | 249 | null {
+  if (explicitAmount === 49 || explicitAmount === 249) {
+    return explicitAmount;
+  }
+  const upperAction = String(action || '').toUpperCase();
+  if (!CONFIRMED_PAYMENT_ACTIONS.has(upperAction)) {
+    return null;
+  }
+  const text = String(details || '');
+  if (/(?:₹|INR\s*|Rs\.?\s*)249\b|\b6_months\b|6\s*Months/i.test(text)) {
+    return 249;
+  }
+  if (/(?:₹|INR\s*|Rs\.?\s*)49\b|\b1_month\b|1\s*Month/i.test(text)) {
+    return 49;
+  }
+  return null;
+}
+
+/**
+ * Strict Activity Log Gatekeeper:
+ * Stores ONLY:
+ *   1. Admin Panel operations (category: 'admin')
+ *   2. Verified customer payments of ₹49 or ₹249 (category: 'payment_49' | 'payment_249')
+ * Drops all other routine reader/author/webhook noise to keep backend storage lean.
+ */
+export function classifyScopedActivityLog(params: {
+  action: string;
+  actorRole: string;
+  details: string;
+  targetType: string;
+  amountInr?: number;
+}): {
+  allowed: boolean;
+  category?: 'admin' | 'payment_49' | 'payment_249';
+  amountInr?: 49 | 249;
+} {
+  const upperAction = String(params.action || '').trim().toUpperCase();
+  const roleLower = String(params.actorRole || '').trim().toLowerCase();
+
+  // 1. Check verified ₹49 / ₹249 customer payments first
+  const detectedAmount = detectAllowedPaymentAmount(upperAction, params.details, params.amountInr);
+  if (detectedAmount === 49) {
+    return { allowed: true, category: 'payment_49', amountInr: 49 };
+  }
+  if (detectedAmount === 249) {
+    return { allowed: true, category: 'payment_249', amountInr: 249 };
+  }
+
+  // Reject unconfirmed payment failures / generic webhooks / non-49/249 amounts
+  if (
+    upperAction === 'PAYMENT_SIGNATURE_INVALID' ||
+    upperAction === 'WEBHOOK_RECEIVED' ||
+    CONFIRMED_PAYMENT_ACTIONS.has(upperAction)
+  ) {
+    return { allowed: false };
+  }
+
+  // 2. Check Admin Panel actions
+  const isAdminPanelAction =
+    roleLower === 'admin' ||
+    upperAction.startsWith('ADMIN_') ||
+    upperAction.startsWith('GST_') ||
+    upperAction.startsWith('DELETE_REQUEST_') ||
+    upperAction.startsWith('REFUND_') ||
+    upperAction.startsWith('CREDIT_NOTE_') ||
+    ADMIN_PANEL_EXACT_ACTIONS.has(upperAction);
+
+  if (isAdminPanelAction) {
+    return { allowed: true, category: 'admin' };
+  }
+
+  return { allowed: false };
 }
 
 const DB_FILE = path.resolve(process.cwd(), 'aathirai_db.json');
@@ -256,6 +433,9 @@ No portion of any comic hosted on this platform may be reproduced, mirrored, syn
     gstSettings: getDefaultGstBusinessSettings(),
     creditNotes: [],
     activityLogs: [],
+    activityLogArchiveState: {
+      pendingRetryMonths: [],
+    },
   };
 }
 
@@ -339,6 +519,31 @@ export class StorageEngine {
     }
     if (!Array.isArray(parsed.creditNotes)) parsed.creditNotes = [];
     if (!Array.isArray(parsed.activityLogs)) parsed.activityLogs = def.activityLogs;
+    if (!parsed.activityLogArchiveState || typeof parsed.activityLogArchiveState !== 'object') {
+      parsed.activityLogArchiveState = { pendingRetryMonths: [] };
+    }
+
+    // Prune any out-of-scope legacy activity logs and normalize IST day/month & category metadata
+    parsed.activityLogs = parsed.activityLogs.reduce<ActivityLog[]>((acc, entry) => {
+      if (!entry || !entry.timestamp) return acc;
+      const verdict = classifyScopedActivityLog({
+        action: entry.action,
+        actorRole: entry.actorRole,
+        details: entry.details,
+        targetType: entry.targetType,
+        amountInr: entry.amountInr,
+      });
+      if (!verdict.allowed || !verdict.category) return acc;
+      const ist = getIstDateParts(entry.timestamp);
+      acc.push({
+        ...entry,
+        category: verdict.category,
+        ...(verdict.amountInr ? { amountInr: verdict.amountInr } : {}),
+        istDayKey: entry.istDayKey || ist.dayKey,
+        istMonthKey: entry.istMonthKey || ist.monthKey,
+      });
+      return acc;
+    }, []);
 
     // Enforce immutable admin identity and hash any plaintext passwords into passwordHash
     enforceImmutableAdminRecord(parsed.users);
@@ -638,21 +843,40 @@ export class StorageEngine {
     actorRole: any,
     details: string,
     targetType: string,
-    targetId: string
+    targetId: string,
+    meta?: { amountInr?: number }
   ) {
+    const verdict = classifyScopedActivityLog({
+      action,
+      actorRole: String(actorRole || ''),
+      details,
+      targetType,
+      amountInr: meta?.amountInr,
+    });
+    if (!verdict.allowed || !verdict.category) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const ist = getIstDateParts(nowIso);
+
     this.mutate(db => {
       db.activityLogs.unshift({
         id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
-        timestamp: new Date().toISOString(),
+        timestamp: nowIso,
         action,
         actorEmail,
         actorRole,
         details,
         targetType,
         targetId,
+        category: verdict.category,
+        ...(verdict.amountInr ? { amountInr: verdict.amountInr } : {}),
+        istDayKey: ist.dayKey,
+        istMonthKey: ist.monthKey,
       });
-      if (db.activityLogs.length > 150) {
-        db.activityLogs = db.activityLogs.slice(0, 150);
+      if (db.activityLogs.length > 10000) {
+        db.activityLogs = db.activityLogs.slice(0, 10000);
       }
     });
   }

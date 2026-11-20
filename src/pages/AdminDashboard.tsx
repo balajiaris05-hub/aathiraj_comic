@@ -8,6 +8,7 @@ import {
   CopyrightDoc,
   PlatformSettings,
   ActivityLog,
+  ActivityLogArchiveState,
   DeleteRequest,
   GstBusinessSettings,
   CreditNoteRecord,
@@ -85,7 +86,9 @@ import {
   Sun,
   Moon,
   ShieldCheck,
-  X
+  X,
+  Archive,
+  Calendar
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -137,6 +140,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [copyrightDocs, setCopyrightDocs] = useState<CopyrightDoc[]>([]);
   const [settings, setSettings] = useState<PlatformSettings | null>(null);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [activityLogMeta, setActivityLogMeta] = useState<{
+    todayCount: number;
+    currentMonthCount: number;
+    currentIstDayKey: string;
+    currentIstMonthKey: string;
+    currentIstMonthLabel: string;
+    nextRolloverLabel: string;
+    adminActionsMonthCount: number;
+    payments49MonthCount: number;
+    payments249MonthCount: number;
+    totalRevenueMonthInr: number;
+    archiveState?: ActivityLogArchiveState;
+  } | null>(null);
+  const [isDownloadingMonthLogs, setIsDownloadingMonthLogs] = useState<'csv' | 'json' | null>(null);
+  const [showArchiveLogsModal, setShowArchiveLogsModal] = useState(false);
+  const [isArchivingLogs, setIsArchivingLogs] = useState(false);
+  const [isSendingSampleLogEmail, setIsSendingSampleLogEmail] = useState(false);
+  const [archiveLogsFeedback, setArchiveLogsFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [allComments, setAllComments] = useState<any[]>([]);
   const [allRatings, setAllRatings] = useState<any[]>([]);
   const [readerAccounts, setReaderAccounts] = useState<any[]>([]);
@@ -295,7 +316,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       safeFetch('/api/admin/transactions', (d) => setTransactions(Array.isArray(d) ? d : (d.transactions || []))),
       safeFetch('/api/admin/copyright', (d) => setCopyrightDocs(Array.isArray(d) ? d : (d.copyrightDocs || []))),
       safeFetch('/api/admin/settings', (d) => setSettings(d.settings || d)),
-      safeFetch('/api/admin/logs', (d) => setActivityLogs(Array.isArray(d) ? d : (d.logs || []))),
+      safeFetch('/api/admin/logs', (d) => {
+        if (Array.isArray(d)) {
+          setActivityLogs(d);
+          return;
+        }
+        setActivityLogs(Array.isArray(d?.logs) ? d.logs : []);
+        setActivityLogMeta({
+          todayCount: Number(d?.todayCount ?? (Array.isArray(d?.logs) ? d.logs.length : 0)),
+          currentMonthCount: Number(d?.currentMonthCount ?? 0),
+          currentIstDayKey: String(d?.currentIstDayKey || ''),
+          currentIstMonthKey: String(d?.currentIstMonthKey || ''),
+          currentIstMonthLabel: String(d?.currentIstMonthLabel || ''),
+          nextRolloverLabel: String(d?.nextRolloverLabel || ''),
+          adminActionsMonthCount: Number(d?.adminActionsMonthCount ?? 0),
+          payments49MonthCount: Number(d?.payments49MonthCount ?? 0),
+          payments249MonthCount: Number(d?.payments249MonthCount ?? 0),
+          totalRevenueMonthInr: Number(d?.totalRevenueMonthInr ?? 0),
+          archiveState: d?.archiveState,
+        });
+      }),
       safeFetch('/api/admin/comments', (d) => setAllComments(Array.isArray(d) ? d : (d.comments || []))),
       safeFetch('/api/admin/ratings', (d) => setAllRatings(Array.isArray(d) ? d : (d.ratings || []))),
       safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(Array.isArray(d) ? d : (d.comics || []))),
@@ -1327,75 +1367,214 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Download Chronological Platform Activity Logs as CSV or JSON
-  const handleDownloadActivityLogs = (format: 'csv' | 'json' = 'csv') => {
-    const dateSlug = new Date().toISOString().slice(0, 10);
-    if (format === 'json') {
-      const payload = {
-        platform: 'Aathirai Comic',
-        exportedAt: new Date().toISOString(),
-        totalLogs: activityLogs.length,
-        logs: activityLogs,
+  // Download Current IST Month Scoped Activity Logs (Admin Panel + ₹49/₹249 Payments) as CSV or JSON
+  const handleDownloadActivityLogs = async (format: 'csv' | 'json' = 'csv') => {
+    if (isDownloadingMonthLogs) return;
+    setIsDownloadingMonthLogs(format);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/admin/logs?scope=month', { headers });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        showTransientActionMessage(errData?.error || 'Unable to fetch current month logs. Please re-verify Admin session.');
+        return;
+      }
+      const data = await res.json();
+      const monthLogs: ActivityLog[] = Array.isArray(data?.logs) ? data.logs : [];
+      const monthKey = String(data?.currentIstMonthKey || activityLogMeta?.currentIstMonthKey || new Date().toISOString().slice(0, 7));
+      const monthLabel = String(data?.currentIstMonthLabel || activityLogMeta?.currentIstMonthLabel || monthKey);
+
+      if (monthLogs.length === 0) {
+        showTransientActionMessage(`No Admin Panel or ₹49 / ₹249 payment logs are stored for ${monthLabel} yet.`);
+        return;
+      }
+
+      if (format === 'json') {
+        const payload = {
+          platform: 'Aathirai Comic',
+          scope: 'current_ist_month',
+          istMonthKey: monthKey,
+          istMonthLabel: monthLabel,
+          exportedAt: new Date().toISOString(),
+          policy: 'Admin Panel actions and verified ₹49 / ₹249 customer payments only',
+          summary: {
+            totalLogs: monthLogs.length,
+            adminActions: Number(data?.adminActionsMonthCount ?? 0),
+            payments49Count: Number(data?.payments49MonthCount ?? 0),
+            payments249Count: Number(data?.payments249MonthCount ?? 0),
+            totalRevenueInr: Number(data?.totalRevenueMonthInr ?? 0),
+          },
+          logs: monthLogs,
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `Aathirai_Comic_Activity_Logs_${monthKey}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+        showTransientActionMessage(`Downloaded ${monthLogs.length} current-month log entries for ${monthLabel} (JSON).`);
+        return;
+      }
+
+      const escapeCsv = (value: unknown) => {
+        let str = String(value ?? '').replace(/\r?\n/g, ' ');
+        if (/^[=+\-@\t\r]/.test(str)) {
+          str = `'${str}`;
+        }
+        if (/[",\n]/.test(str)) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
       };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8;' });
+
+      const csvHeaders = [
+        'Log ID',
+        'Category',
+        'Amount (INR)',
+        'IST Date',
+        'IST Month',
+        'Timestamp (ISO)',
+        'Timestamp (IST)',
+        'Action',
+        'Actor Email',
+        'Details',
+      ];
+
+      const rows = monthLogs.map((log) => {
+        const categoryLabel =
+          log.category === 'payment_249'
+            ? 'Customer Payment (₹249)'
+            : log.category === 'payment_49'
+              ? 'Customer Payment (₹49)'
+              : 'Admin Panel';
+        const istTimeStr = log.timestamp
+          ? new Date(log.timestamp).toLocaleString('en-IN', {
+              timeZone: 'Asia/Kolkata',
+              year: 'numeric',
+              month: 'short',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: true,
+            })
+          : '';
+        return [
+          log.id,
+          categoryLabel,
+          log.amountInr ?? '',
+          log.istDayKey || '',
+          log.istMonthKey || monthKey,
+          log.timestamp,
+          istTimeStr,
+          log.action,
+          log.actorEmail,
+          log.details,
+        ];
+      });
+
+      const csvContent =
+        '\uFEFF' +
+        [csvHeaders.map(escapeCsv).join(','), ...rows.map((row) => row.map(escapeCsv).join(','))].join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Aathirai_Comic_Activity_Logs_${dateSlug}.json`;
+      link.download = `Aathirai_Comic_Activity_Logs_${monthKey}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(url), 3000);
-      showTransientActionMessage(`Downloaded ${activityLogs.length} activity log entries (JSON).`);
-      return;
+      showTransientActionMessage(`Downloaded ${monthLogs.length} current-month log entries for ${monthLabel} (CSV).`);
+    } catch {
+      showTransientActionMessage('Network error while exporting current month activity logs.');
+    } finally {
+      setIsDownloadingMonthLogs(null);
     }
+  };
 
-    const escapeCsv = (value: unknown) => {
-      const str = String(value ?? '').replace(/\r?\n/g, ' ');
-      if (/[",\n]/.test(str)) {
-        return `"${str.replace(/"/g, '""')}"`;
+  // Manual Month-End Archive: Emails CSV + JSON strictly to Protected Backend Admin Gmail & clears backend only after confirmed delivery
+  const handleManualArchiveMonthLogs = async () => {
+    if (isArchivingLogs) return;
+    setIsArchivingLogs(true);
+    setArchiveLogsFeedback(null);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/admin/logs/archive-now', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          monthKey: activityLogMeta?.currentIstMonthKey || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data?.success) {
+        setArchiveLogsFeedback({
+          type: 'error',
+          text:
+            data?.error ||
+            'Unable to email the monthly archive right now. All backend logs were safely preserved and will retry automatically.',
+        });
+        setShowArchiveLogsModal(false);
+        await fetchAdminData();
+        return;
       }
-      return str;
-    };
 
-    const headers = [
-      'Log ID',
-      'Timestamp (ISO)',
-      'Local Date & Time',
-      'Action',
-      'Actor Email',
-      'Actor Role',
-      'Target Type',
-      'Target ID',
-      'Details',
-    ];
+      const successText =
+        data?.message ||
+        `Emailed ${data?.archivedCount ?? 0} logs (CSV + JSON) to Protected Backend Admin Gmail and cleared backend storage.`;
+      setArchiveLogsFeedback({ type: 'success', text: successText });
+      showTransientActionMessage(successText);
+      setShowArchiveLogsModal(false);
+      await fetchAdminData();
+    } catch {
+      setArchiveLogsFeedback({
+        type: 'error',
+        text: 'Network error while emailing monthly archive. All backend logs remain safely preserved.',
+      });
+      setShowArchiveLogsModal(false);
+    } finally {
+      setIsArchivingLogs(false);
+    }
+  };
 
-    const rows = activityLogs.map((log) => [
-      log.id,
-      log.timestamp,
-      log.timestamp ? new Date(log.timestamp).toLocaleString() : '',
-      log.action,
-      log.actorEmail,
-      (log as any).actorRole || '',
-      (log as any).targetType || '',
-      (log as any).targetId || '',
-      log.details,
-    ]);
-
-    const csvContent =
-      '\uFEFF' +
-      [headers.map(escapeCsv).join(','), ...rows.map((row) => row.map(escapeCsv).join(','))].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Aathirai_Comic_Activity_Logs_${dateSlug}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(() => URL.revokeObjectURL(url), 3000);
-    showTransientActionMessage(`Downloaded ${activityLogs.length} activity log entries (CSV).`);
+  // Send a non-destructive sample archive email (CSV + JSON) to Protected Backend Admin Gmail
+  const handleSendSampleLogEmail = async () => {
+    if (isSendingSampleLogEmail) return;
+    setIsSendingSampleLogEmail(true);
+    setArchiveLogsFeedback(null);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/admin/logs/send-sample-email', {
+        method: 'POST',
+        headers,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setArchiveLogsFeedback({
+          type: 'error',
+          text: data?.error || 'Unable to deliver sample archive email. Check SMTP configuration.',
+        });
+        return;
+      }
+      const msg =
+        data?.message ||
+        'Sample monthly archive email (CSV + JSON) delivered to Protected Backend Admin Gmail.';
+      setArchiveLogsFeedback({ type: 'success', text: msg });
+      showTransientActionMessage(msg);
+    } catch {
+      setArchiveLogsFeedback({
+        type: 'error',
+        text: 'Network error while sending sample archive email.',
+      });
+    } finally {
+      setIsSendingSampleLogEmail(false);
+    }
   };
 
   // Download GST Sales & Tax Reconciliation CSV (works even if 0 bills / Nil Return month)
@@ -5141,72 +5320,252 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       )}
 
       {/* TAB 11: AUDIT LOGS */}
-      {activeTab === 'logs' && (
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
-            <div>
-              <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
-                Chronological Platform Audit Trail
-              </h3>
-              <p
-                onClick={handleSecretExportTap}
-                className="text-xs text-slate-500 select-none"
-              >
-                {activityLogs.length} {activityLogs.length === 1 ? 'entry' : 'entries'} recorded
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 self-start sm:self-auto">
-              <button
-                type="button"
-                disabled={activityLogs.length === 0}
-                onClick={() => handleDownloadActivityLogs('csv')}
-                className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-                title="Download all activity logs as a spreadsheet-ready CSV file"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download Logs (CSV)</span>
-              </button>
-              <button
-                type="button"
-                disabled={activityLogs.length === 0}
-                onClick={() => handleDownloadActivityLogs('json')}
-                className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Download all activity logs in JSON format"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>JSON</span>
-              </button>
-            </div>
-          </div>
-
-          {activityLogs.length === 0 ? (
-            <div className="p-8 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
-              No activity logs recorded yet.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {activityLogs.map((log) => (
-                <div
-                  key={log.id}
-                  className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 text-xs"
+      {activeTab === 'logs' && (() => {
+        const monthBufferCount = activityLogMeta?.currentMonthCount ?? activityLogs.length;
+        const monthLabel = activityLogMeta?.currentIstMonthLabel || 'Current Month';
+        const todayDateLabel = activityLogMeta?.currentIstDayKey || 'Today (IST)';
+        const pendingRetries = activityLogMeta?.archiveState?.pendingRetryMonths || [];
+        return (
+          <div className="space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                  Activity Logs — Today&apos;s Live Feed (IST)
+                </h3>
+                <p
+                  onClick={handleSecretExportTap}
+                  className="text-xs text-slate-500 select-none"
                 >
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono font-bold text-rose-500">{log.action}</span>
-                      <span className="text-slate-400">by {log.actorEmail}</span>
-                    </div>
-                    <p className="text-slate-700 dark:text-slate-300 mt-0.5">{log.details}</p>
-                  </div>
-                  <span className="text-[10px] text-slate-400 font-mono shrink-0">
-                    {new Date(log.timestamp).toLocaleString()}
+                  {activityLogs.length} {activityLogs.length === 1 ? 'entry' : 'entries'} recorded today (IST)
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+                <button
+                  type="button"
+                  disabled={isDownloadingMonthLogs !== null || monthBufferCount === 0}
+                  aria-busy={isDownloadingMonthLogs === 'csv'}
+                  data-loading={isDownloadingMonthLogs === 'csv' ? 'true' : 'false'}
+                  onClick={() => handleDownloadActivityLogs('csv')}
+                  className={processingClass(
+                    isDownloadingMonthLogs === 'csv',
+                    'py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer'
+                  )}
+                  title={`Download all ${monthBufferCount} stored logs for ${monthLabel} as CSV`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>
+                    {isDownloadingMonthLogs === 'csv' ? 'Exporting CSV...' : 'Download Month (CSV)'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isDownloadingMonthLogs !== null || monthBufferCount === 0}
+                  aria-busy={isDownloadingMonthLogs === 'json'}
+                  data-loading={isDownloadingMonthLogs === 'json' ? 'true' : 'false'}
+                  onClick={() => handleDownloadActivityLogs('json')}
+                  className={processingClass(
+                    isDownloadingMonthLogs === 'json',
+                    'py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer'
+                  )}
+                  title={`Download all ${monthBufferCount} stored logs for ${monthLabel} as JSON`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{isDownloadingMonthLogs === 'json' ? 'Exporting...' : 'JSON'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isSendingSampleLogEmail}
+                  aria-busy={isSendingSampleLogEmail}
+                  data-loading={isSendingSampleLogEmail ? 'true' : 'false'}
+                  onClick={handleSendSampleLogEmail}
+                  className={processingClass(
+                    isSendingSampleLogEmail,
+                    'py-2 px-3 rounded-xl bg-emerald-600/10 hover:bg-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer'
+                  )}
+                  title="Send a sample monthly archive email (CSV + JSON) to Protected Backend Admin Gmail without deleting real logs"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>{isSendingSampleLogEmail ? 'Sending Sample...' : 'Test Email'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isArchivingLogs || monthBufferCount === 0}
+                  onClick={() => {
+                    setArchiveLogsFeedback(null);
+                    setShowArchiveLogsModal(true);
+                  }}
+                  className="py-2 px-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                  title="Email current month logs (CSV + JSON) to Protected Backend Admin Gmail and clear backend storage after confirmed delivery"
+                >
+                  <Archive className="w-3.5 h-3.5" />
+                  <span>Archive &amp; Email Month</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Scoped Storage, 1-Day Window & Automatic Month-End Archive Summary Strip */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  <span>Today&apos;s View (IST)</span>
+                  <Clock className="w-3.5 h-3.5 text-rose-500" />
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">
+                    {activityLogs.length}
+                  </span>
+                  <span className="text-[11px] text-slate-500 font-mono tabular-nums">
+                    {todayDateLabel}
                   </span>
                 </div>
-              ))}
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Showing today&apos;s entries since 12:00 AM IST.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  <span>Month Buffer ({monthLabel})</span>
+                  <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">
+                    {monthBufferCount}
+                  </span>
+                  <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                    ₹{(activityLogMeta?.totalRevenueMonthInr ?? 0).toLocaleString('en-IN')}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500 tabular-nums">
+                  Admin: {activityLogMeta?.adminActionsMonthCount ?? 0} · ₹49: {activityLogMeta?.payments49MonthCount ?? 0} · ₹249: {activityLogMeta?.payments249MonthCount ?? 0}
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  <span>Auto Month-End Email</span>
+                  <Mail className="w-3.5 h-3.5 text-emerald-500" />
+                </div>
+                <p className="mt-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                  {activityLogMeta?.nextRolloverLabel || '1st of next month, 12:00 AM IST'}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500 leading-snug">
+                  Sends CSV + JSON to Protected Backend Admin Gmail &amp; auto-clears after confirmed delivery.
+                </p>
+                {activityLogMeta?.archiveState?.lastArchivedAt && (
+                  <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium tabular-nums">
+                    Last archive: {activityLogMeta.archiveState.lastArchivedMonth} ({activityLogMeta.archiveState.lastArchivedCount ?? 0} logs)
+                  </p>
+                )}
+              </div>
             </div>
-          )}
-        </div>
-      )}
+
+            {pendingRetries.length > 0 && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-300">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
+                <div>
+                  <p className="font-bold">
+                    Pending automatic email retry for month(s): {pendingRetries.join(', ')}
+                  </p>
+                  <p className="text-[11px] opacity-90 mt-0.5">
+                    {activityLogMeta?.archiveState?.lastArchiveError ||
+                      'Previous month logs are safely preserved in backend storage and will retry automatically until Gmail delivery succeeds.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {archiveLogsFeedback && (
+              <div
+                className={`p-3 rounded-xl border flex items-start justify-between gap-3 text-xs ${
+                  archiveLogsFeedback.type === 'success'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-800 dark:text-emerald-300'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-800 dark:text-rose-300'
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  {archiveLogsFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-500" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
+                  )}
+                  <span className="font-medium leading-relaxed">{archiveLogsFeedback.text}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setArchiveLogsFeedback(null)}
+                  className="p-0.5 opacity-70 hover:opacity-100 cursor-pointer"
+                  aria-label="Dismiss message"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {activityLogs.length === 0 ? (
+              <div className="p-8 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-1.5">
+                <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  No Admin Panel or ₹49 / ₹249 payment logs recorded today (IST).
+                </p>
+                {monthBufferCount > 0 ? (
+                  <p className="text-[11px] text-slate-500">
+                    {monthBufferCount} {monthBufferCount === 1 ? 'entry is' : 'entries are'} stored for {monthLabel}. Use <span className="font-semibold">Download Month (CSV/JSON)</span> above to export the current month.
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-slate-500">
+                    Only Admin Panel actions and verified ₹49 / ₹249 customer payments are stored.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {activityLogs.map((log) => {
+                  const is249 = log.category === 'payment_249' || log.amountInr === 249;
+                  const is49 = log.category === 'payment_49' || log.amountInr === 49;
+                  return (
+                    <div
+                      key={log.id}
+                      className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
+                              is249
+                                ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25'
+                                : is49
+                                  ? 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-500/25'
+                                  : 'bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25'
+                            }`}
+                          >
+                            {is249 ? '₹249 Pass' : is49 ? '₹49 Pass' : 'Admin Panel'}
+                          </span>
+                          <span className="font-mono font-bold text-slate-900 dark:text-white">{log.action}</span>
+                          <span className="text-slate-400">by {log.actorEmail}</span>
+                        </div>
+                        <p className="text-slate-700 dark:text-slate-300 mt-1 break-words">{log.details}</p>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono tabular-nums shrink-0">
+                        {new Date(log.timestamp).toLocaleString('en-IN', {
+                          timeZone: 'Asia/Kolkata',
+                          day: '2-digit',
+                          month: 'short',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit',
+                          hour12: true,
+                        })}{' '}
+                        IST
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* HIDDEN 3-TAP CUSTOMER LOGIN DETAILS EXPORT GATEWAY MODAL */}
       {showCustomerExportModal && (
@@ -5351,6 +5710,77 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANUAL MONTH-END ACTIVITY LOG ARCHIVE & EMAIL CONFIRMATION MODAL */}
+      {showArchiveLogsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden">
+            <div className="p-6 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 flex items-center justify-center shrink-0">
+                    <Archive className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-slate-900 dark:text-white font-heading">
+                      Archive &amp; Email Month Logs
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      {activityLogMeta?.currentIstMonthLabel || 'Current Month'} · {activityLogMeta?.currentMonthCount ?? 0} entries
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isArchivingLogs}
+                  onClick={() => setShowArchiveLogsModal(false)}
+                  aria-label="Close archive dialog"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 space-y-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                <p>
+                  1. Bundles all <strong className="text-slate-900 dark:text-white tabular-nums">{activityLogMeta?.currentMonthCount ?? 0}</strong> stored logs (Admin Panel + ₹49 / ₹249 payments) for <strong className="text-slate-900 dark:text-white">{activityLogMeta?.currentIstMonthLabel || 'this month'}</strong> as <strong className="text-slate-900 dark:text-white">both CSV and JSON</strong> attachments.
+                </p>
+                <p>
+                  2. Emails the archive strictly to your <strong className="text-slate-900 dark:text-white">Protected Backend Admin Gmail</strong>.
+                </p>
+                <p>
+                  3. Automatically clears these logs from backend &amp; Firestore storage <strong className="text-slate-900 dark:text-white">only after SMTP confirms delivery</strong>. If delivery fails, all logs stay preserved and retry automatically.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isArchivingLogs}
+                  onClick={() => setShowArchiveLogsModal(false)}
+                  className="py-2 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isArchivingLogs}
+                  aria-busy={isArchivingLogs}
+                  data-loading={isArchivingLogs ? 'true' : 'false'}
+                  onClick={handleManualArchiveMonthLogs}
+                  className={processingClass(
+                    isArchivingLogs,
+                    'py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer'
+                  )}
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>{isArchivingLogs ? 'Emailing & Clearing...' : 'Email Archive & Clear'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

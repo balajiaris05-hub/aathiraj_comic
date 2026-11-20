@@ -114,12 +114,19 @@ export async function verifySmtpConnection(): Promise<{
   }
 }
 
+export interface EmailAttachment {
+  filename: string;
+  content: string | Buffer;
+  contentType?: string;
+}
+
 export async function sendEmail(params: {
   to: string;
   subject: string;
   text: string;
   html: string;
   suppressRecipientLog?: boolean;
+  attachments?: EmailAttachment[];
 }): Promise<EmailSendResult> {
   const settings = getSmtpSettings();
   const primaryTransporter = createTransporter();
@@ -140,6 +147,9 @@ export async function sendEmail(params: {
     subject: params.subject,
     text: params.text,
     html: params.html,
+    ...(Array.isArray(params.attachments) && params.attachments.length > 0
+      ? { attachments: params.attachments }
+      : {}),
     headers: {
       'X-Entity-Ref-ID': entityRef,
     },
@@ -420,3 +430,96 @@ export async function sendComicReleaseNotificationEmail(params: {
     `,
   });
 }
+
+export async function sendMonthlyActivityLogArchiveEmail(params: {
+  to: string;
+  monthKey: string;
+  monthLabel: string;
+  trigger: 'auto_month_end' | 'manual';
+  totalLogs: number;
+  adminActionsCount: number;
+  payments49Count: number;
+  payments249Count: number;
+  totalRevenueInr: number;
+  csvContent: string;
+  jsonContent: string;
+}): Promise<EmailSendResult> {
+  const safeMonthLabel = escapeHtml(params.monthLabel);
+  const safeMonthKey = escapeHtml(params.monthKey);
+  const triggerLabel =
+    params.trigger === 'manual' ? 'Manual Admin Archive' : 'Automatic Month-End Archive (IST)';
+
+  const subject = `Aathirai_Comic Monthly Activity Logs Archive — ${params.monthLabel} (${params.totalLogs} entries)`;
+  const text = [
+    `Aathirai_Comic Monthly Activity Log Archive (${params.monthLabel})`,
+    `Archive Trigger: ${triggerLabel}`,
+    `Period Key (IST): ${params.monthKey}`,
+    `Total Stored Entries: ${params.totalLogs}`,
+    `Admin Panel Events: ${params.adminActionsCount}`,
+    `₹49 Pass Payments: ${params.payments49Count} (₹${params.payments49Count * 49})`,
+    `₹249 Pass Payments: ${params.payments249Count} (₹${params.payments249Count * 249})`,
+    `Logged Premium Payment Total: ₹${params.totalRevenueInr}`,
+    '',
+    'Both CSV and JSON files for this month are attached.',
+    'Once delivered, archived entries for this month are cleared automatically from backend storage to free up space.',
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; background: #0f172a; color: #f8fafc; padding: 28px; border-radius: 16px; border: 1px solid #1e293b;">
+      <div style="font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #818cf8; font-weight: 700; margin-bottom: 6px;">
+        Aathirai_Comic · ${escapeHtml(triggerLabel)}
+      </div>
+      <h2 style="margin: 0 0 8px 0; font-size: 20px; color: #ffffff;">Monthly Activity Logs Archive — ${safeMonthLabel}</h2>
+      <p style="margin: 0 0 18px 0; font-size: 13px; color: #cbd5e1; line-height: 1.6;">
+        Attached are both the <strong>CSV</strong> spreadsheet and <strong>JSON</strong> archive containing all Admin Panel events and verified ₹49 / ₹249 customer payments recorded for <strong>${safeMonthLabel}</strong> (${safeMonthKey}, IST).
+      </p>
+      <table style="width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 13px;">
+        <tr>
+          <td style="padding: 10px 12px; background: #1e293b; border: 1px solid #334155; color: #94a3b8;">Total Archived Entries</td>
+          <td style="padding: 10px 12px; background: #1e293b; border: 1px solid #334155; color: #ffffff; font-weight: 700; text-align: right;">${params.totalLogs}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 12px; background: #0f172a; border: 1px solid #334155; color: #94a3b8;">Admin Panel Actions</td>
+          <td style="padding: 10px 12px; background: #0f172a; border: 1px solid #334155; color: #f43f5e; font-weight: 700; text-align: right;">${params.adminActionsCount}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 12px; background: #1e293b; border: 1px solid #334155; color: #94a3b8;">₹49 Pass Payments</td>
+          <td style="padding: 10px 12px; background: #1e293b; border: 1px solid #334155; color: #34d399; font-weight: 700; text-align: right;">${params.payments49Count} (₹${params.payments49Count * 49})</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 12px; background: #0f172a; border: 1px solid #334155; color: #94a3b8;">₹249 Pass Payments</td>
+          <td style="padding: 10px 12px; background: #0f172a; border: 1px solid #334155; color: #34d399; font-weight: 700; text-align: right;">${params.payments249Count} (₹${params.payments249Count * 249})</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 12px; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; font-weight: 700;">Logged Premium Total</td>
+          <td style="padding: 10px 12px; background: #1e293b; border: 1px solid #334155; color: #fbbf24; font-weight: 800; text-align: right;">₹${params.totalRevenueInr}</td>
+        </tr>
+      </table>
+      <p style="margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
+        Attachments included: <code>Aathirai_Comic_Activity_Logs_${safeMonthKey}.csv</code> and <code>Aathirai_Comic_Activity_Logs_${safeMonthKey}.json</code>.<br/>
+        Backend log entries for ${safeMonthLabel} are cleared automatically after confirmed email delivery to preserve storage space.
+      </p>
+    </div>
+  `;
+
+  return sendEmail({
+    to: params.to,
+    subject,
+    text,
+    html,
+    suppressRecipientLog: true,
+    attachments: [
+      {
+        filename: `Aathirai_Comic_Activity_Logs_${params.monthKey}.csv`,
+        content: params.csvContent,
+        contentType: 'text/csv; charset=utf-8',
+      },
+      {
+        filename: `Aathirai_Comic_Activity_Logs_${params.monthKey}.json`,
+        content: params.jsonContent,
+        contentType: 'application/json; charset=utf-8',
+      },
+    ],
+  });
+}
+

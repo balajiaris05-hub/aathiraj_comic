@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
-import { db, IMMUTABLE_ADMIN_VAULT } from './src/server/storage.ts';
+import { db, IMMUTABLE_ADMIN_VAULT, getIstDateParts, formatIstMonthLabel } from './src/server/storage.ts';
 import {
   getSmtpConfigSummary,
   verifySmtpConnection,
@@ -15,6 +15,7 @@ import {
   sendEmailVerificationOtpEmail,
   sendReaderAccountWelcomeEmail,
   sendComicReleaseNotificationEmail,
+  sendMonthlyActivityLogArchiveEmail,
 } from './src/server/mailer.ts';
 import { getSmsConfigSummary, sendOtpSms } from './src/server/sms.ts';
 import {
@@ -28,6 +29,7 @@ import {
   PaymentTransaction,
   GstBusinessSettings,
   CreditNoteRecord,
+  ActivityLog,
 } from './src/types/comic.ts';
 import {
   securityHeadersMiddleware,
@@ -6445,7 +6447,8 @@ async function startServer() {
       'reader',
       `[${environment.toUpperCase()}] Payment of ₹${amountNum} captured & HMAC-SHA256 verified${confirmedViaRazorpayApi ? ' (+ Razorpay API)' : ''} for ${newPurchase.comicTitle}${resolvedPlan ? ` (${resolvedPlan === '6_months' ? '6 Months Premium - ₹249' : '1 Month Premium - ₹49'}, valid until ${new Date(computedExpiresAt!).toLocaleDateString()})` : ''}. Receipt ${receiptNumber}`,
       'purchase',
-      newPurchase.id
+      newPurchase.id,
+      { amountInr: amountNum }
     );
 
     const fbToken = extractFirebaseIdToken(req.headers.authorization);
@@ -6636,9 +6639,10 @@ async function startServer() {
             'WEBHOOK_PAYMENT_UNLOCKED',
             activatedUserEmail,
             'reader',
-            `Activated ${resolvedPlan} pass via Razorpay webhook (${paymentLinkId || paymentId}).`,
+            `Activated ${resolvedPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)'} pass via Razorpay webhook (${paymentLinkId || paymentId}).`,
             'purchase',
-            paymentId || paymentLinkId
+            paymentId || paymentLinkId,
+            { amountInr: resolvedPlan === '6_months' ? 249 : 49 }
           );
           const latestSnapWebhook = db.getSnapshot();
           const syncedUser = latestSnapWebhook.users.find(u => u.id === activatedUserId);
@@ -7771,12 +7775,16 @@ async function startServer() {
     return res.json({ success: true, settings: updatedSettings });
   });
 
-  app.get('/api/admin/logs', async (req, res) => {
-    const admin = await requireAdminAuth(req, res);
-    if (!admin) return;
-    await db.ensureFreshFromCloud();
-    const safeLogs = (db.getSnapshot().activityLogs || []).map((entry) => ({
+  // -------------------------------------------------------------
+  // SCOPED ACTIVITY LOGS: 1-DAY IST VIEW + MONTHLY AUTO-ARCHIVE & CLEANUP
+  // Stores ONLY Admin Panel events + ₹49 / ₹249 customer payments
+  // -------------------------------------------------------------
+  const sanitizeActivityLogEntry = (entry: ActivityLog): ActivityLog => {
+    const ist = getIstDateParts(entry.timestamp);
+    return {
       ...entry,
+      istDayKey: entry.istDayKey || ist.dayKey,
+      istMonthKey: entry.istMonthKey || ist.monthKey,
       actorEmail: redactAdminSecrets(
         entry.actorEmail,
         IMMUTABLE_ADMIN_VAULT.email,
@@ -7787,8 +7795,458 @@ async function startServer() {
         IMMUTABLE_ADMIN_VAULT.email,
         IMMUTABLE_ADMIN_VAULT.phone
       ),
-    }));
-    return res.json({ logs: safeLogs });
+    };
+  };
+
+  const escapeFormulaSafeCsvCell = (value: unknown): string => {
+    let str = String(value ?? '').replace(/\r?\n/g, ' ');
+    if (/^[=+\-@\t\r]/.test(str)) {
+      str = `'${str}`;
+    }
+    if (/[",\n]/.test(str)) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const buildMonthlyLogsCsv = (logs: ActivityLog[]): string => {
+    const headers = [
+      'Log ID',
+      'IST Date',
+      'IST Month',
+      'Timestamp (ISO)',
+      'Category',
+      'Amount (INR)',
+      'Action',
+      'Actor Email',
+      'Actor Role',
+      'Target Type',
+      'Target ID',
+      'Details',
+    ];
+    const rows = logs.map((log) => [
+      log.id,
+      log.istDayKey || getIstDateParts(log.timestamp).dayKey,
+      log.istMonthKey || getIstDateParts(log.timestamp).monthKey,
+      log.timestamp,
+      log.category === 'payment_49'
+        ? 'Customer Payment (₹49)'
+        : log.category === 'payment_249'
+          ? 'Customer Payment (₹249)'
+          : 'Admin Panel',
+      log.amountInr ?? '',
+      log.action,
+      log.actorEmail,
+      log.actorRole || '',
+      log.targetType || '',
+      log.targetId || '',
+      log.details,
+    ]);
+    return (
+      '\uFEFF' +
+      [
+        headers.map(escapeFormulaSafeCsvCell).join(','),
+        ...rows.map((row) => row.map(escapeFormulaSafeCsvCell).join(',')),
+      ].join('\n')
+    );
+  };
+
+  const computeLogSummaryStats = (logs: ActivityLog[]) => {
+    let adminActionsCount = 0;
+    let payments49Count = 0;
+    let payments249Count = 0;
+    for (const log of logs) {
+      if (log.category === 'payment_49' || log.amountInr === 49) {
+        payments49Count += 1;
+      } else if (log.category === 'payment_249' || log.amountInr === 249) {
+        payments249Count += 1;
+      } else {
+        adminActionsCount += 1;
+      }
+    }
+    const totalRevenueInr = payments49Count * 49 + payments249Count * 249;
+    return { adminActionsCount, payments49Count, payments249Count, totalRevenueInr };
+  };
+
+  let activityLogArchiveLock: Promise<unknown> = Promise.resolve();
+
+  const archiveMonthLogsAndEmail = async (params: {
+    monthKey: string;
+    trigger: 'auto_month_end' | 'manual';
+  }): Promise<{
+    ok: boolean;
+    monthKey: string;
+    monthLabel: string;
+    archivedCount: number;
+    skipped?: boolean;
+    logsPreserved?: boolean;
+    error?: string;
+    message?: string;
+  }> => {
+    const runArchive = async () => {
+      const targetMonthKey = params.monthKey;
+      const monthLabel = formatIstMonthLabel(targetMonthKey);
+      const snapshot = db.getSnapshot();
+      const matchingLogs = (snapshot.activityLogs || [])
+        .map(sanitizeActivityLogEntry)
+        .filter((log) => (log.istMonthKey || getIstDateParts(log.timestamp).monthKey) === targetMonthKey);
+
+      if (matchingLogs.length === 0) {
+        db.mutate((d) => {
+          const prev = d.activityLogArchiveState || {};
+          const nextPending = (prev.pendingRetryMonths || []).filter((m) => m !== targetMonthKey);
+          d.activityLogArchiveState = {
+            ...prev,
+            pendingRetryMonths: nextPending,
+          };
+        });
+        return {
+          ok: true,
+          monthKey: targetMonthKey,
+          monthLabel,
+          archivedCount: 0,
+          skipped: true,
+          message: `No activity logs found for ${monthLabel} to archive.`,
+        };
+      }
+
+      const stats = computeLogSummaryStats(matchingLogs);
+      const csvContent = buildMonthlyLogsCsv(matchingLogs);
+      const jsonContent = JSON.stringify(
+        {
+          platform: 'Aathirai_Comic',
+          archiveTrigger: params.trigger,
+          monthKey: targetMonthKey,
+          monthLabel,
+          timezone: 'Asia/Kolkata (IST)',
+          exportedAt: new Date().toISOString(),
+          scope: 'Admin Panel Actions & Verified ₹49 / ₹249 Customer Payments Only',
+          summary: {
+            totalLogs: matchingLogs.length,
+            ...stats,
+          },
+          logs: matchingLogs,
+        },
+        null,
+        2
+      );
+
+      // Email strictly to the immutable backend Admin Gmail with BOTH CSV and JSON attachments
+      const emailRes = await sendMonthlyActivityLogArchiveEmail({
+        to: IMMUTABLE_ADMIN_VAULT.email,
+        monthKey: targetMonthKey,
+        monthLabel,
+        trigger: params.trigger,
+        totalLogs: matchingLogs.length,
+        adminActionsCount: stats.adminActionsCount,
+        payments49Count: stats.payments49Count,
+        payments249Count: stats.payments249Count,
+        totalRevenueInr: stats.totalRevenueInr,
+        csvContent,
+        jsonContent,
+      });
+
+      if (!emailRes.sent) {
+        // SAFETY RULE: Never delete logs if email delivery fails — retain and retry automatically
+        const safeErr = redactAdminSecrets(
+          emailRes.error || 'SMTP delivery failed while sending monthly log archive.',
+          IMMUTABLE_ADMIN_VAULT.email,
+          IMMUTABLE_ADMIN_VAULT.phone
+        );
+        db.mutate((d) => {
+          const prev = d.activityLogArchiveState || {};
+          const pending = new Set<string>(prev.pendingRetryMonths || []);
+          pending.add(targetMonthKey);
+          d.activityLogArchiveState = {
+            ...prev,
+            pendingRetryMonths: Array.from(pending).sort(),
+            lastArchiveError: safeErr,
+            lastAttemptAt: new Date().toISOString(),
+          };
+        });
+        return {
+          ok: false,
+          monthKey: targetMonthKey,
+          monthLabel,
+          archivedCount: 0,
+          logsPreserved: true,
+          error: `${safeErr} All ${matchingLogs.length} logs were preserved safely and will retry automatically.`,
+        };
+      }
+
+      // CONFIRMED DELIVERY: Automatically delete archived month's logs from backend + Firestore to free space
+      const archivedIdSet = new Set(matchingLogs.map((l) => l.id));
+      const archivedAtIso = new Date().toISOString();
+      db.mutate((d) => {
+        d.activityLogs = (d.activityLogs || []).filter((log) => !archivedIdSet.has(log.id));
+        const prev = d.activityLogArchiveState || {};
+        const nextPending = (prev.pendingRetryMonths || []).filter((m) => m !== targetMonthKey);
+        d.activityLogArchiveState = {
+          ...prev,
+          lastArchivedMonth: targetMonthKey,
+          lastArchivedAt: archivedAtIso,
+          lastArchivedCount: matchingLogs.length,
+          lastArchiveMessageId: emailRes.messageId,
+          pendingRetryMonths: nextPending,
+          lastArchiveError: nextPending.length === 0 ? undefined : prev.lastArchiveError,
+          lastAttemptAt: archivedAtIso,
+        };
+      });
+
+      await db.persistChanges({ collections: ['activityLogs'] }).catch(() => undefined);
+
+      return {
+        ok: true,
+        monthKey: targetMonthKey,
+        monthLabel,
+        archivedCount: matchingLogs.length,
+        message: `Emailed ${matchingLogs.length} logs for ${monthLabel} (CSV + JSON) to Protected Backend Admin Gmail and cleared them from backend storage.`,
+      };
+    };
+
+    const next = activityLogArchiveLock.then(runArchive, runArchive);
+    activityLogArchiveLock = next.catch(() => undefined);
+    return next;
+  };
+
+  const runAutoMonthEndLogArchiveCheck = async () => {
+    try {
+      const currentIstMonthKey = getIstDateParts().monthKey;
+      const snapshot = db.getSnapshot();
+      const overdueMonths = new Set<string>();
+      for (const log of snapshot.activityLogs || []) {
+        const logMonth = log.istMonthKey || getIstDateParts(log.timestamp).monthKey;
+        if (logMonth && logMonth < currentIstMonthKey) {
+          overdueMonths.add(logMonth);
+        }
+      }
+      const sortedOverdue = Array.from(overdueMonths).sort();
+      for (const monthKey of sortedOverdue) {
+        await archiveMonthLogsAndEmail({ monthKey, trigger: 'auto_month_end' });
+      }
+    } catch {
+      // Non-fatal; will retry on next periodic tick
+    }
+  };
+
+  // Run month-end archive check shortly after startup and every 15 minutes thereafter
+  const startupArchiveTimer = setTimeout(() => {
+    void runAutoMonthEndLogArchiveCheck();
+  }, 4000);
+  startupArchiveTimer.unref?.();
+
+  const periodicArchiveInterval = setInterval(() => {
+    void runAutoMonthEndLogArchiveCheck();
+  }, 15 * 60 * 1000);
+  periodicArchiveInterval.unref?.();
+
+  app.get('/api/admin/logs', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+    await db.ensureFreshFromCloud();
+
+    // Non-blocking background retry if any previous IST month is overdue for email archive
+    const currentIst = getIstDateParts();
+    const snapshot = db.getSnapshot();
+    const hasOverdueMonth = (snapshot.activityLogs || []).some((entry) => {
+      const entryMonth = entry.istMonthKey || getIstDateParts(entry.timestamp).monthKey;
+      return entryMonth < currentIst.monthKey;
+    });
+    if (hasOverdueMonth) {
+      void runAutoMonthEndLogArchiveCheck();
+    }
+
+    const scope = req.query.scope === 'month' ? 'month' : 'day';
+    const allSafeLogs = (snapshot.activityLogs || []).map(sanitizeActivityLogEntry);
+
+    const currentMonthLogs = allSafeLogs.filter(
+      (entry) => (entry.istMonthKey || getIstDateParts(entry.timestamp).monthKey) === currentIst.monthKey
+    );
+    const todayLogs = currentMonthLogs.filter(
+      (entry) => (entry.istDayKey || getIstDateParts(entry.timestamp).dayKey) === currentIst.dayKey
+    );
+    const monthStats = computeLogSummaryStats(currentMonthLogs);
+    const rawArchiveState = snapshot.activityLogArchiveState || {};
+
+    return res.json({
+      scope,
+      logs: scope === 'month' ? currentMonthLogs : todayLogs,
+      todayCount: todayLogs.length,
+      currentMonthCount: currentMonthLogs.length,
+      currentIstDayKey: currentIst.dayKey,
+      currentIstMonthKey: currentIst.monthKey,
+      currentIstMonthLabel: currentIst.monthLabel,
+      nextRolloverLabel: currentIst.nextRolloverLabel,
+      adminActionsMonthCount: monthStats.adminActionsCount,
+      payments49MonthCount: monthStats.payments49Count,
+      payments249MonthCount: monthStats.payments249Count,
+      totalRevenueMonthInr: monthStats.totalRevenueInr,
+      archiveState: {
+        lastArchivedMonth: rawArchiveState.lastArchivedMonth,
+        lastArchivedAt: rawArchiveState.lastArchivedAt,
+        lastArchivedCount: rawArchiveState.lastArchivedCount,
+        pendingRetryMonths: rawArchiveState.pendingRetryMonths || [],
+        lastArchiveError: rawArchiveState.lastArchiveError
+          ? redactAdminSecrets(
+              rawArchiveState.lastArchiveError,
+              IMMUTABLE_ADMIN_VAULT.email,
+              IMMUTABLE_ADMIN_VAULT.phone
+            )
+          : undefined,
+      },
+    });
+  });
+
+  app.post('/api/admin/logs/archive-now', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+    await db.ensureFreshFromCloud();
+
+    const currentIst = getIstDateParts();
+    const requestedMonth =
+      typeof req.body?.monthKey === 'string' && /^\d{4}-\d{2}$/.test(req.body.monthKey.trim())
+        ? req.body.monthKey.trim()
+        : currentIst.monthKey;
+
+    const result = await archiveMonthLogsAndEmail({
+      monthKey: requestedMonth,
+      trigger: 'manual',
+    });
+
+    if (!result.ok) {
+      return res.status(502).json({
+        success: false,
+        logsPreserved: true,
+        monthKey: result.monthKey,
+        monthLabel: result.monthLabel,
+        error: result.error || 'Unable to email monthly archive. All logs were safely preserved.',
+        archiveState: db.getSnapshot().activityLogArchiveState || {},
+      });
+    }
+
+    return res.json({
+      success: true,
+      monthKey: result.monthKey,
+      monthLabel: result.monthLabel,
+      archivedCount: result.archivedCount,
+      skipped: Boolean(result.skipped),
+      message: result.message,
+      archiveState: db.getSnapshot().activityLogArchiveState || {},
+    });
+  });
+
+  app.post('/api/admin/logs/send-sample-email', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+
+    const now = new Date();
+    const ist = getIstDateParts(now);
+    const sampleMonthKey = `${ist.monthKey}-SAMPLE`;
+    const sampleMonthLabel = `${ist.monthLabel} (Sample Test)`;
+
+    const sampleLogs: ActivityLog[] = [
+      {
+        id: `sample-admin-${Date.now()}`,
+        timestamp: now.toISOString(),
+        istDayKey: ist.dayKey,
+        istMonthKey: ist.monthKey,
+        category: 'admin',
+        action: 'ADMIN_DUAL_OTP_LOGIN_SUCCESS',
+        actorEmail: 'Protected Admin Vault',
+        actorRole: 'admin',
+        targetType: 'admin',
+        targetId: 'admin-panel',
+        details: '[SAMPLE TEST] Verified Admin Panel Dual-OTP login session.',
+      },
+      {
+        id: `sample-pay49-${Date.now() + 1}`,
+        timestamp: now.toISOString(),
+        istDayKey: ist.dayKey,
+        istMonthKey: ist.monthKey,
+        category: 'payment_49',
+        amountInr: 49,
+        action: 'PAYMENT_CAPTURED',
+        actorEmail: 'sample.reader1@example.com',
+        actorRole: 'reader',
+        targetType: 'payment',
+        targetId: 'pay_sample_49',
+        details: '[SAMPLE TEST] Verified ₹49 (1-Month Pass) customer payment captured.',
+      },
+      {
+        id: `sample-pay249-${Date.now() + 2}`,
+        timestamp: now.toISOString(),
+        istDayKey: ist.dayKey,
+        istMonthKey: ist.monthKey,
+        category: 'payment_249',
+        amountInr: 249,
+        action: 'PAYMENT_CAPTURED',
+        actorEmail: 'sample.reader2@example.com',
+        actorRole: 'reader',
+        targetType: 'payment',
+        targetId: 'pay_sample_249',
+        details: '[SAMPLE TEST] Verified ₹249 (6-Month Pass) customer payment captured.',
+      },
+    ];
+
+    const stats = computeLogSummaryStats(sampleLogs);
+    const csvContent = buildMonthlyLogsCsv(sampleLogs);
+    const jsonContent = JSON.stringify(
+      {
+        platform: 'Aathirai_Comic',
+        sampleTest: true,
+        archiveTrigger: 'manual',
+        monthKey: sampleMonthKey,
+        monthLabel: sampleMonthLabel,
+        timezone: 'Asia/Kolkata (IST)',
+        exportedAt: now.toISOString(),
+        scope: 'Admin Panel Actions & Verified ₹49 / ₹249 Customer Payments Only',
+        summary: {
+          totalLogs: sampleLogs.length,
+          ...stats,
+        },
+        logs: sampleLogs,
+      },
+      null,
+      2
+    );
+
+    const emailRes = await sendMonthlyActivityLogArchiveEmail({
+      to: IMMUTABLE_ADMIN_VAULT.email,
+      monthKey: sampleMonthKey,
+      monthLabel: sampleMonthLabel,
+      trigger: 'manual',
+      totalLogs: sampleLogs.length,
+      adminActionsCount: stats.adminActionsCount,
+      payments49Count: stats.payments49Count,
+      payments249Count: stats.payments249Count,
+      totalRevenueInr: stats.totalRevenueInr,
+      csvContent,
+      jsonContent,
+    });
+
+    if (!emailRes.sent) {
+      const safeErr = redactAdminSecrets(
+        emailRes.error || 'SMTP delivery failed while sending sample log archive email.',
+        IMMUTABLE_ADMIN_VAULT.email,
+        IMMUTABLE_ADMIN_VAULT.phone
+      );
+      return res.status(emailRes.configured ? 502 : 400).json({
+        success: false,
+        configured: emailRes.configured,
+        error: safeErr,
+      });
+    }
+
+    return res.json({
+      success: true,
+      messageId: emailRes.messageId || null,
+      attachments: [
+        `Aathirai_Comic_Activity_Logs_${sampleMonthKey}.csv`,
+        `Aathirai_Comic_Activity_Logs_${sampleMonthKey}.json`,
+      ],
+      message:
+        'Sample monthly archive email (with both CSV + JSON attachments) was sent to your Protected Backend Admin Gmail. No real backend logs were modified or deleted.',
+    });
   });
 
   // Serve bundled asset images directly in both dev and production for legacy cover URLs

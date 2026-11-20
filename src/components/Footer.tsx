@@ -160,12 +160,15 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
                   Official Copyright &amp; DMCA Takedown
                 </a>
               </li>
-              <li className="pt-1">
+              <li className="pt-1 space-y-1.5">
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Need help? Reach out here for Admin Contact &amp; support:
+                </p>
                 <a
-                  href="mailto:aathiraicomic@gmail.com?subject=Contact%20Admin%20-%20Aathirai_Comic"
+                  href="mailto:aathiraicomic@gmail.com?subject=Help%20%26%20Admin%20Contact%20-%20Aathirai_Comic"
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 font-bold transition-colors"
                 >
-                  <Mail className="w-3.5 h-3.5" />
+                  <Mail className="w-3.5 h-3.5 shrink-0" />
                   <span>Contact Admin: aathiraicomic@gmail.com</span>
                 </a>
               </li>
@@ -195,15 +198,15 @@ export const Footer: React.FC<FooterProps> = ({ setCurrentTab }) => {
           <div>
             © 2026 Aathirai_Comic Media. All original comics and character art remain the property of their respective creators.
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             <span className="text-slate-400">Built with respect for Indian comic heritage and global manga art</span>
             <button
+              type="button"
               onClick={() => setCurrentTab('admin_dashboard')}
-              className="text-slate-600 hover:text-amber-400/90 dark:text-slate-700 dark:hover:text-amber-400/90 font-mono text-[11px] transition-colors cursor-pointer select-none"
-              title="admin.com secure console access"
-            >
-              admin.com
-            </button>
+              tabIndex={-1}
+              aria-hidden="true"
+              className="w-12 h-5 opacity-0 bg-transparent border-0 p-0 cursor-default select-none focus:outline-none"
+            />
           </div>
         </div>
       </div>
