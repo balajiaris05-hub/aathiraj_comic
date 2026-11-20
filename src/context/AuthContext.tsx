@@ -37,6 +37,12 @@ interface AuthContextType {
   isDevMode: boolean;
   isLoggedIn: boolean;
   hasActivePremium: boolean;
+  hasComplimentaryAdminAccess: boolean;
+  isFreeTrialActive: boolean;
+  trialDaysRemaining: number;
+  trialExpired: boolean;
+  shouldShowFreeTrialPopup: boolean;
+  acknowledgeFreeTrialPopup: () => Promise<void>;
   notifications: NotificationItem[];
   unreadNotificationsCount: number;
   getAuthHeaders: () => Promise<Record<string, string>>;
@@ -118,11 +124,69 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return headers;
   }, [user?.role, user?.sessionToken]);
 
-  const hasActivePremium = Boolean(
-    user?.premiumPlan &&
-      user?.premiumExpiresAt &&
-      new Date(user.premiumExpiresAt).getTime() > Date.now()
+  const nowMs = Date.now();
+  const hasComplimentaryAdminAccess = Boolean(
+    user?.hasComplimentaryAdminAccess ||
+      user?.isProtectedOwnerReader ||
+      user?.premiumPaymentDetail?.isComplimentaryAdminAccess ||
+      user?.premiumPaymentDetail?.status === 'complimentary'
   );
+
+  const hasActivePremium = Boolean(
+    hasComplimentaryAdminAccess ||
+      (user?.premiumPlan &&
+        user?.premiumExpiresAt &&
+        new Date(user.premiumExpiresAt).getTime() > nowMs)
+  );
+
+  const isFreeTrialActive = Boolean(
+    !hasComplimentaryAdminAccess &&
+      hasActivePremium &&
+      (user?.isFreeTrial ||
+        user?.premiumPaymentDetail?.status === 'trial' ||
+        user?.premiumPaymentDetail?.isFreeTrial)
+  );
+
+  const trialDaysRemaining = (() => {
+    if (!isFreeTrialActive || !user?.premiumExpiresAt) return 0;
+    const expMs = new Date(user.premiumExpiresAt).getTime();
+    if (!Number.isFinite(expMs) || expMs <= nowMs) return 0;
+    return Math.max(1, Math.ceil((expMs - nowMs) / (24 * 60 * 60 * 1000)));
+  })();
+
+  const trialExpired = Boolean(
+    !hasActivePremium &&
+      (user?.trialExpired ||
+        (Boolean(user?.freeTrialClaimed || user?.freeTrialExpiresAt) &&
+          user?.freeTrialExpiresAt &&
+          new Date(user.freeTrialExpiresAt).getTime() <= nowMs))
+  );
+
+  const shouldShowFreeTrialPopup = Boolean(
+    user &&
+      isFreeTrialActive &&
+      !user.freeTrialPopupSeenAt &&
+      user.shouldShowFreeTrialPopup !== false
+  );
+
+  const acknowledgeFreeTrialPopup = async () => {
+    if (!user) return;
+    const nowIso = new Date().toISOString();
+    updateUser({
+      freeTrialPopupSeenAt: nowIso,
+      shouldShowFreeTrialPopup: false,
+    });
+    try {
+      const headers = await getAuthHeaders();
+      await fetch('/api/auth/acknowledge-trial-popup', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ userId: user.id, email: user.email }),
+      });
+    } catch {
+      // Local state already dismissed cleanly
+    }
+  };
 
   // Switch interface role ONLY in development mode; never mutates user.role or backend permissions
   const switchDemoRole = (targetRole: UserRole) => {
@@ -266,13 +330,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           next.premiumStartedAt = statusData.subscription.startedAt;
           next.premiumExpiresAt = statusData.subscription.expiresAt;
           next.premiumPaymentDetail = statusData.subscription.premiumPaymentDetail;
+          next.hasComplimentaryAdminAccess = Boolean(
+            statusData.subscription.isComplimentaryAdminAccess ||
+              statusData.user?.hasComplimentaryAdminAccess
+          );
+          if (statusData.user?.isProtectedOwnerReader !== undefined) {
+            next.isProtectedOwnerReader = Boolean(statusData.user.isProtectedOwnerReader);
+          }
+          next.isFreeTrial = Boolean(
+            !next.hasComplimentaryAdminAccess && statusData.subscription.isFreeTrial
+          );
+          next.trialDaysRemaining = next.hasComplimentaryAdminAccess
+            ? 0
+            : Number(statusData.subscription.trialDaysRemaining || 0);
+          next.trialExpired = next.hasComplimentaryAdminAccess
+            ? false
+            : Boolean(statusData.subscription.trialExpired);
+          if (statusData.subscription.freeTrialExpiresAt) {
+            next.freeTrialExpiresAt = statusData.subscription.freeTrialExpiresAt;
+          }
+          if (statusData.subscription.freeTrialPopupSeenAt) {
+            next.freeTrialPopupSeenAt = statusData.subscription.freeTrialPopupSeenAt;
+          }
+          if (statusData.user?.freeTrialClaimed !== undefined) {
+            next.freeTrialClaimed = Boolean(statusData.user.freeTrialClaimed);
+          }
+          next.shouldShowFreeTrialPopup = Boolean(
+            !next.hasComplimentaryAdminAccess &&
+              statusData.subscription.shouldShowFreeTrialPopup &&
+              !next.freeTrialPopupSeenAt
+          );
           if (statusData.subscription.age !== undefined) {
             next.age = statusData.subscription.age;
           }
-          if (statusData.subscription.upiId) {
+          if (statusData.subscription.upiId && !next.isProtectedOwnerReader) {
             next.upiId = statusData.subscription.upiId;
           }
-          if (statusData.subscription.verifiedPhone && !next.phone) {
+          if (next.isProtectedOwnerReader) {
+            delete next.phone;
+          } else if (statusData.subscription.verifiedPhone && !next.phone) {
             next.phone = statusData.subscription.verifiedPhone;
           }
         }
@@ -404,6 +500,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isDevMode,
         isLoggedIn: !!user,
         hasActivePremium,
+        hasComplimentaryAdminAccess,
+        isFreeTrialActive,
+        trialDaysRemaining,
+        trialExpired,
+        shouldShowFreeTrialPopup,
+        acknowledgeFreeTrialPopup,
         notifications,
         unreadNotificationsCount,
         getAuthHeaders,

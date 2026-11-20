@@ -571,9 +571,22 @@ export function buildUserWriteItems(u: User): CommitWriteItem[] {
   const safeName = (u.name || 'Reader').trim().slice(0, 80) || 'Reader';
   const safeRole: 'reader' | 'author' | 'admin' =
     u.role === 'admin' ? 'admin' : u.role === 'author' ? 'author' : 'reader';
-  const safeEmail = (u.email || 'reader@gmail.com').trim().slice(0, 120);
-  const safePhone = (u.phone && u.phone.trim().length >= 3 ? u.phone.trim() : safeRole === 'admin' ? '+91 8610950780' : 'Not provided').slice(0, 32);
-  const safeUpiId = (u.upiId && u.upiId.trim().length >= 3 ? u.upiId.trim() : safeRole === 'admin' ? 'balajiaris05@okaxis' : 'Not provided').slice(0, 100);
+  const isProtectedVaultAccount =
+    safeRole === 'admin' ||
+    u.id === 'usr_admin' ||
+    u.id === 'usr_admin_reader' ||
+    Boolean(u.isProtectedOwnerReader);
+  const safeEmail = (
+    safeRole === 'admin' ? 'protected@admin.vault' : u.email || 'reader@gmail.com'
+  )
+    .trim()
+    .slice(0, 120);
+  const safePhone = isProtectedVaultAccount
+    ? 'Protected Backend Vault'
+    : (u.phone && u.phone.trim().length >= 3 ? u.phone.trim() : 'Not provided').slice(0, 32);
+  const safeUpiId = isProtectedVaultAccount
+    ? 'Not provided'
+    : (u.upiId && u.upiId.trim().length >= 3 ? u.upiId.trim() : 'Not provided').slice(0, 100);
   const safeAge = Math.min(110, Math.max(5, Number(u.age) || 24));
   const safePlan: 'free' | '1_month' | '6_months' =
     u.premiumPlan === '6_months' ? '6_months' : u.premiumPlan === '1_month' ? '1_month' : 'free';
@@ -1413,7 +1426,8 @@ export type VaultCollectionKey =
   | 'copyrightDocs'
   | 'settings'
   | 'activityLogs'
-  | 'otps';
+  | 'otps'
+  | 'freeTrialClaims';
 
 const ALL_VAULT_COLLECTION_KEYS: VaultCollectionKey[] = [
   'authorApplications',
@@ -1430,6 +1444,7 @@ const ALL_VAULT_COLLECTION_KEYS: VaultCollectionKey[] = [
   'settings',
   'activityLogs',
   'otps',
+  'freeTrialClaims',
 ];
 
 function buildVaultCollectionWrites(snapshot: DatabaseSchema, keys: VaultCollectionKey[]): CommitWriteItem[] {

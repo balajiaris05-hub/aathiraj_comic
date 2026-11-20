@@ -9,11 +9,32 @@
       "socialLinks": {},
       "isSuspended": false,
       "createdAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "userId": "usr_admin_reader",
+      "name": "Balaji Reader",
+      "role": "reader",
+      "avatar": "https://api.dicebear.com/7.x/bottts/svg?seed=BalajiReader",
+      "bio": "Personal Reader Account on Aathirai_Comic.",
+      "socialLinks": {},
+      "isSuspended": false,
+      "createdAt": "2026-01-01T00:00:00Z"
     }
   ],
   "users_private": [
     {
       "userId": "usr_admin",
+      "email": "balajiaris05@gmail.com",
+      "phone": "+91 8610950780",
+      "countryCode": "+91",
+      "upiId": "",
+      "age": null,
+      "dob": null,
+      "premiumPlan": "free",
+      "premiumExpiresAt": null
+    },
+    {
+      "userId": "usr_admin_reader",
       "email": "balajiaris05@gmail.com",
       "phone": "+91 8610950780",
       "countryCode": "+91",
@@ -74,6 +95,7 @@
   "reports": [],
   "deleteRequests": [],
   "adRequests": [],
+  "freeTrialClaims": [],
   "platformSettings": {
     "siteName": "Aathirai_Comic",
     "tagline": "India’s Premier Digital Manga & Comic Publishing Network",
@@ -120,14 +142,14 @@
   "creditNotes": [],
   "migrationAudit": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-20T05:15:53.765Z",
-    "completedAt": "2026-11-20T05:15:53.767Z",
+    "startedAt": "2026-11-20T07:31:38.806Z",
+    "completedAt": "2026-11-20T07:31:38.808Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "ef0561e74073285e5f067d2dd80240ea7474a7e4fb1fad85c88a60cd60153ec5",
+    "backupSha256": "ea10afb12a127b8484e3fa0b24270a1c1c5759993a9a65d312cb575c44f8552d",
     "status": "verified",
     "counts": {
-      "users": 1,
+      "users": 2,
       "authorApplications": 0,
       "comics": 0,
       "chapters": 0,
@@ -145,8 +167,8 @@
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: ef0561e74073285e...)",
-      "Migrated 1 users with isolated PII and scrypt password hashes",
+      "Backed up aathirai_db.json (SHA-256: ea10afb12a127b84...)",
+      "Migrated 2 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",
       "Verified relationships across comments (0), ratings (0), and votes (0)"

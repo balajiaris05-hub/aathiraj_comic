@@ -40,6 +40,10 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
     logout,
     switchDemoRole,
     hasActivePremium,
+    hasComplimentaryAdminAccess,
+    isFreeTrialActive,
+    trialDaysRemaining,
+    trialExpired,
     notifications,
     unreadNotificationsCount,
     refreshNotifications,
@@ -50,11 +54,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [notifMenuOpen, setNotifMenuOpen] = useState(false);
 
+  const premiumNavLabel = hasComplimentaryAdminAccess
+    ? 'Premium · All Unlocked'
+    : isFreeTrialActive
+      ? `Premium · ${trialDaysRemaining}d Free Left`
+      : 'Premium (₹49 / ₹249)';
+
   const navItems = [
     { id: 'home', label: 'Home', href: '/' },
     { id: 'books', label: 'Books', href: '/books' },
     { id: 'authors', label: 'Authors', href: '/authors' },
-    { id: 'premium', label: 'Premium (₹49 / ₹249)', href: '/premium' },
+    { id: 'premium', label: premiumNavLabel, href: '/premium' },
     { id: 'about', label: 'About Us', href: '/about' },
     { id: 'terms', label: 'Terms & Conditions', href: '/terms' },
     { id: 'copyright', label: 'Copyright', href: '/copyright' },
@@ -91,6 +101,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                   <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
                 )}
                 <span>Account</span>
+                {isFreeTrialActive && (
+                  <span className="hidden sm:inline font-mono tabular-nums text-[10px] font-bold opacity-90">
+                    · {trialDaysRemaining}d Free
+                  </span>
+                )}
                 <ChevronDown className={`w-3 h-3 sm:w-3.5 sm:h-3.5 transition-transform ${accountMenuOpen ? 'rotate-180' : ''}`} />
               </button>
 
@@ -150,21 +165,47 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                           <Phone className="w-3 h-3 text-amber-500" /> Mobile:
                         </span>
                         <span className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                          {user.phone || 'Not set'}
+                          {user.isProtectedOwnerReader ? 'Protected in Backend' : (user.phone || 'Not set')}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="text-slate-500">Premium Status:</span>
-                        {hasActivePremium ? (
+                        {hasComplimentaryAdminAccess ? (
                           <span className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3" /> Active ({user.premiumPlan === '6_months' ? '6M ₹249' : '1M ₹49'})
+                            <CheckCircle2 className="w-3 h-3 shrink-0" /> All Comics Unlocked
+                          </span>
+                        ) : isFreeTrialActive ? (
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 tabular-nums">
+                            <CheckCircle2 className="w-3 h-3 shrink-0" /> Free Trial · {trialDaysRemaining}d left
+                          </span>
+                        ) : hasActivePremium ? (
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 shrink-0" /> Active ({user.premiumPlan === '6_months' ? '6M ₹249' : '1M ₹49'})
+                          </span>
+                        ) : trialExpired ? (
+                          <span className="font-bold text-rose-600 dark:text-rose-400 flex items-center gap-1">
+                            <Lock className="w-3 h-3 shrink-0" /> Trial Ended · Upgrade
                           </span>
                         ) : (
                           <span className="font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                            <Lock className="w-3 h-3" /> Free Reader
+                            <Lock className="w-3 h-3 shrink-0" /> Free Reader
                           </span>
                         )}
                       </div>
+                      {isFreeTrialActive && user.premiumExpiresAt && (
+                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-800/70 text-[10px]">
+                          <span className="text-slate-500">Free Offer Ends:</span>
+                          <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                            {new Date(user.premiumExpiresAt).toLocaleDateString('en-IN', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                              timeZone: 'Asia/Kolkata',
+                            })}{' '}
+                            ({trialDaysRemaining} {trialDaysRemaining === 1 ? 'day' : 'days'} left)
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -198,8 +239,16 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                       className="w-full py-2 px-3 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center justify-between transition-colors cursor-pointer"
                     >
                       <span className="flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                        <span>Premium Plans (₹49 / ₹249)</span>
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>
+                          {hasComplimentaryAdminAccess
+                            ? 'All Comics Unlocked (Complimentary)'
+                            : isFreeTrialActive
+                              ? `Free Trial · ${trialDaysRemaining}d Left`
+                              : trialExpired
+                                ? 'Trial Ended · Upgrade (₹49 / ₹249)'
+                                : 'Premium Plans (₹49 / ₹249)'}
+                        </span>
                       </span>
                       <span>→</span>
                     </button>
@@ -524,7 +573,15 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                   : 'bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:text-rose-500'
               }`}
             >
-              {item.id === 'premium' ? 'Premium ₹49/₹249' : item.id === 'terms' ? 'Terms' : item.label}
+              {item.id === 'premium'
+                ? hasComplimentaryAdminAccess
+                  ? 'All Unlocked'
+                  : isFreeTrialActive
+                    ? `Free Trial · ${trialDaysRemaining}d Left`
+                    : 'Premium ₹49/₹249'
+                : item.id === 'terms'
+                  ? 'Terms'
+                  : item.label}
             </button>
           ))}
           {(role === 'author' || actualDbRole === 'author') && (

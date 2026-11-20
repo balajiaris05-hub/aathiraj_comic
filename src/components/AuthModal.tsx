@@ -1084,6 +1084,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onOpenFul
 
         {mode === 'register' && (
           <form onSubmit={handleRegister} className="space-y-3">
+            <div className="px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium">
+              <strong className="font-bold">New Reader Offer:</strong> First-time registration unlocks a{' '}
+              <strong className="font-bold">30-Day Free 1-Month Premium Trial (₹49 value)</strong>. Duplicate Gmail or mobile accounts are blocked.
+            </div>
             <div>
               <label className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
                 Customer Full Name <span className="text-rose-500">*</span>

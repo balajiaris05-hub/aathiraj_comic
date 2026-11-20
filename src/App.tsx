@@ -4,6 +4,7 @@ import { ThemeProvider } from './context/ThemeContext';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { AuthModal } from './components/AuthModal';
+import { FreeTrialWelcomeModal } from './components/FreeTrialWelcomeModal';
 import { ComicReader } from './components/ComicReader';
 import { HomePage } from './pages/HomePage';
 import { BooksPage } from './pages/BooksPage';
@@ -67,7 +68,15 @@ const TAB_TO_PATH: Record<string, string> = {
 };
 
 function MainAppContent() {
-  const { user, hasActivePremium, refreshNotifications } = useAuth();
+  const {
+    user,
+    hasActivePremium,
+    trialDaysRemaining,
+    trialExpired,
+    shouldShowFreeTrialPopup,
+    acknowledgeFreeTrialPopup,
+    refreshNotifications,
+  } = useAuth();
   const [initialRoute] = useState(resolveInitialRoute);
   const [currentTab, setCurrentTab] = useState<string>(initialRoute.tab);
   const [booksSearch, setBooksSearch] = useState<string>(initialRoute.search);
@@ -231,10 +240,13 @@ function MainAppContent() {
           setActiveReaderEpisodeId(episodeId);
           return;
         }
+        const isTrialEnded = Boolean(verification.trialExpired || trialExpired);
         redirectToPremiumTab(
-          user
-            ? `No active paid subscription or purchase was verified for ${user.email || user.phone || 'your account'}. Subscribe or verify payment on this Premium tab to read.`
-            : 'This comic is on Premium. Please log in and complete payment on the Premium tab to unlock reading.'
+          isTrialEnded
+            ? 'Your 30-Day Free One-Month Premium Trial has ended. Choose the ₹49 (1 Month) or ₹249 (6 Months) plan below to continue reading premium comics.'
+            : user
+              ? `No active paid subscription or purchase was verified for ${user.email || user.phone || 'your account'}. Subscribe or verify payment on this Premium tab to read.`
+              : 'This comic is on Premium. Please log in and complete payment on the Premium tab to unlock reading.'
         );
         return;
       }
@@ -310,7 +322,11 @@ function MainAppContent() {
     }
 
     // Customer has not paid for this paywalled comic/episode -> direct to Premium Plans page
-    handleTabChange('premium');
+    redirectToPremiumTab(
+      trialExpired
+        ? 'Your 30-Day Free One-Month Premium Trial has ended. Choose the ₹49 (1 Month) or ₹249 (6 Months) plan below to continue reading premium comics.'
+        : 'This comic is on Premium. Please verify an active paid account or choose a plan below before reading.'
+    );
   };
 
   const isAdminView = currentTab === 'admin_dashboard' || currentTab === 'admin_dashboard_delete_requests';
@@ -450,10 +466,29 @@ function MainAppContent() {
           episodeId={activeReaderEpisodeId}
           onClose={() => setActiveReaderEpisodeId(null)}
           onSelectEpisode={handleOpenEpisode}
-          onRedirectToPremium={() => redirectToPremiumTab()}
+          onRedirectToPremium={(customMsg) => redirectToPremiumTab(customMsg)}
           openAuthModal={() => setAuthModalOpen(true)}
         />
       )}
+
+      {/* One-Time Welcome Popup for Newly Registered Customers Granted the 30-Day Free Trial */}
+      <FreeTrialWelcomeModal
+        isOpen={Boolean(shouldShowFreeTrialPopup && !isAdminView)}
+        customerName={user?.name}
+        trialDaysRemaining={trialDaysRemaining}
+        expiresAt={user?.premiumExpiresAt || user?.freeTrialExpiresAt}
+        onStartReading={() => {
+          acknowledgeFreeTrialPopup();
+          handleTabChange('books');
+        }}
+        onViewPremium={() => {
+          acknowledgeFreeTrialPopup();
+          handleTabChange('premium');
+        }}
+        onClose={() => {
+          acknowledgeFreeTrialPopup();
+        }}
+      />
 
       {/* Global Auth Modal */}
       <AuthModal

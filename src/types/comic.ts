@@ -9,8 +9,20 @@ export interface PremiumPaymentDetail {
   receiptNumber?: string;
   paidAt?: string;
   expiresAt?: string;
-  status: 'paid' | 'unpaid';
+  status: 'paid' | 'unpaid' | 'trial' | 'complimentary';
+  isFreeTrial?: boolean;
+  isComplimentaryAdminAccess?: boolean;
+  trialValueInr?: number;
   environment?: 'test' | 'live';
+}
+
+export interface FreeTrialClaim {
+  id: string;
+  email: string;
+  phone?: string;
+  phoneLast10?: string;
+  userId: string;
+  claimedAt: string;
 }
 
 export interface ReadingProgressItem {
@@ -67,6 +79,16 @@ export interface User {
   premiumStartedAt?: string;
   premiumExpiresAt?: string;
   premiumPaymentDetail?: PremiumPaymentDetail;
+  isFreeTrial?: boolean;
+  freeTrialClaimed?: boolean;
+  freeTrialGrantedAt?: string;
+  freeTrialExpiresAt?: string;
+  freeTrialPopupSeenAt?: string;
+  trialDaysRemaining?: number;
+  trialExpired?: boolean;
+  shouldShowFreeTrialPopup?: boolean;
+  hasComplimentaryAdminAccess?: boolean;
+  isProtectedOwnerReader?: boolean;
   sessionToken?: string;
 }
 

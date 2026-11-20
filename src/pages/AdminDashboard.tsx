@@ -2702,11 +2702,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       className={`mt-0.5 font-bold ${
                         selectedCustomer.paymentSummary?.status === 'paid_active'
                           ? 'text-emerald-600 dark:text-emerald-400'
-                          : selectedCustomer.paymentSummary?.status === 'paid_expired'
-                            ? 'text-amber-600 dark:text-amber-400'
-                            : selectedCustomer.paymentSummary?.status === 'pending_payment'
-                              ? 'text-amber-600 dark:text-amber-400'
-                              : 'text-slate-600 dark:text-slate-300'
+                          : selectedCustomer.paymentSummary?.status === 'trial_active'
+                            ? 'text-teal-600 dark:text-teal-400'
+                            : selectedCustomer.paymentSummary?.status === 'trial_expired'
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : selectedCustomer.paymentSummary?.status === 'paid_expired'
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : selectedCustomer.paymentSummary?.status === 'pending_payment'
+                                  ? 'text-amber-600 dark:text-amber-400'
+                                  : 'text-slate-600 dark:text-slate-300'
                       }`}
                     >
                       {selectedCustomer.paymentSummary?.statusLabel || 'Unpaid · Free Account'}

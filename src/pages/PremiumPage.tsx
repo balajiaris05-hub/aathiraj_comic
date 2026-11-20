@@ -5,7 +5,9 @@ import {
   Check,
   CheckCircle2,
   Lock,
-  ExternalLink
+  ExternalLink,
+  Gift,
+  Clock
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import { Purchase } from '../types/comic';
@@ -37,7 +39,25 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
   redirectNotice,
   onClearRedirectNotice,
 }) => {
-  const { user, hasActivePremium, refreshUser, getAuthHeaders } = useAuth();
+  const {
+    user,
+    hasActivePremium,
+    hasComplimentaryAdminAccess,
+    isFreeTrialActive,
+    trialDaysRemaining,
+    trialExpired,
+    refreshUser,
+    getAuthHeaders,
+  } = useAuth();
+
+  const formattedExpiryIst = user?.premiumExpiresAt
+    ? new Date(user.premiumExpiresAt).toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'Asia/Kolkata',
+      })
+    : '';
 
   const [verifyingGmail, setVerifyingGmail] = useState(false);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
@@ -138,7 +158,9 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
           <div className="flex items-start gap-3">
             <Lock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
             <div className="space-y-1 text-xs sm:text-sm">
-              <div className="font-extrabold">Premium Verification Required</div>
+              <div className="font-extrabold">
+                {trialExpired ? 'Free 1-Month Premium Trial Ended' : 'Premium Verification Required'}
+              </div>
               <p className="text-slate-700 dark:text-amber-200/90">{redirectNotice}</p>
             </div>
           </div>
@@ -153,7 +175,80 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
           )}
         </div>
       )}
-      
+
+      {!redirectNotice && trialExpired && !hasActivePremium && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-slate-900 dark:text-rose-100 flex items-start gap-3 max-w-4xl mx-auto">
+          <Clock className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+          <div className="space-y-1 text-xs sm:text-sm">
+            <div className="font-extrabold">Your 30-Day Free One-Month Premium Trial Has Ended</div>
+            <p className="text-slate-600 dark:text-slate-300">
+              Choose the 1-Month (₹49) or 6-Month (₹249) plan below to continue reading all premium comics, chapters, and episodes.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {hasComplimentaryAdminAccess && (
+        <div className="p-5 sm:p-6 rounded-2xl bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-300 dark:border-emerald-800 max-w-4xl mx-auto">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                  Unrestricted Complimentary Reader Access · Permanent
+                </div>
+                <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white font-heading">
+                  All Premium Comics, Chapters &amp; Pages Are Permanently Unlocked
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                  Signed in as {user?.email}. No ₹49 or ₹249 subscription payment is required on this account.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCurrentTab('books')}
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 cursor-pointer transition-colors"
+            >
+              Read All Comics →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isFreeTrialActive && (
+        <div className="p-5 sm:p-6 rounded-2xl bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-300 dark:border-emerald-800 max-w-4xl mx-auto">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <Gift className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                  Free 1-Month Premium Trial Active · ₹49 Value (₹0 Billed)
+                </div>
+                <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white font-heading tabular-nums">
+                  {trialDaysRemaining} {trialDaysRemaining === 1 ? 'Day' : 'Days'} Left on Your Free Offer
+                  {formattedExpiryIst ? ` · Valid Until ${formattedExpiryIst}` : ''}
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                  All premium comics are unlocked for {user?.email || user?.phone}. Payments are locked while your free plan is ongoing — paid plans will unlock automatically after your free trial ends.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCurrentTab('books')}
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shrink-0 cursor-pointer transition-colors"
+            >
+              Read Premium Comics →
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="text-center space-y-3">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs font-bold uppercase tracking-wider">
@@ -166,7 +261,9 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
         </h1>
 
         <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-2xl mx-auto leading-relaxed">
-          Connect your reader Gmail &amp; mobile number to unlock all paywalled comics, chapters, and episodes. Every time you open a paywalled comic, your Gmail payment status is verified automatically.
+          {!user
+            ? 'New readers get a 30-day Free One-Month Premium Trial (₹49 value) on first registration. Connect your Gmail & mobile number to unlock all paywalled comics, chapters, and episodes.'
+            : 'Connect your reader Gmail & mobile number to unlock all paywalled comics, chapters, and episodes. Every time you open a paywalled comic, your Gmail payment status is verified automatically.'}
         </p>
       </div>
 
@@ -305,27 +402,30 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
 
           <div className="space-y-2">
             {hasActivePremium ? (
-              <button
-                type="button"
-                disabled
-                className={`w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all ${
-                  user?.premiumPlan === '1_month'
-                    ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
-                    : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
-                }`}
-              >
-                {user?.premiumPlan === '1_month'
-                  ? `✓ Active Until ${
-                      user?.premiumExpiresAt
-                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                        : 'Expiry'
-                    } · Choose After Plan Ends`
-                  : `Available After Current Plan Ends (${
-                      user?.premiumExpiresAt
-                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                        : ''
-                    })`}
-              </button>
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  disabled
+                  className={`w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all tabular-nums ${
+                    hasComplimentaryAdminAccess || isFreeTrialActive || user?.premiumPlan === '1_month'
+                      ? 'bg-emerald-600/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {hasComplimentaryAdminAccess
+                    ? '✓ All Comics Permanently Unlocked · No Payment Needed'
+                    : isFreeTrialActive
+                      ? `Free Trial Active · ${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'Day' : 'Days'} Left (Payment Locked)`
+                      : user?.premiumPlan === '1_month'
+                        ? `✓ Active Until ${formattedExpiryIst || 'Expiry'} · Choose After Plan Ends`
+                        : `Available After Current Plan Ends (${formattedExpiryIst})`}
+                </button>
+                {isFreeTrialActive && (
+                  <p className="text-[11px] text-center text-slate-500 dark:text-slate-400">
+                    Payments are disabled during your free trial until {formattedExpiryIst}.
+                  </p>
+                )}
+              </div>
             ) : !user ? (
               <button
                 type="button"
@@ -421,27 +521,30 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
 
           <div className="space-y-2">
             {hasActivePremium ? (
-              <button
-                type="button"
-                disabled
-                className={`w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all ${
-                  user?.premiumPlan === '6_months'
-                    ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
-                    : 'bg-slate-800 text-slate-400 cursor-not-allowed'
-                }`}
-              >
-                {user?.premiumPlan === '6_months'
-                  ? `✓ Active Until ${
-                      user?.premiumExpiresAt
-                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                        : 'Expiry'
-                    } · Choose After Plan Ends`
-                  : `Available After Current Plan Ends (${
-                      user?.premiumExpiresAt
-                        ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                        : ''
-                    })`}
-              </button>
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  disabled
+                  className={`w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all tabular-nums ${
+                    hasComplimentaryAdminAccess || (!isFreeTrialActive && user?.premiumPlan === '6_months')
+                      ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                      : 'bg-slate-800 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {hasComplimentaryAdminAccess
+                    ? '✓ All Comics Permanently Unlocked · No Payment Needed'
+                    : isFreeTrialActive
+                      ? `Free Trial Ongoing · ${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'Day' : 'Days'} Left (Payment Locked)`
+                      : user?.premiumPlan === '6_months'
+                        ? `✓ Active Until ${formattedExpiryIst || 'Expiry'} · Choose After Plan Ends`
+                        : `Available After Current Plan Ends (${formattedExpiryIst})`}
+                </button>
+                {isFreeTrialActive && (
+                  <p className="text-[11px] text-center text-slate-400">
+                    You can upgrade to 6 Months (₹249) after your free trial ends on {formattedExpiryIst}.
+                  </p>
+                )}
+              </div>
             ) : !user ? (
               <button
                 type="button"
@@ -482,7 +585,7 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
 
       </div>
 
-      {checkoutPlan && (
+      {checkoutPlan && !isFreeTrialActive && !hasActivePremium && (
         <RazorpayCheckoutModal
           isOpen={Boolean(checkoutPlan)}
           onClose={() => setCheckoutPlan(null)}

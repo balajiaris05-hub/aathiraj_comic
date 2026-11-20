@@ -20,6 +20,7 @@ import {
   GstBusinessSettings,
   CreditNoteRecord,
   AdPlacementRequest,
+  FreeTrialClaim,
 } from '../types/comic';
 import { hashPassword } from './security';
 import {
@@ -104,6 +105,7 @@ export interface DatabaseSchema {
   activityLogArchiveState?: ActivityLogArchiveState;
   deleteRequests: DeleteRequest[];
   adRequests: AdPlacementRequest[];
+  freeTrialClaims: FreeTrialClaim[];
   migrationReport?: MigrationAuditReport;
 }
 
@@ -302,6 +304,24 @@ export const IMMUTABLE_ADMIN_VAULT = Object.freeze({
   role: 'admin' as const,
 });
 
+/**
+ * Frozen, backend-only personal Owner Reader account.
+ * Behaves as a standard customer reader account with permanent complimentary access
+ * to all premium comics/chapters/pages. Credentials and mobile number remain strictly
+ * on the backend and are never transmitted to browser payloads, console, or DOM.
+ */
+export const IMMUTABLE_OWNER_READER_VAULT = Object.freeze({
+  id: 'usr_admin_reader',
+  name: 'Balaji Reader',
+  email: 'balajiaris05@gmail.com',
+  phone: '+91 8610950780',
+  countryCode: '+91',
+  countryName: 'India',
+  role: 'reader' as const,
+  passwordHash:
+    'scrypt:b9a89241db237bea7ecd035a94681ebf:803db89a56c4ef4276ce9b457d81ef633731ec0274e556e6058a308c1caaea05a8f6bec64059ad3a012f7065b9f3f41d5b5c7b6785f4ccb237ff4d39ffb236c4',
+});
+
 export function enforceImmutableAdminRecord(users: User[]): void {
   if (!Array.isArray(users)) return;
   let adminUser = users.find((u) => u.id === IMMUTABLE_ADMIN_VAULT.id || u.role === 'admin');
@@ -338,6 +358,64 @@ export function enforceImmutableAdminRecord(users: User[]): void {
       u.suspendedReason = undefined;
     }
   });
+
+  // Ensure the personal Owner Reader account exists in backend storage with permanent complimentary access
+  let ownerReader = users.find(
+    (u) => u.id === IMMUTABLE_OWNER_READER_VAULT.id || Boolean(u.isProtectedOwnerReader)
+  );
+  if (!ownerReader) {
+    ownerReader = {
+      id: IMMUTABLE_OWNER_READER_VAULT.id,
+      name: IMMUTABLE_OWNER_READER_VAULT.name,
+      email: IMMUTABLE_OWNER_READER_VAULT.email,
+      phone: IMMUTABLE_OWNER_READER_VAULT.phone,
+      countryCode: IMMUTABLE_OWNER_READER_VAULT.countryCode,
+      countryName: IMMUTABLE_OWNER_READER_VAULT.countryName,
+      passwordHash: IMMUTABLE_OWNER_READER_VAULT.passwordHash,
+      role: 'reader',
+      isVerified: true,
+      emailVerified: true,
+      isSuspended: false,
+      hasComplimentaryAdminAccess: true,
+      isProtectedOwnerReader: true,
+      notifyGmail: true,
+      notifyMobile: false,
+      bookmarks: [],
+      favorites: [],
+      readingHistory: [],
+      avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=BalajiReader',
+      bio: 'Personal Reader Account on Aathirai_Comic.',
+      createdAt: '2026-01-01T00:00:00Z',
+      premiumPlan: null,
+    };
+    users.push(ownerReader);
+  }
+
+  users.forEach((u) => {
+    if (u.id === IMMUTABLE_OWNER_READER_VAULT.id || Boolean(u.isProtectedOwnerReader)) {
+      u.id = IMMUTABLE_OWNER_READER_VAULT.id;
+      u.email = IMMUTABLE_OWNER_READER_VAULT.email;
+      u.phone = IMMUTABLE_OWNER_READER_VAULT.phone;
+      u.countryCode = IMMUTABLE_OWNER_READER_VAULT.countryCode;
+      u.countryName = IMMUTABLE_OWNER_READER_VAULT.countryName;
+      u.role = 'reader';
+      u.isVerified = true;
+      u.emailVerified = true;
+      u.isSuspended = false;
+      u.suspendedReason = undefined;
+      u.hasComplimentaryAdminAccess = true;
+      u.isProtectedOwnerReader = true;
+      if (!u.passwordHash || !u.passwordHash.startsWith('scrypt:')) {
+        u.passwordHash = IMMUTABLE_OWNER_READER_VAULT.passwordHash;
+      }
+      delete u.password;
+      u.isFreeTrial = false;
+      u.freeTrialPopupSeenAt = u.freeTrialPopupSeenAt || '2026-01-01T00:00:00Z';
+      if (!Array.isArray(u.bookmarks)) u.bookmarks = [];
+      if (!Array.isArray(u.favorites)) u.favorites = [];
+      if (!Array.isArray(u.readingHistory)) u.readingHistory = [];
+    }
+  });
 }
 
 export function getDefaultDatabase(): DatabaseSchema {
@@ -357,6 +435,30 @@ export function getDefaultDatabase(): DatabaseSchema {
         bio: 'Chief Content Administrator and Publisher at Aathirai_Comic.',
         createdAt: '2026-01-01T00:00:00Z',
       },
+      {
+        id: IMMUTABLE_OWNER_READER_VAULT.id,
+        name: IMMUTABLE_OWNER_READER_VAULT.name,
+        email: IMMUTABLE_OWNER_READER_VAULT.email,
+        phone: IMMUTABLE_OWNER_READER_VAULT.phone,
+        countryCode: IMMUTABLE_OWNER_READER_VAULT.countryCode,
+        countryName: IMMUTABLE_OWNER_READER_VAULT.countryName,
+        passwordHash: IMMUTABLE_OWNER_READER_VAULT.passwordHash,
+        role: 'reader',
+        isVerified: true,
+        emailVerified: true,
+        isSuspended: false,
+        hasComplimentaryAdminAccess: true,
+        isProtectedOwnerReader: true,
+        notifyGmail: true,
+        notifyMobile: false,
+        bookmarks: [],
+        favorites: [],
+        readingHistory: [],
+        avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=BalajiReader',
+        bio: 'Personal Reader Account on Aathirai_Comic.',
+        createdAt: '2026-01-01T00:00:00Z',
+        premiumPlan: null,
+      },
     ],
     otps: {},
     authorApplications: [],
@@ -370,6 +472,7 @@ export function getDefaultDatabase(): DatabaseSchema {
     reports: [],
     deleteRequests: [],
     adRequests: [],
+    freeTrialClaims: [],
     copyrightDocs: [
       {
         id: 'cpy_1',
@@ -503,6 +606,7 @@ export class StorageEngine {
     if (!Array.isArray(parsed.reports)) parsed.reports = [];
     if (!Array.isArray(parsed.deleteRequests)) parsed.deleteRequests = [];
     if (!Array.isArray(parsed.adRequests)) parsed.adRequests = [];
+    if (!Array.isArray(parsed.freeTrialClaims)) parsed.freeTrialClaims = [];
     if (!Array.isArray(parsed.copyrightDocs)) parsed.copyrightDocs = def.copyrightDocs;
     if (!parsed.settings) parsed.settings = def.settings;
     if (!parsed.gstSettings) {
@@ -744,6 +848,7 @@ export class StorageEngine {
         reports: data.reports,
         deleteRequests: data.deleteRequests,
         adRequests: data.adRequests,
+        freeTrialClaims: data.freeTrialClaims,
         platformSettings: data.settings,
         gstSettings: data.gstSettings,
         creditNotes: data.creditNotes,

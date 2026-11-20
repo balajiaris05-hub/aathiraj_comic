@@ -34,7 +34,7 @@ interface ComicReaderProps {
   episodeId: string;
   onClose: () => void;
   onSelectEpisode: (epId: string) => void;
-  onRedirectToPremium?: () => void;
+  onRedirectToPremium?: (message?: string) => void;
   openAuthModal: () => void;
 }
 
@@ -48,6 +48,9 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   const {
     user,
     actualDbRole,
+    isFreeTrialActive,
+    trialDaysRemaining,
+    trialExpired,
     refreshUser,
     getAuthHeaders,
     toggleBookmark,
@@ -76,6 +79,10 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       verifiedGmail: string | null;
       verifiedPhone: string | null;
       hasActiveSubscription: boolean;
+      isComplimentaryAdminAccess?: boolean;
+      isFreeTrial?: boolean;
+      trialDaysRemaining?: number;
+      trialExpired?: boolean;
       activePlan: '1_month' | '6_months' | null;
       expiresAt?: string;
       activeReceipt?: string;
@@ -131,7 +138,12 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       const json = await res.json();
       if (res.ok) {
         if (!json.hasAccess && onRedirectToPremium) {
-          onRedirectToPremium();
+          const ended = Boolean(json.verification?.trialExpired || trialExpired);
+          onRedirectToPremium(
+            ended
+              ? 'Your 30-Day Free One-Month Premium Trial has ended. Choose the ₹49 (1 Month) or ₹249 (6 Months) plan below to continue reading premium comics.'
+              : undefined
+          );
           return;
         }
         setData(json);
@@ -745,7 +757,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   Gmail Verification Check
                 </span>
                 <span className="font-mono font-bold text-rose-400">
-                  {user ? `${user.email}${user.phone ? ` (${user.phone})` : ''}` : 'Not Signed In'}
+                  {user ? `${user.email}${!user.isProtectedOwnerReader && user.phone ? ` (${user.phone})` : ''}` : 'Not Signed In'}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -774,6 +786,10 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 >
                   Login / Register with Gmail or Mobile to Unlock
                 </button>
+              </div>
+            ) : isFreeTrialActive ? (
+              <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold text-center">
+                Your Free 1-Month Premium Trial is active ({trialDaysRemaining} {trialDaysRemaining === 1 ? 'day' : 'days'} left). Payments are disabled during the free trial.
               </div>
             ) : (
               <div className="space-y-3 text-left">
@@ -892,11 +908,15 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
             {data.isPaywalled && data.verification?.verifiedGmail && (
               <div className="w-full mb-4 px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold flex items-center justify-between">
                 <span>
-                  ✓ Gmail Payment Verified ({data.verification.verifiedGmail}) ·{' '}
-                  {data.verification.activePlan === '6_months'
-                    ? '6 Months Pass (₹249)'
-                    : '1 Month Pass (₹49)'}{' '}
-                  Unlocked
+                  {data.verification.isComplimentaryAdminAccess
+                    ? `✓ Unrestricted Reader Access (${data.verification.verifiedGmail}) · All Premium Comics & Chapters Unlocked`
+                    : data.verification.isFreeTrial
+                      ? `✓ Free 1-Month Premium Trial (${data.verification.verifiedGmail}) · ${data.verification.trialDaysRemaining ?? trialDaysRemaining} ${(data.verification.trialDaysRemaining ?? trialDaysRemaining) === 1 ? 'day' : 'days'} left`
+                      : `✓ Gmail Payment Verified (${data.verification.verifiedGmail}) · ${
+                          data.verification.activePlan === '6_months'
+                            ? '6 Months Pass (₹249)'
+                            : '1 Month Pass (₹49)'
+                        } Unlocked`}
                 </span>
                 {data.verification.expiresAt && (
                   <span className="text-[11px] font-mono text-emerald-300">

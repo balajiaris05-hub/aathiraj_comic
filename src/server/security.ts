@@ -344,6 +344,8 @@ export function sanitizeUserForClient(user: User, includeSessionToken = false): 
   delete clone.password;
   delete clone.passwordHash;
   const isAdminAccount = clone.role === 'admin' || clone.id === 'usr_admin';
+  const isProtectedOwnerReader =
+    clone.id === 'usr_admin_reader' || Boolean(clone.isProtectedOwnerReader);
   if (includeSessionToken) {
     clone.sessionToken = createSessionToken(user);
   }
@@ -351,6 +353,13 @@ export function sanitizeUserForClient(user: User, includeSessionToken = false): 
     clone.email = 'protected@admin.vault';
     clone.phone = 'Protected Backend Vault';
     clone.upiId = undefined;
+  } else if (isProtectedOwnerReader) {
+    // Strictly keep mobile number in backend storage only — never emit to browser/DOM/console
+    delete clone.phone;
+    clone.upiId = undefined;
+    clone.role = 'reader';
+    clone.hasComplimentaryAdminAccess = true;
+    clone.isProtectedOwnerReader = true;
   }
   return clone;
 }
@@ -644,12 +653,25 @@ export async function resolveAuthenticatedUser(
   const tokenInfo = await verifyBearerToken(authHeader);
 
   if (tokenInfo) {
-    const matched = users.find(
-      u =>
-        (tokenInfo.userId && u.id === tokenInfo.userId) ||
-        (tokenInfo.firebaseUid && (u.firebaseUid === tokenInfo.firebaseUid || u.id === tokenInfo.firebaseUid)) ||
-        (tokenInfo.email && u.email.toLowerCase() === tokenInfo.email.toLowerCase())
-    );
+    let matched: User | undefined;
+    if (tokenInfo.userId) {
+      matched = users.find(u => u.id === tokenInfo.userId);
+    }
+    if (!matched && tokenInfo.firebaseUid) {
+      matched = users.find(
+        u => u.firebaseUid === tokenInfo.firebaseUid || u.id === tokenInfo.firebaseUid
+      );
+    }
+    if (!matched && tokenInfo.email) {
+      const targetEmail = tokenInfo.email.toLowerCase();
+      matched =
+        users.find(
+          u =>
+            u.role !== 'admin' &&
+            u.id !== 'usr_admin' &&
+            u.email.toLowerCase() === targetEmail
+        ) || users.find(u => u.email.toLowerCase() === targetEmail);
+    }
     if (matched && !matched.isSuspended) {
       return { user: matched, role: matched.role, authMethod: 'token' };
     }
@@ -667,11 +689,20 @@ export async function resolveAuthenticatedUser(
     req.query?.email;
 
   if (candidateId || candidateEmail) {
-    const matched = users.find(
-      u =>
-        (candidateId && u.id === String(candidateId)) ||
-        (candidateEmail && u.email.toLowerCase() === String(candidateEmail).trim().toLowerCase())
-    );
+    let matched: User | undefined;
+    if (candidateId) {
+      matched = users.find(u => u.id === String(candidateId));
+    }
+    if (!matched && candidateEmail) {
+      const targetEmail = String(candidateEmail).trim().toLowerCase();
+      matched =
+        users.find(
+          u =>
+            u.role !== 'admin' &&
+            u.id !== 'usr_admin' &&
+            u.email.toLowerCase() === targetEmail
+        ) || users.find(u => u.email.toLowerCase() === targetEmail);
+    }
     if (matched && !matched.isSuspended) {
       return { user: matched, role: matched.role, authMethod: 'identity' };
     }

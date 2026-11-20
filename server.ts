@@ -5,7 +5,13 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
-import { db, IMMUTABLE_ADMIN_VAULT, getIstDateParts, formatIstMonthLabel } from './src/server/storage.ts';
+import {
+  db,
+  IMMUTABLE_ADMIN_VAULT,
+  IMMUTABLE_OWNER_READER_VAULT,
+  getIstDateParts,
+  formatIstMonthLabel,
+} from './src/server/storage.ts';
 import {
   getSmtpConfigSummary,
   verifySmtpConnection,
@@ -791,18 +797,214 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------
+  // HELPER: 30-DAY FREE 1-MONTH PREMIUM TRIAL & ANTI-DUPLICATE CLAIM GUARD
+  // -------------------------------------------------------------
+  const FREE_TRIAL_DURATION_DAYS = 30;
+  const FREE_TRIAL_DURATION_MS = FREE_TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000;
+  const FREE_TRIAL_VALUE_INR = 49;
+
+  const extractLast10PhoneDigits = (raw?: string): string => {
+    const digits = String(raw || '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : digits;
+  };
+
+  const hasClaimedFreeTrial = (
+    snapshot: { freeTrialClaims?: Array<{ email?: string; phone?: string; phoneLast10?: string }> },
+    params: { email?: string; phone?: string; countryCode?: string }
+  ): boolean => {
+    const claims = Array.isArray(snapshot.freeTrialClaims) ? snapshot.freeTrialClaims : [];
+    const cleanEmail = String(params.email || '').trim().toLowerCase();
+    const formattedPhone = params.phone ? formatGlobalPhone(params.phone, params.countryCode) : '';
+    const last10 = extractLast10PhoneDigits(formattedPhone || params.phone);
+
+    return claims.some((claim) => {
+      if (cleanEmail && claim.email && claim.email.trim().toLowerCase() === cleanEmail) {
+        return true;
+      }
+      if (last10.length >= 10) {
+        const claimLast10 = claim.phoneLast10 || extractLast10PhoneDigits(claim.phone);
+        if (claimLast10 && claimLast10 === last10) {
+          return true;
+        }
+      }
+      if (formattedPhone && claim.phone && phonesMatch(claim.phone, formattedPhone, params.countryCode)) {
+        return true;
+      }
+      return false;
+    });
+  };
+
+  const grantNewCustomerFreeTrial = (
+    d: any,
+    user: User,
+    nowIso: string
+  ): { granted: boolean; expiresAt?: string } => {
+    if (!Array.isArray(d.freeTrialClaims)) {
+      d.freeTrialClaims = [];
+    }
+    if (
+      user.role === 'admin' ||
+      user.id === IMMUTABLE_ADMIN_VAULT.id ||
+      user.id === IMMUTABLE_OWNER_READER_VAULT.id ||
+      Boolean(user.isProtectedOwnerReader) ||
+      Boolean(user.hasComplimentaryAdminAccess)
+    ) {
+      return { granted: false };
+    }
+    const alreadyClaimed = hasClaimedFreeTrial(d, {
+      email: user.email,
+      phone: user.phone,
+      countryCode: user.countryCode,
+    });
+    if (alreadyClaimed) {
+      user.freeTrialClaimed = true;
+      user.isFreeTrial = false;
+      return { granted: false };
+    }
+
+    const startMs = new Date(nowIso).getTime() || Date.now();
+    const expiresIso = new Date(startMs + FREE_TRIAL_DURATION_MS).toISOString();
+    const cleanEmail = String(user.email || '').trim().toLowerCase();
+    const cleanPhone = user.phone ? String(user.phone).trim() : undefined;
+    const phoneLast10 = extractLast10PhoneDigits(cleanPhone);
+
+    user.premiumPlan = '1_month';
+    user.premiumStartedAt = nowIso;
+    user.premiumExpiresAt = expiresIso;
+    user.isFreeTrial = true;
+    user.freeTrialClaimed = true;
+    user.freeTrialGrantedAt = nowIso;
+    user.freeTrialExpiresAt = expiresIso;
+    user.freeTrialPopupSeenAt = undefined;
+    user.premiumPaymentDetail = {
+      plan: '1_month',
+      amountPaidInr: 0,
+      upiId: user.upiId,
+      paymentMethod: 'Free 1-Month Welcome Trial (₹49 Value)',
+      paidAt: nowIso,
+      expiresAt: expiresIso,
+      status: 'trial',
+      isFreeTrial: true,
+      trialValueInr: FREE_TRIAL_VALUE_INR,
+    };
+
+    d.freeTrialClaims.push({
+      id: `trial_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      email: cleanEmail,
+      phone: cleanPhone,
+      phoneLast10: phoneLast10.length >= 10 ? phoneLast10 : undefined,
+      userId: user.id,
+      claimedAt: nowIso,
+    });
+
+    return { granted: true, expiresAt: expiresIso };
+  };
+
+  const isProtectedOwnerReaderUser = (u?: User | null): boolean =>
+    Boolean(u && (u.id === IMMUTABLE_OWNER_READER_VAULT.id || u.isProtectedOwnerReader));
+
+  const isProtectedVaultUser = (u?: User | null): boolean =>
+    Boolean(
+      u &&
+        (u.role === 'admin' ||
+          u.id === IMMUTABLE_ADMIN_VAULT.id ||
+          isProtectedOwnerReaderUser(u))
+    );
+
+  const findCustomerAccount = (
+    users: User[],
+    params: { userId?: string; email?: string; phone?: string; countryCode?: string }
+  ): User | undefined => {
+    const cleanEmail = params.email?.trim().toLowerCase() || '';
+    const cleanDigits = params.phone?.replace(/\D/g, '') || '';
+    const nonAdminUsers = (users || []).filter(
+      (u: User) => u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id
+    );
+    const matchedCustomer = nonAdminUsers.find((u: User) => {
+      if (params.userId && u.id === params.userId) return true;
+      if (cleanEmail && u.email?.toLowerCase() === cleanEmail) return true;
+      if (
+        cleanDigits.length >= 6 &&
+        u.phone &&
+        (phonesMatch(u.phone, params.phone || '', params.countryCode) ||
+          (cleanDigits.length >= 10 &&
+            u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10))))
+      ) {
+        return true;
+      }
+      return false;
+    });
+    if (matchedCustomer) return matchedCustomer;
+    if (params.userId) {
+      return (users || []).find((u: User) => u.id === params.userId);
+    }
+    return undefined;
+  };
+
+  const sanitizeSubStatusForClient = <T extends Record<string, any>>(subStatus: T) => {
+    const { matchedUser, ...rest } = subStatus;
+    const isProtected = isProtectedVaultUser(matchedUser);
+    return {
+      ...rest,
+      verifiedPhone: isProtected ? null : rest.verifiedPhone,
+      upiId: isProtected ? undefined : rest.upiId,
+    };
+  };
+
+  // -------------------------------------------------------------
   // HELPER: REAL-TIME GMAIL & PREMIUM SUBSCRIPTION VERIFICATION
   // -------------------------------------------------------------
   const getReaderSubscriptionStatus = (snapshot: any, params: { userId?: string; email?: string; phone?: string }) => {
     const cleanEmail = params.email?.trim().toLowerCase() || '';
     const cleanDigits = params.phone?.replace(/\D/g, '') || '';
 
-    const matchedUser = snapshot.users.find((u: User) => {
-      if (params.userId && u.id === params.userId) return true;
-      if (cleanEmail && u.email?.toLowerCase() === cleanEmail) return true;
-      if (cleanDigits.length >= 10 && u.phone && u.phone.replace(/\D/g, '').endsWith(cleanDigits.slice(-10))) return true;
-      return false;
-    });
+    const matchedUser = findCustomerAccount(snapshot.users || [], params);
+    const isProtectedOwner = isProtectedVaultUser(matchedUser);
+    const isComplimentaryAdminAccess = Boolean(
+      matchedUser &&
+        (matchedUser.hasComplimentaryAdminAccess || isProtectedOwnerReaderUser(matchedUser))
+    );
+
+    if (isComplimentaryAdminAccess && matchedUser) {
+      const premiumPaymentDetail = {
+        plan: 'free' as const,
+        amountPaidInr: 0,
+        upiId: undefined,
+        paymentMethod: 'Complimentary Unrestricted Owner Reader Access',
+        transactionId: undefined,
+        receiptNumber: undefined,
+        paidAt: matchedUser.createdAt,
+        expiresAt: undefined,
+        status: 'complimentary' as const,
+        isFreeTrial: false,
+        isComplimentaryAdminAccess: true,
+        trialValueInr: undefined,
+      };
+
+      return {
+        hasActiveSubscription: true,
+        isComplimentaryAdminAccess: true,
+        isFreeTrial: false,
+        trialDaysRemaining: 0,
+        trialExpired: false,
+        freeTrialExpiresAt: undefined,
+        freeTrialPopupSeenAt: matchedUser.freeTrialPopupSeenAt || matchedUser.createdAt,
+        shouldShowFreeTrialPopup: false,
+        activePlan: null as '1_month' | '6_months' | null,
+        startedAt: matchedUser.createdAt,
+        expiresAt: undefined as string | undefined,
+        activeReceipt: undefined as string | undefined,
+        amountPaidInr: 0,
+        upiId: undefined as string | undefined,
+        paymentMethod: premiumPaymentDetail.paymentMethod,
+        transactionId: undefined as string | undefined,
+        premiumPaymentDetail,
+        verifiedGmail: matchedUser.email || cleanEmail || null,
+        verifiedPhone: null as string | null,
+        age: matchedUser.age,
+        matchedUser,
+      };
+    }
 
     const targetEmail = cleanEmail || matchedUser?.email?.toLowerCase() || '';
     const targetUserId = params.userId || matchedUser?.id || '';
@@ -810,6 +1012,7 @@ async function startServer() {
 
     const now = Date.now();
     let hasActiveSubscription = false;
+    let isFreeTrial = false;
     let activePlan: '1_month' | '6_months' | null = null;
     let startedAt: string | undefined = undefined;
     let expiresAt: string | undefined = undefined;
@@ -818,22 +1021,32 @@ async function startServer() {
     let paymentMethod: string | undefined = undefined;
     let transactionId: string | undefined = undefined;
 
-    // 1. Check User record if subscription is stored directly and not expired
+    // 1. Check User record if subscription (paid or 30-day free trial) is stored directly and not expired
     if (matchedUser?.premiumPlan && matchedUser?.premiumExpiresAt) {
       const expTime = new Date(matchedUser.premiumExpiresAt).getTime();
       if (Number.isFinite(expTime) && expTime > now) {
+        const recordIsTrial = Boolean(
+          matchedUser.isFreeTrial ||
+            matchedUser.premiumPaymentDetail?.status === 'trial' ||
+            matchedUser.premiumPaymentDetail?.isFreeTrial
+        );
         hasActiveSubscription = true;
+        isFreeTrial = recordIsTrial;
         activePlan = matchedUser.premiumPlan;
-        startedAt = matchedUser.premiumStartedAt;
+        startedAt = matchedUser.premiumStartedAt || matchedUser.freeTrialGrantedAt;
         expiresAt = matchedUser.premiumExpiresAt;
-        amountPaidInr = matchedUser.premiumPaymentDetail?.amountPaidInr || (activePlan === '6_months' ? 249 : 49);
-        paymentMethod = matchedUser.premiumPaymentDetail?.paymentMethod || 'UPI / Razorpay';
-        transactionId = matchedUser.premiumPaymentDetail?.transactionId;
-        activeReceipt = matchedUser.premiumPaymentDetail?.receiptNumber;
+        amountPaidInr = recordIsTrial
+          ? 0
+          : matchedUser.premiumPaymentDetail?.amountPaidInr || (activePlan === '6_months' ? 249 : 49);
+        paymentMethod = recordIsTrial
+          ? matchedUser.premiumPaymentDetail?.paymentMethod || 'Free 1-Month Welcome Trial (₹49 Value)'
+          : matchedUser.premiumPaymentDetail?.paymentMethod || 'UPI / Razorpay';
+        transactionId = recordIsTrial ? undefined : matchedUser.premiumPaymentDetail?.transactionId;
+        activeReceipt = recordIsTrial ? undefined : matchedUser.premiumPaymentDetail?.receiptNumber;
       }
     }
 
-    // 2. Verify against all successful subscription purchases linked to reader's Gmail / UserId / Phone
+    // 2. Verify against all successful PAID subscription purchases linked to reader's Gmail / UserId / Phone
     const subPurchases = snapshot.purchases.filter((p: Purchase) => {
       if (p.status !== 'success' || p.type !== 'subscription') return false;
       const matchEmail = targetEmail && p.userEmail?.toLowerCase() === targetEmail;
@@ -853,6 +1066,7 @@ async function startServer() {
 
       if (Number.isFinite(computedExpires) && computedExpires > now) {
         hasActiveSubscription = true;
+        isFreeTrial = false;
         activePlan = plan;
         startedAt = sub.createdAt;
         expiresAt = new Date(computedExpires).toISOString();
@@ -864,20 +1078,55 @@ async function startServer() {
       }
     }
 
+    let trialDaysRemaining = 0;
+    if (hasActiveSubscription && isFreeTrial && expiresAt) {
+      const expMs = new Date(expiresAt).getTime();
+      if (Number.isFinite(expMs) && expMs > now) {
+        trialDaysRemaining = Math.max(1, Math.ceil((expMs - now) / (24 * 60 * 60 * 1000)));
+      }
+    }
+
+    const freeTrialExpiresAt = matchedUser?.freeTrialExpiresAt || (isFreeTrial ? expiresAt : undefined);
+    const trialExpired = Boolean(
+      !hasActiveSubscription &&
+        (matchedUser?.freeTrialClaimed || matchedUser?.freeTrialExpiresAt) &&
+        freeTrialExpiresAt &&
+        new Date(freeTrialExpiresAt).getTime() <= now
+    );
+    const shouldShowFreeTrialPopup = Boolean(
+      hasActiveSubscription && isFreeTrial && !matchedUser?.freeTrialPopupSeenAt
+    );
+
     const premiumPaymentDetail = {
       plan: (activePlan || 'free') as '1_month' | '6_months' | 'free',
-      amountPaidInr: hasActiveSubscription ? amountPaidInr : 0,
-      upiId: matchedUser?.upiId || matchedUser?.premiumPaymentDetail?.upiId,
-      paymentMethod: hasActiveSubscription ? (paymentMethod || 'UPI / Razorpay') : undefined,
-      transactionId: hasActiveSubscription ? transactionId : undefined,
-      receiptNumber: hasActiveSubscription ? activeReceipt : undefined,
+      amountPaidInr: hasActiveSubscription ? (isFreeTrial ? 0 : amountPaidInr) : 0,
+      upiId: isProtectedOwner ? undefined : (matchedUser?.upiId || matchedUser?.premiumPaymentDetail?.upiId),
+      paymentMethod: hasActiveSubscription
+        ? paymentMethod || (isFreeTrial ? 'Free 1-Month Welcome Trial (₹49 Value)' : 'UPI / Razorpay')
+        : undefined,
+      transactionId: hasActiveSubscription && !isFreeTrial ? transactionId : undefined,
+      receiptNumber: hasActiveSubscription && !isFreeTrial ? activeReceipt : undefined,
       paidAt: hasActiveSubscription ? startedAt : undefined,
       expiresAt: hasActiveSubscription ? expiresAt : undefined,
-      status: (hasActiveSubscription ? 'paid' : 'unpaid') as 'paid' | 'unpaid',
+      status: (hasActiveSubscription ? (isFreeTrial ? 'trial' : 'paid') : 'unpaid') as
+        | 'paid'
+        | 'unpaid'
+        | 'trial'
+        | 'complimentary',
+      isFreeTrial: hasActiveSubscription ? isFreeTrial : false,
+      isComplimentaryAdminAccess: false,
+      trialValueInr: hasActiveSubscription && isFreeTrial ? FREE_TRIAL_VALUE_INR : undefined,
     };
 
     return {
       hasActiveSubscription,
+      isComplimentaryAdminAccess: false,
+      isFreeTrial: hasActiveSubscription && isFreeTrial,
+      trialDaysRemaining,
+      trialExpired,
+      freeTrialExpiresAt,
+      freeTrialPopupSeenAt: matchedUser?.freeTrialPopupSeenAt,
+      shouldShowFreeTrialPopup,
       activePlan,
       startedAt,
       expiresAt,
@@ -888,7 +1137,7 @@ async function startServer() {
       transactionId: premiumPaymentDetail.transactionId,
       premiumPaymentDetail,
       verifiedGmail: matchedUser?.email || cleanEmail || null,
-      verifiedPhone: matchedUser?.phone || params.phone || null,
+      verifiedPhone: isProtectedOwner ? null : (matchedUser?.phone || params.phone || null),
       age: matchedUser?.age,
       matchedUser,
     };
@@ -922,7 +1171,11 @@ async function startServer() {
     let checkedRazorpayApi = false;
 
     // Query Razorpay API if no active pass locally OR if a specific Razorpay payment ID (`pay_...`) was supplied
-    if ((!subStatus.hasActiveSubscription || cleanPaymentId) && hasRealRazorpayApiKeys()) {
+    if (
+      !subStatus.isComplimentaryAdminAccess &&
+      (!subStatus.hasActiveSubscription || cleanPaymentId) &&
+      hasRealRazorpayApiKeys()
+    ) {
       const rzpCheck = await findCapturedRazorpayPaymentForCustomer({
         email: targetEmail || undefined,
         phone: targetPhone || undefined,
@@ -984,6 +1237,7 @@ async function startServer() {
             matchedUser.premiumPlan = verifiedPay.plan;
             matchedUser.premiumStartedAt = verifiedPay.paidAt;
             matchedUser.premiumExpiresAt = verifiedPay.expiresAt;
+            matchedUser.isFreeTrial = false;
             matchedUser.premiumPaymentDetail = {
               plan: verifiedPay.plan,
               amountPaidInr: verifiedPay.amountInr,
@@ -994,6 +1248,7 @@ async function startServer() {
               paidAt: verifiedPay.paidAt,
               expiresAt: verifiedPay.expiresAt,
               status: 'paid',
+              isFreeTrial: false,
               environment,
             };
             syncedUser = matchedUser;
@@ -1183,6 +1438,7 @@ async function startServer() {
     user.premiumPlan = paidPlan;
     user.premiumStartedAt = nowIso;
     user.premiumExpiresAt = expiresIso;
+    user.isFreeTrial = false;
     user.premiumPaymentDetail = {
       plan: paidPlan,
       amountPaidInr: amountInr,
@@ -1193,6 +1449,7 @@ async function startServer() {
       paidAt: nowIso,
       expiresAt: expiresIso,
       status: 'paid',
+      isFreeTrial: false,
     };
 
     // Record corresponding purchase in d.purchases if not already present for this transactionId
@@ -1355,6 +1612,71 @@ async function startServer() {
     return { valid: false, expired: sawExpired };
   };
 
+  // Pre-check whether a Gmail address or Mobile Number is already registered or has already claimed the 30-day Free Trial
+  app.post('/api/auth/check-registration-availability', authRateLimiter, async (req, res) => {
+    const { email, phone, countryCode } = req.body || {};
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const formattedPhone = phone ? formatGlobalPhone(phone, countryCode) : '';
+    const cleanDigits = formattedPhone.replace(/\D/g, '');
+
+    if (!cleanEmail && cleanDigits.length < 6) {
+      return res.status(400).json({ error: 'Please provide a Gmail address or Mobile Number to verify.' });
+    }
+
+    await db.ensureFreshFromCloud(true);
+    const snapshot = db.getSnapshot();
+
+    const emailExists = cleanEmail
+      ? snapshot.users.some(
+          (u: User) =>
+            u.email &&
+            u.email.toLowerCase() === cleanEmail &&
+            (u.isVerified || u.emailVerified || u.role === 'admin' || u.role === 'author')
+        )
+      : false;
+
+    const phoneExists =
+      cleanDigits.length >= 6
+        ? snapshot.users.some(
+            (u: User) =>
+              phonesMatch(u.phone, phone, countryCode) &&
+              (u.isVerified || u.emailVerified || u.role === 'admin' || u.role === 'author')
+          )
+        : false;
+
+    const trialAlreadyClaimed = hasClaimedFreeTrial(snapshot, {
+      email: cleanEmail || undefined,
+      phone: formattedPhone || undefined,
+      countryCode,
+    });
+
+    if (emailExists || phoneExists) {
+      return res.status(409).json({
+        available: false,
+        emailExists,
+        phoneExists,
+        trialEligible: false,
+        error:
+          emailExists && phoneExists
+            ? 'An account with this Gmail address and Mobile Number is already registered. Please sign in using Returning Customer Login.'
+            : emailExists
+              ? 'This Gmail address is already registered. Duplicate accounts are not allowed — please sign in using Returning Customer Login.'
+              : 'This Mobile Number is already registered. Duplicate accounts are not allowed — please sign in using Returning Customer Login.',
+      });
+    }
+
+    return res.json({
+      available: true,
+      emailExists: false,
+      phoneExists: false,
+      trialEligible: !trialAlreadyClaimed,
+      trialAlreadyClaimed,
+      message: trialAlreadyClaimed
+        ? 'Account available to register. Note: This Gmail or Mobile Number has already used the one-time 30-day Free Trial previously.'
+        : 'Verified available! New account qualifies for the 30-day Free 1-Month Premium Trial (₹49 value).',
+    });
+  });
+
   app.post('/api/auth/send-registration-email-otp', authRateLimiter, async (req, res) => {
     const { email, name } = req.body;
     const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
@@ -1379,7 +1701,7 @@ async function startServer() {
     ) {
       return res.status(409).json({
         error:
-          'An account with this Gmail address already exists. Please use Returning Customer Login or Forgot Password.',
+          'An account with this Gmail address already exists. Duplicate accounts are not allowed — please use Returning Customer Login or Forgot Password.',
       });
     }
 
@@ -1471,6 +1793,7 @@ async function startServer() {
       });
     }
 
+    await db.ensureFreshFromCloud(true);
     const snapshot = db.getSnapshot();
     const existing = snapshot.users.find(
       (u: User) =>
@@ -1484,7 +1807,7 @@ async function startServer() {
     if (existing) {
       return res.status(409).json({
         error:
-          'An account with this Mobile Number already exists. Please use Returning Customer Login or Forgot Password.',
+          'An account with this Mobile Number already exists. Duplicate accounts are not allowed — please use Returning Customer Login or Forgot Password.',
       });
     }
 
@@ -1668,6 +1991,8 @@ async function startServer() {
 
     let registeredUser: User | null = null;
     let duplicateConflict = false;
+    let freeTrialGranted = false;
+    let freeTrialExpiresAtIso: string | undefined = undefined;
 
     db.mutate(d => {
       const existing = d.users.find((u: User) =>
@@ -1709,6 +2034,9 @@ async function startServer() {
         if (typeof notifyMobile === 'boolean') existing.notifyMobile = notifyMobile;
         if (upiId?.trim()) existing.upiId = upiId.trim();
         existing.lastLoginAt = nowIso;
+        const trialRes = grantNewCustomerFreeTrial(d, existing, nowIso);
+        freeTrialGranted = trialRes.granted;
+        freeTrialExpiresAtIso = trialRes.expiresAt;
         registeredUser = existing;
       } else {
         const newUser: User = {
@@ -1743,6 +2071,9 @@ async function startServer() {
           lastLoginAt: nowIso,
           premiumPlan: null,
         };
+        const trialRes = grantNewCustomerFreeTrial(d, newUser, nowIso);
+        freeTrialGranted = trialRes.granted;
+        freeTrialExpiresAtIso = trialRes.expiresAt;
         d.users.push(newUser);
         registeredUser = newUser;
       }
@@ -1750,7 +2081,7 @@ async function startServer() {
 
     if (duplicateConflict) {
       return res.status(409).json({
-        error: 'An account with this Gmail address or Global Mobile Number already exists in the backend database. Please sign in using Returning Customer Login or reset via Forgot Password.',
+        error: 'An account with this Gmail address or Global Mobile Number already exists in the backend database. Duplicate accounts are not permitted — please sign in using Returning Customer Login or reset via Forgot Password.',
       });
     }
 
@@ -1765,28 +2096,50 @@ async function startServer() {
       phone: (registeredUser as User).phone,
       firebaseIdToken: fbToken,
     });
-    const matchedUser = reconciled.subStatus.matchedUser || (registeredUser as User);
+    const subStatus = reconciled.subStatus;
+    const matchedUser = subStatus.matchedUser || (registeredUser as User);
     const finalUser: User = {
       ...matchedUser,
-      premiumPlan: reconciled.subStatus.activePlan,
-      premiumStartedAt: reconciled.subStatus.startedAt,
-      premiumExpiresAt: reconciled.subStatus.expiresAt,
-      premiumPaymentDetail: reconciled.subStatus.premiumPaymentDetail,
+      premiumPlan: subStatus.activePlan,
+      premiumStartedAt: subStatus.startedAt,
+      premiumExpiresAt: subStatus.expiresAt,
+      premiumPaymentDetail: subStatus.premiumPaymentDetail,
+      isFreeTrial: subStatus.isFreeTrial,
+      trialDaysRemaining: subStatus.trialDaysRemaining,
+      trialExpired: subStatus.trialExpired,
+      shouldShowFreeTrialPopup: subStatus.shouldShowFreeTrialPopup,
     };
+
+    const trialExpiryDisplay = freeTrialExpiresAtIso
+      ? new Date(freeTrialExpiresAtIso).toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          timeZone: 'Asia/Kolkata',
+        })
+      : '';
 
     db.addNotification({
       userId: finalUser.id,
       userEmail: finalUser.email,
-      title: 'Welcome to Aathirai_Comic!',
-      message: `Hello ${finalUser.name}, your Gmail & Mobile Number are verified and your reader account is active.`,
+      title: freeTrialGranted
+        ? 'Free 1-Month Premium Access Granted (₹49 Value)!'
+        : 'Welcome to Aathirai_Comic!',
+      message: freeTrialGranted
+        ? `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your 30-day Free One-Month Premium Trial (₹49 value) is now active until ${trialExpiryDisplay}. Enjoy unlimited premium comics!`
+        : `Hello ${finalUser.name}, your Gmail & Mobile Number are verified and your reader account is active.`,
       type: 'system',
       targetId: finalUser.id,
     });
 
     const welcomeEmailPayload = {
       to: finalUser.email,
-      subject: 'Welcome to Aathirai_Comic! Your Customer Account Has Been Created',
-      body: `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your verified customer account (${finalUser.email} / ${finalUser.phone || 'Mobile Linked'}) has been created and stored in our database.`,
+      subject: freeTrialGranted
+        ? 'Welcome to Aathirai_Comic — Your 30-Day Free Premium Access (₹49 Value) Is Active!'
+        : 'Welcome to Aathirai_Comic! Your Customer Account Has Been Created',
+      body: freeTrialGranted
+        ? `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your verified customer account (${finalUser.email} / ${finalUser.phone || 'Mobile Linked'}) has been granted a Free 1-Month Premium Trial (₹49 value, valid for 30 days until ${trialExpiryDisplay}).`
+        : `Hello ${finalUser.name}, welcome to Aathirai_Comic! Your verified customer account (${finalUser.email} / ${finalUser.phone || 'Mobile Linked'}) has been created and stored in our database.`,
       sentAt: nowIso,
     };
 
@@ -1794,7 +2147,7 @@ async function startServer() {
       'READER_REGISTERED',
       finalUser.email,
       finalUser.role,
-      `Customer registered after dual Gmail + Mobile OTP verification: ${finalUser.name} | DOB verified | Age: ${finalUser.age || 'N/A'} | Mobile: ${finalUser.phone || 'N/A'}.`,
+      `Customer registered after dual Gmail + Mobile OTP verification: ${finalUser.name} | DOB verified | Age: ${finalUser.age || 'N/A'} | Mobile: ${finalUser.phone || 'N/A'} | Free Trial Granted: ${freeTrialGranted}.`,
       'user',
       finalUser.id
     );
@@ -1806,7 +2159,7 @@ async function startServer() {
 
     const cloudPersist = await db.persistChanges({
       users: [finalUser],
-      collections: ['notifications', 'activityLogs', 'otps'],
+      collections: ['notifications', 'activityLogs', 'otps', 'freeTrialClaims'],
       userFirebaseIdToken: fbToken,
     });
 
@@ -1815,13 +2168,18 @@ async function startServer() {
       storedInBackend: true,
       cloudPersisted: cloudPersist.persisted,
       verified: true,
+      freeTrialGranted,
+      trialDaysRemaining: subStatus.trialDaysRemaining,
+      shouldShowFreeTrialPopup: subStatus.shouldShowFreeTrialPopup,
       emailDelivered: welcomeDelivery.sent,
       smtpConfigured: welcomeDelivery.configured,
       user: sanitizeUserForClient(finalUser, true),
-      subscription: reconciled.subStatus,
+      subscription: subStatus,
       razorpayVerified: reconciled.razorpayVerified,
       welcomeEmail: welcomeEmailPayload,
-      message: `Gmail (${cleanEmail}) & Mobile (${finalUser.phone}) verified — customer account created and active!`,
+      message: freeTrialGranted
+        ? `Gmail (${cleanEmail}) & Mobile (${finalUser.phone}) verified — account created with 30-Day Free 1-Month Premium Access (₹49 value)!`
+        : `Gmail (${cleanEmail}) & Mobile (${finalUser.phone}) verified — customer account created and active!`,
     });
   });
 
@@ -1974,8 +2332,11 @@ async function startServer() {
     let matchedBy: 'gmail_and_mobile' | 'gmail' | 'mobile' = 'gmail';
     const now = Date.now();
 
-    const findMatchingUser = (d: any) =>
-      d.users.find((u: User) => {
+    const findMatchingUser = (d: any) => {
+      const nonAdminUsers = (d.users || []).filter(
+        (u: User) => u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id
+      );
+      return nonAdminUsers.find((u: User) => {
         const emailMatch = Boolean(rawEmailInput && u.email && u.email.toLowerCase() === rawEmailInput);
         const phoneMatch = Boolean(cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode));
         if (emailMatch && phoneMatch) {
@@ -1992,6 +2353,7 @@ async function startServer() {
         }
         return false;
       });
+    };
 
     db.mutate(d => {
       matchedUser = findMatchingUser(d);
@@ -2025,11 +2387,12 @@ async function startServer() {
       });
     }
 
+    const isProtectedReader = isProtectedOwnerReaderUser(matchedUser);
     const fbToken = extractFirebaseIdToken(req.headers.authorization);
     const reconciled = await reconcileCustomerRazorpayPremium({
       userId: matchedUser.id,
       email: matchedUser.email,
-      phone: matchedUser.phone,
+      phone: isProtectedReader ? undefined : matchedUser.phone,
       paymentId: razorpayPaymentId ? String(razorpayPaymentId) : undefined,
       firebaseIdToken: fbToken,
     });
@@ -2046,7 +2409,10 @@ async function startServer() {
       matchedBy,
       userId: matchedUser.id,
       email: matchedUser.email,
-      phone: matchedUser.phone || '',
+      // Strictly never echo protected owner mobile number back to browser payloads or UI messages
+      phone: isProtectedReader ? '' : (matchedUser.phone || ''),
+      isProtectedOwnerReader: isProtectedReader,
+      hasComplimentaryAdminAccess: Boolean(reconciled.subStatus.isComplimentaryAdminAccess),
       countryCode: matchedUser.countryCode || countryCode || '+91',
       countryName: matchedUser.countryName || countryName || 'India',
       name: matchedUser.name,
@@ -2056,6 +2422,7 @@ async function startServer() {
       remainingAttempts,
       razorpayStatus: {
         hasActiveSubscription: reconciled.subStatus.hasActiveSubscription,
+        isComplimentaryAdminAccess: Boolean(reconciled.subStatus.isComplimentaryAdminAccess),
         activePlan: reconciled.subStatus.activePlan,
         amountPaidInr: reconciled.subStatus.amountPaidInr,
         expiresAt: reconciled.subStatus.expiresAt || null,
@@ -2068,7 +2435,9 @@ async function startServer() {
       },
       message: isLocked
         ? 'Your account is locked after 3 failed password attempts. Please try again after 12 hours or use Forgot Password to reset via OTP.'
-        : `Verified in Backend Database! Customer account found for ${matchedUser.name} (${matchedUser.email}${matchedUser.phone ? ` · ${matchedUser.phone}` : ''}). Please enter your account password below.`,
+        : isProtectedReader
+          ? `Verified in Backend Database! Account found for ${matchedUser.name} (${matchedUser.email}). Please enter your account password below.`
+          : `Verified in Backend Database! Customer account found for ${matchedUser.name} (${matchedUser.email}${matchedUser.phone ? ` · ${matchedUser.phone}` : ''}). Please enter your account password below.`,
     });
   });
 
@@ -2130,20 +2499,23 @@ async function startServer() {
     let user: User | undefined;
     let lockError: { status: number; body: any } | null = null;
 
-    const existingLocalUser = db.getSnapshot().users.find(u => {
-      if (cleanEmail && u.email.toLowerCase() === cleanEmail) return true;
-      if (cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode)) return true;
-      return false;
+    const existingLocalUser = findCustomerAccount(db.getSnapshot().users, {
+      email: cleanEmail || undefined,
+      phone: cleanDigits.length >= 6 ? rawPhoneInput : undefined,
+      countryCode,
     });
     if (!existingLocalUser) {
       await db.ensureFreshFromCloud(true);
     }
 
+    let googleFreeTrialGranted = false;
+    let googleFreeTrialExpiresAt: string | undefined = undefined;
+
     db.mutate(d => {
-      user = d.users.find(u => {
-        if (cleanEmail && u.email.toLowerCase() === cleanEmail) return true;
-        if (cleanDigits.length >= 6 && phonesMatch(u.phone, rawPhoneInput, countryCode)) return true;
-        return false;
+      user = findCustomerAccount(d.users, {
+        email: cleanEmail || undefined,
+        phone: cleanDigits.length >= 6 ? rawPhoneInput : undefined,
+        countryCode,
       });
 
       // If signing in via verified Google Sign-In for the first time, create & store the customer record in backend DB!
@@ -2183,6 +2555,9 @@ async function startServer() {
           lastLoginAt: nowIso,
           premiumPlan: null,
         };
+        const trialRes = grantNewCustomerFreeTrial(d, newUser, nowIso);
+        googleFreeTrialGranted = trialRes.granted;
+        googleFreeTrialExpiresAt = trialRes.expiresAt;
         d.users.push(newUser);
         user = newUser;
         return;
@@ -2287,21 +2662,24 @@ async function startServer() {
         user.isVerified = true;
         user.emailVerified = true;
       }
-      if (name?.trim()) user.name = name.trim();
+      const isProtectedReader = isProtectedOwnerReaderUser(user);
+      if (name?.trim() && !isProtectedReader) user.name = name.trim();
       if (avatar && (!user.avatar || user.avatar.includes('dicebear.com'))) user.avatar = String(avatar);
-      if (formattedPhone && cleanDigits.length >= 6) {
+      if (!isProtectedReader && formattedPhone && cleanDigits.length >= 6) {
         user.phone = formattedPhone;
       }
-      if (countryCode) user.countryCode = String(countryCode).trim();
-      if (countryName) user.countryName = String(countryName).trim();
-      if (cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) user.email = cleanEmail;
+      if (!isProtectedReader && countryCode) user.countryCode = String(countryCode).trim();
+      if (!isProtectedReader && countryName) user.countryName = String(countryName).trim();
+      if (!isProtectedReader && cleanEmail && (!user.email || user.email.endsWith('@mobile.reader'))) {
+        user.email = cleanEmail;
+      }
       if (validatedDob && !user.dob) {
         user.dob = validatedDob.dob;
         user.age = validatedDob.age;
       }
       if (typeof notifyGmail === 'boolean') user.notifyGmail = notifyGmail;
       if (typeof notifyMobile === 'boolean') user.notifyMobile = notifyMobile;
-      if (upiId?.trim()) user.upiId = upiId.trim();
+      if (!isProtectedReader && upiId?.trim()) user.upiId = upiId.trim();
     });
 
     if (lockError) {
@@ -2315,11 +2693,12 @@ async function startServer() {
       return res.status(404).json({ error: 'Customer account not found in the backend database. Please register your account in First-Time Customer Register.' });
     }
 
+    const isProtectedReader = isProtectedOwnerReaderUser(user);
     const fbToken = extractFirebaseIdToken(req.headers.authorization);
     const reconciled = await reconcileCustomerRazorpayPremium({
       userId: user.id,
       email: user.email,
-      phone: user.phone,
+      phone: isProtectedReader ? undefined : user.phone,
       firebaseIdToken: fbToken,
     });
     const subStatus = reconciled.subStatus;
@@ -2331,20 +2710,56 @@ async function startServer() {
       premiumStartedAt: subStatus.startedAt,
       premiumExpiresAt: subStatus.expiresAt,
       premiumPaymentDetail: subStatus.premiumPaymentDetail,
+      isFreeTrial: subStatus.isFreeTrial,
+      trialDaysRemaining: subStatus.trialDaysRemaining,
+      trialExpired: subStatus.trialExpired,
+      shouldShowFreeTrialPopup: subStatus.shouldShowFreeTrialPopup,
+      hasComplimentaryAdminAccess: Boolean(subStatus.isComplimentaryAdminAccess),
+      isProtectedOwnerReader: isProtectedOwnerReaderUser(latestUser),
     };
+
+    if (googleFreeTrialGranted) {
+      const trialExpiryDisplay = googleFreeTrialExpiresAt
+        ? new Date(googleFreeTrialExpiresAt).toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            timeZone: 'Asia/Kolkata',
+          })
+        : '';
+      db.addNotification({
+        userId: enrichedUser.id,
+        userEmail: enrichedUser.email,
+        title: 'Free 1-Month Premium Access Granted (₹49 Value)!',
+        message: `Welcome ${enrichedUser.name}! Your 30-day Free One-Month Premium Trial (₹49 value) is active until ${trialExpiryDisplay}.`,
+        type: 'system',
+        targetId: enrichedUser.id,
+      });
+    }
+
+    const safeLogPhone = isProtectedOwnerReaderUser(enrichedUser)
+      ? '[Protected Backend Mobile]'
+      : enrichedUser.phone || 'N/A';
+    const planLogLabel = subStatus.isComplimentaryAdminAccess
+      ? 'Complimentary Unrestricted Access (₹0)'
+      : subStatus.activePlan
+        ? `${subStatus.activePlan} (${subStatus.isFreeTrial ? 'Free Trial ₹0' : `₹${subStatus.amountPaidInr}`}, Razorpay Verified: ${reconciled.razorpayVerified})`
+        : 'Free';
 
     db.logActivity(
       'READER_LOGIN',
       enrichedUser.email,
       enrichedUser.role,
-      `Customer logged in | Gmail: ${enrichedUser.email} | Mobile: ${enrichedUser.phone || 'N/A'} | Age: ${enrichedUser.age || 'N/A'} | Paid Premium: ${subStatus.activePlan ? `${subStatus.activePlan} (₹${subStatus.amountPaidInr}, Razorpay Verified: ${reconciled.razorpayVerified})` : 'Free'}`,
+      `Customer logged in | Gmail: ${enrichedUser.email} | Mobile: ${safeLogPhone} | Age: ${enrichedUser.age || 'N/A'} | Plan: ${planLogLabel}`,
       'user',
       enrichedUser.id
     );
 
     const cloudPersist = await db.persistChanges({
       users: [enrichedUser],
-      collections: ['activityLogs'],
+      collections: googleFreeTrialGranted
+        ? ['activityLogs', 'freeTrialClaims', 'notifications']
+        : ['activityLogs'],
       userFirebaseIdToken: fbToken,
     });
 
@@ -2352,10 +2767,11 @@ async function startServer() {
       success: true,
       storedInBackend: true,
       cloudPersisted: cloudPersist.persisted,
+      freeTrialGranted: googleFreeTrialGranted,
       razorpayVerified: reconciled.razorpayVerified,
       verificationSource: reconciled.verificationSource,
       user: sanitizeUserForClient(enrichedUser, true),
-      subscription: subStatus,
+      subscription: sanitizeSubStatusForClient(subStatus),
     });
   });
 
@@ -2396,7 +2812,7 @@ async function startServer() {
       razorpayVerified: reconciled.razorpayVerified,
       verificationSource: reconciled.verificationSource,
       razorpayApiConfigured: reconciled.razorpayApiConfigured,
-      subscription: subStatus,
+      subscription: sanitizeSubStatusForClient(subStatus),
       purchases,
       user: matched
         ? sanitizeUserForClient(
@@ -2407,10 +2823,60 @@ async function startServer() {
               premiumStartedAt: subStatus.startedAt,
               premiumExpiresAt: subStatus.expiresAt,
               premiumPaymentDetail: subStatus.premiumPaymentDetail,
+              isFreeTrial: subStatus.isFreeTrial,
+              trialDaysRemaining: subStatus.trialDaysRemaining,
+              trialExpired: subStatus.trialExpired,
+              shouldShowFreeTrialPopup: subStatus.shouldShowFreeTrialPopup,
+              hasComplimentaryAdminAccess: Boolean(subStatus.isComplimentaryAdminAccess),
+              isProtectedOwnerReader: isProtectedOwnerReaderUser(matched),
             },
             false
           )
         : null,
+    });
+  });
+
+  // Mark the one-time Free 1-Month Premium Trial Welcome Popup as acknowledged by the customer
+  app.post('/api/auth/acknowledge-trial-popup', async (req, res) => {
+    const snapshot = db.getSnapshot();
+    const authCtx = await resolveAuthenticatedUser(req, snapshot.users);
+    const bodyUserId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : '';
+    const bodyEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+
+    const targetId = authCtx.user?.id || bodyUserId;
+    const targetEmail = authCtx.user?.email?.toLowerCase() || bodyEmail;
+    if (!targetId && !targetEmail) {
+      return res.status(401).json({ error: 'Authentication required to acknowledge trial notification.' });
+    }
+
+    const nowIso = new Date().toISOString();
+    let updatedUser: User | null = null;
+
+    db.mutate(d => {
+      const found = d.users.find(
+        (u: User) =>
+          (targetId && u.id === targetId) ||
+          (targetEmail && u.email?.toLowerCase() === targetEmail)
+      );
+      if (found) {
+        found.freeTrialPopupSeenAt = nowIso;
+        updatedUser = found;
+      }
+    });
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'Reader account not found.' });
+    }
+
+    const fbToken = extractFirebaseIdToken(req.headers.authorization);
+    await db.persistChanges({
+      users: [updatedUser],
+      userFirebaseIdToken: fbToken,
+    });
+
+    return res.json({
+      success: true,
+      freeTrialPopupSeenAt: nowIso,
     });
   });
 
@@ -2465,11 +2931,11 @@ async function startServer() {
       });
     }
 
-    // Protect immutable backend administrator credentials from enumeration or reset via customer recovery
-    if (matchedUser.role === 'admin' || matchedUser.id === IMMUTABLE_ADMIN_VAULT.id) {
+    // Protect immutable backend administrator & personal owner reader credentials from enumeration or reset via customer recovery
+    if (isProtectedVaultUser(matchedUser)) {
       return res.status(403).json({
         existsInDatabase: false,
-        error: 'Administrator credentials are locked in the backend vault and cannot be recovered or modified here.',
+        error: 'Protected account credentials are locked in the backend vault and cannot be recovered or modified here.',
       });
     }
 
@@ -2665,6 +3131,11 @@ async function startServer() {
     if (!preMatchedUser) {
       return res.status(404).json({ error: 'Customer account not found.' });
     }
+    if (isProtectedVaultUser(preMatchedUser)) {
+      return res.status(403).json({
+        error: 'Protected account credentials are locked in the backend vault and cannot be reset via public recovery.',
+      });
+    }
 
     const firebasePhoneVerified = Boolean(
       tokenInfo?.phoneNumber &&
@@ -2771,18 +3242,25 @@ async function startServer() {
       dobUpdate = { dob: dobCheck.dob, age: dobCheck.age };
     }
 
-    // Strictly block any modification of immutable administrator Gmail or Mobile Number
+    // Strictly block any modification of immutable administrator or protected owner reader Gmail/Mobile Number
     const preTarget = db.getSnapshot().users.find((x) => x.id === targetId);
-    if (preTarget && (preTarget.role === 'admin' || preTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+    if (preTarget && isProtectedVaultUser(preTarget)) {
+      const canonicalEmail = isProtectedOwnerReaderUser(preTarget)
+        ? IMMUTABLE_OWNER_READER_VAULT.email.toLowerCase()
+        : IMMUTABLE_ADMIN_VAULT.email.toLowerCase();
+      const canonicalPhone = isProtectedOwnerReaderUser(preTarget)
+        ? IMMUTABLE_OWNER_READER_VAULT.phone
+        : IMMUTABLE_ADMIN_VAULT.phone;
       const attemptingEmailChange =
-        cleanEmail !== undefined && cleanEmail !== IMMUTABLE_ADMIN_VAULT.email.toLowerCase();
+        cleanEmail !== undefined && cleanEmail !== canonicalEmail;
       const attemptingPhoneChange =
         phone !== undefined &&
-        !phonesMatch(IMMUTABLE_ADMIN_VAULT.phone, String(phone), '+91');
+        String(phone).trim() !== '' &&
+        !phonesMatch(canonicalPhone, String(phone), '+91');
       if (attemptingEmailChange || attemptingPhoneChange) {
         return res.status(403).json({
           error:
-            'Forbidden: Administrator Gmail and Mobile Number are permanently locked in the backend vault and cannot be changed by any means.',
+            'Forbidden: Protected account Gmail and Mobile Number are permanently locked in the backend vault and cannot be changed here.',
         });
       }
     }
@@ -2793,7 +3271,7 @@ async function startServer() {
     db.mutate(d => {
       const u = d.users.find(x => x.id === targetId);
       if (!u) return;
-      const isImmutableAdmin = u.role === 'admin' || u.id === IMMUTABLE_ADMIN_VAULT.id;
+      const isImmutableAdmin = isProtectedVaultUser(u);
 
       if (!isImmutableAdmin && cleanEmail && cleanEmail !== u.email.toLowerCase()) {
         const dupEmail = d.users.some(x => x.id !== u.id && x.email.toLowerCase() === cleanEmail);
@@ -4678,7 +5156,11 @@ async function startServer() {
 
       if (subStatus.hasActiveSubscription) {
         hasAccess = true;
-        accessReason = `gmail_premium_${subStatus.activePlan}`;
+        accessReason = subStatus.isComplimentaryAdminAccess
+          ? 'complimentary_owner_reader'
+          : subStatus.isFreeTrial
+            ? 'free_trial_1_month'
+            : `gmail_premium_${subStatus.activePlan}`;
       } else {
         const itemPurchase = snapshot.purchases.find(p =>
           p.status === 'success' &&
@@ -4745,6 +5227,11 @@ async function startServer() {
         verifiedGmail: subStatus.verifiedGmail,
         verifiedPhone: subStatus.verifiedPhone,
         hasActiveSubscription: subStatus.hasActiveSubscription,
+        isComplimentaryAdminAccess: Boolean(subStatus.isComplimentaryAdminAccess),
+        isFreeTrial: subStatus.isFreeTrial,
+        trialDaysRemaining: subStatus.trialDaysRemaining,
+        trialExpired: subStatus.trialExpired,
+        freeTrialExpiresAt: subStatus.freeTrialExpiresAt,
         activePlan: subStatus.activePlan,
         expiresAt: subStatus.expiresAt,
         activeReceipt: subStatus.activeReceipt,
@@ -4835,7 +5322,11 @@ async function startServer() {
       accessReason = 'free_content';
     } else if (subStatus.hasActiveSubscription) {
       hasAccess = true;
-      accessReason = `gmail_premium_${subStatus.activePlan}`;
+      accessReason = subStatus.isComplimentaryAdminAccess
+        ? 'complimentary_owner_reader'
+        : subStatus.isFreeTrial
+          ? 'free_trial_1_month'
+          : `gmail_premium_${subStatus.activePlan}`;
     } else if (itemPurchase) {
       hasAccess = true;
       accessReason = 'item_purchased';
@@ -4849,6 +5340,11 @@ async function startServer() {
       unlocked: hasAccess,
       accessReason,
       hasActiveSubscription: subStatus.hasActiveSubscription,
+      isComplimentaryAdminAccess: Boolean(subStatus.isComplimentaryAdminAccess),
+      isFreeTrial: subStatus.isFreeTrial,
+      trialDaysRemaining: subStatus.trialDaysRemaining,
+      trialExpired: subStatus.trialExpired,
+      freeTrialExpiresAt: subStatus.freeTrialExpiresAt,
       activePlan: subStatus.activePlan,
       plan: subStatus.activePlan,
       expiresAt: subStatus.expiresAt,
@@ -4905,7 +5401,7 @@ async function startServer() {
       razorpayVerified: reconciled.razorpayVerified,
       verificationSource: reconciled.verificationSource,
       razorpayApiConfigured: reconciled.razorpayApiConfigured,
-      subscription: reconciled.subStatus,
+      subscription: sanitizeSubStatusForClient(reconciled.subStatus),
       user: reconciled.subStatus.matchedUser
         ? sanitizeUserForClient(reconciled.subStatus.matchedUser, false)
         : null,
@@ -6023,19 +6519,48 @@ async function startServer() {
     }
 
     const snapshot = db.getSnapshot();
+    const cleanOrderEmail = (userEmail || '').trim().toLowerCase();
+    const orderSubStatus = getReaderSubscriptionStatus(snapshot, {
+      userId: userId ? String(userId) : undefined,
+      email: cleanOrderEmail || undefined,
+      phone: req.body?.userPhone ? String(req.body.userPhone) : undefined,
+    });
+
+    // Block unnecessary Razorpay checkout on the complimentary Owner Reader account
+    if (orderSubStatus.isComplimentaryAdminAccess) {
+      return res.status(400).json({
+        code: 'COMPLIMENTARY_ACCESS_ACTIVE',
+        error:
+          'All premium comics, chapters, and pages are already permanently unlocked on this account with Complimentary Unrestricted Access. No payment is required.',
+      });
+    }
+
+    // Strict Free Trial Payment Lock: Block ALL payments while the customer's 30-day Free Trial is ongoing
+    if (orderSubStatus.hasActiveSubscription && orderSubStatus.isFreeTrial && orderSubStatus.expiresAt) {
+      const expiryDateStr = new Date(orderSubStatus.expiresAt).toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'Asia/Kolkata',
+      });
+      return res.status(400).json({
+        code: 'FREE_TRIAL_ACTIVE',
+        trialDaysRemaining: orderSubStatus.trialDaysRemaining,
+        expiresAt: orderSubStatus.expiresAt,
+        error: `Payments are disabled during your active 30-Day Free One-Month Premium Trial (₹49 value). You have ${orderSubStatus.trialDaysRemaining} day${orderSubStatus.trialDaysRemaining === 1 ? '' : 's'} remaining until ${expiryDateStr}. Paid plans will unlock automatically after your free trial ends.`,
+      });
+    }
+
     if (type === 'subscription') {
-      const cleanEmail = (userEmail || '').trim().toLowerCase();
-      const existingUser = snapshot.users.find(
-        u => (userId && u.id === userId) || (cleanEmail && u.email.toLowerCase() === cleanEmail)
-      );
-      if (
-        existingUser &&
-        existingUser.premiumExpiresAt &&
-        new Date(existingUser.premiumExpiresAt).getTime() > Date.now()
-      ) {
+      if (orderSubStatus.hasActiveSubscription && orderSubStatus.expiresAt) {
         const activePlanLabel =
-          existingUser.premiumPlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)';
-        const expiryDateStr = new Date(existingUser.premiumExpiresAt).toLocaleDateString();
+          orderSubStatus.activePlan === '6_months' ? '6 Months (₹249)' : '1 Month (₹49)';
+        const expiryDateStr = new Date(orderSubStatus.expiresAt).toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          timeZone: 'Asia/Kolkata',
+        });
         return res.status(400).json({
           error: `Only one plan can be active at a time. Your ${activePlanLabel} plan is currently active until ${expiryDateStr}. You can choose another plan after your current plan ends.`,
         });
@@ -6415,6 +6940,7 @@ async function startServer() {
           u.premiumPlan = resolvedPlan;
           u.premiumStartedAt = nowIso;
           u.premiumExpiresAt = computedExpiresAt;
+          u.isFreeTrial = false;
           u.premiumPaymentDetail = {
             plan: resolvedPlan,
             amountPaidInr: amountNum,
@@ -6425,6 +6951,7 @@ async function startServer() {
             paidAt: nowIso,
             expiresAt: computedExpiresAt,
             status: 'paid',
+            isFreeTrial: false,
             environment,
           };
         }
@@ -6670,11 +7197,11 @@ async function startServer() {
     await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
     const readers = snapshot.users.map(u => {
-      const isImmutableAdmin = u.role === 'admin' || u.id === IMMUTABLE_ADMIN_VAULT.id;
+      const isImmutableAdmin = isProtectedVaultUser(u);
       const subStatus = getReaderSubscriptionStatus(snapshot, {
         userId: u.id,
         email: u.email,
-        phone: u.phone,
+        phone: isImmutableAdmin ? undefined : u.phone,
       });
       const userPurchases = snapshot.purchases.filter(
         p => p.status === 'success' && (p.userId === u.id || p.userEmail?.toLowerCase() === u.email?.toLowerCase())
@@ -6693,6 +7220,7 @@ async function startServer() {
         activeReceipt: subStatus.activeReceipt,
         subscription: {
           hasActiveSubscription: subStatus.hasActiveSubscription,
+          isComplimentaryAdminAccess: Boolean(subStatus.isComplimentaryAdminAccess),
           plan: subStatus.activePlan,
           amountPaidInr: subStatus.amountPaidInr,
           upiId: isImmutableAdmin ? undefined : (u.upiId || subStatus.upiId),
@@ -6708,7 +7236,7 @@ async function startServer() {
     return res.json({ readers });
   });
 
-  // Customer Tracker: Look up customer profile by registered Gmail or Mobile Number (strictly excludes immutable admin vault)
+  // Customer Tracker: Look up customer profile by registered Gmail or Mobile Number (strictly excludes immutable admin & owner vaults)
   app.get('/api/admin/customers/track', async (req, res) => {
     const admin = await requireAdminAuth(req, res);
     if (!admin) return;
@@ -6720,7 +7248,7 @@ async function startServer() {
     const queryDigits = rawQuery.replace(/\D/g, '');
 
     const customerUsers = (snapshot.users || []).filter(
-      (u: User) => u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id
+      (u: User) => !isProtectedVaultUser(u)
     );
 
     let activePlanCustomers = 0;
@@ -6899,24 +7427,34 @@ async function startServer() {
         }
       }
 
-      let paymentStatus: 'paid_active' | 'paid_expired' | 'pending_payment' | 'unpaid' = 'unpaid';
+      let paymentStatus: 'paid_active' | 'trial_active' | 'trial_expired' | 'paid_expired' | 'pending_payment' | 'unpaid' = 'unpaid';
       let paymentStatusLabel = 'Unpaid · Free Account';
-      if (subStatus.hasActiveSubscription) {
+      if (subStatus.hasActiveSubscription && subStatus.isFreeTrial) {
+        paymentStatus = 'trial_active';
+        paymentStatusLabel = `Free Trial Active · ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} left (₹0 Paid)`;
+      } else if (subStatus.hasActiveSubscription) {
         paymentStatus = 'paid_active';
         paymentStatusLabel = 'Paid · Ongoing Plan Active';
       } else if (successfulPayments.length > 0) {
         paymentStatus = 'paid_expired';
         paymentStatusLabel = 'Previously Paid · Plan Expired';
+      } else if (subStatus.trialExpired) {
+        paymentStatus = 'trial_expired';
+        paymentStatusLabel = 'Free Trial Expired · Unpaid';
       } else if (pendingPayments.length > 0) {
         paymentStatus = 'pending_payment';
         paymentStatusLabel = 'Payment Pending / Incomplete';
       }
 
       const ongoingPlanLabel = subStatus.hasActiveSubscription
-        ? subStatus.activePlan === '6_months'
-          ? '6-Months Pass (₹249)'
-          : '1-Month Pass (₹49)'
-        : 'No Ongoing Plan (Free Account)';
+        ? subStatus.isFreeTrial
+          ? 'Free 1-Month Trial (₹49 Value)'
+          : subStatus.activePlan === '6_months'
+            ? '6-Months Pass (₹249)'
+            : '1-Month Pass (₹49)'
+        : subStatus.trialExpired
+          ? 'Free Trial Expired (Upgrade Required)'
+          : 'No Ongoing Plan (Free Account)';
 
       return {
         ...sanitizeUserForClient(u, false),
@@ -6926,6 +7464,8 @@ async function startServer() {
         upiId: u.upiId || subStatus.upiId || '',
         ongoingPlan: {
           hasActivePlan: subStatus.hasActiveSubscription,
+          isFreeTrial: subStatus.isFreeTrial,
+          trialExpired: subStatus.trialExpired,
           plan: subStatus.activePlan,
           planLabel: ongoingPlanLabel,
           amountPaidInr: subStatus.amountPaidInr || 0,
@@ -6962,10 +7502,10 @@ async function startServer() {
     if (!admin) return;
 
     const existingTarget = db.getSnapshot().users.find((x: User) => x.id === req.params.id);
-    if (existingTarget && (existingTarget.role === 'admin' || existingTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+    if (existingTarget && isProtectedVaultUser(existingTarget)) {
       return res.status(403).json({
         error:
-          'Forbidden: Protected administrator credentials (Gmail, Mobile Number, and Role) are immutable in the backend vault and cannot be altered by any means.',
+          'Forbidden: Protected administrator & owner reader credentials are immutable in the backend vault and cannot be altered by any means.',
       });
     }
 
@@ -6974,7 +7514,7 @@ async function startServer() {
 
     db.mutate(d => {
       const u = d.users.find((x: User) => x.id === req.params.id);
-      if (u && u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id) {
+      if (u && !isProtectedVaultUser(u)) {
         if (name !== undefined && name.trim()) u.name = name.trim();
         if (email !== undefined && email.trim()) u.email = email.trim().toLowerCase();
         if (phone !== undefined) u.phone = phone.trim();
@@ -7009,9 +7549,9 @@ async function startServer() {
     if (!admin) return;
 
     const existingTarget = db.getSnapshot().users.find((x: User) => x.id === req.params.id);
-    if (existingTarget && (existingTarget.role === 'admin' || existingTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+    if (existingTarget && isProtectedVaultUser(existingTarget)) {
       return res.status(403).json({
-        error: 'Forbidden: Protected administrator account cannot be suspended.',
+        error: 'Forbidden: Protected administrator & owner reader account cannot be suspended.',
       });
     }
 
@@ -7019,7 +7559,7 @@ async function startServer() {
     let updatedUser: User | null = null;
     db.mutate(d => {
       const u = d.users.find((x: User) => x.id === req.params.id);
-      if (u && u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id) {
+      if (u && !isProtectedVaultUser(u)) {
         u.isSuspended = Boolean(isSuspended);
         u.suspendedReason = u.isSuspended ? (reason || 'Account suspended by Administrator.') : undefined;
         updatedUser = u;
@@ -7048,16 +7588,16 @@ async function startServer() {
     if (!admin) return;
 
     const existingTarget = db.getSnapshot().users.find((x: User) => x.id === req.params.id);
-    if (existingTarget && (existingTarget.role === 'admin' || existingTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+    if (existingTarget && isProtectedVaultUser(existingTarget)) {
       return res.status(403).json({
-        error: 'Forbidden: Protected administrator account cannot be deleted.',
+        error: 'Forbidden: Protected administrator & owner reader account cannot be deleted.',
       });
     }
 
     let removedEmail = '';
     db.mutate(d => {
       const idx = d.users.findIndex((x: User) => x.id === req.params.id);
-      if (idx !== -1 && d.users[idx].role !== 'admin' && d.users[idx].id !== IMMUTABLE_ADMIN_VAULT.id) {
+      if (idx !== -1 && !isProtectedVaultUser(d.users[idx])) {
         removedEmail = d.users[idx].email;
         d.users.splice(idx, 1);
       }

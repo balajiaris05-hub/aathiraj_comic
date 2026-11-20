@@ -186,8 +186,29 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   setCurrentTab,
   initialMode = 'profile',
 }) => {
-  const { user, login, logout, updateUser, setAuthenticatedUser, refreshUser, hasActivePremium, getAuthHeaders } = useAuth();
+  const {
+    user,
+    login,
+    logout,
+    updateUser,
+    setAuthenticatedUser,
+    refreshUser,
+    hasActivePremium,
+    hasComplimentaryAdminAccess,
+    isFreeTrialActive,
+    trialDaysRemaining,
+    trialExpired,
+    getAuthHeaders,
+  } = useAuth();
   const [profileCheckoutPlan, setProfileCheckoutPlan] = useState<'1_month' | '6_months' | null>(null);
+  const formattedProfileExpiryIst = user?.premiumExpiresAt
+    ? new Date(user.premiumExpiresAt).toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'Asia/Kolkata',
+      })
+    : '';
 
   const [viewSection, setViewSection] = useState<'login_register_form' | 'profile_dashboard'>(
     initialMode === 'login' || !user ? 'login_register_form' : 'profile_dashboard'
@@ -224,6 +245,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
   const [verifiedUserId, setVerifiedUserId] = useState('');
   const [verifiedRazorpayStatus, setVerifiedRazorpayStatus] = useState<{
     hasActiveSubscription: boolean;
+    isComplimentaryAdminAccess?: boolean;
     activePlan: '1_month' | '6_months' | null;
     amountPaidInr?: number;
     expiresAt?: string | null;
@@ -521,11 +543,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         setVerifiedDbStatus('exists');
         setVerifiedCustomerName(data.name || '');
         setVerifiedCustomerEmail(data.email || emailValue);
-        setVerifiedCustomerPhone(data.phone || fullPhone);
+        setVerifiedCustomerPhone(data.isProtectedOwnerReader ? '' : (data.phone || fullPhone));
         setVerifiedUserId(data.userId || '');
         setVerifiedRazorpayStatus(data.razorpayStatus || null);
         if (data.countryCode) setLoginCountryCode(data.countryCode);
-        if (data.phone) setLoginPhone(data.phone);
+        if (data.phone && !data.isProtectedOwnerReader) setLoginPhone(data.phone);
         setIsAccountLocked(Boolean(data.isLocked));
         setLockedUntilIso(data.lockedUntil || null);
         setRemainingAttempts(typeof data.remainingAttempts === 'number' ? data.remainingAttempts : 3);
@@ -586,6 +608,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         const sub = data.subscription || {};
         setVerifiedRazorpayStatus({
           hasActiveSubscription: Boolean(sub.hasActiveSubscription),
+          isComplimentaryAdminAccess: Boolean(sub.isComplimentaryAdminAccess),
           activePlan: sub.activePlan || null,
           amountPaidInr: sub.amountPaidInr,
           expiresAt: sub.expiresAt || null,
@@ -1680,7 +1703,9 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                     </span>
                   </div>
                   <div className="font-bold text-white">{user.name}</div>
-                  <div className="font-mono text-rose-400 text-[11px]">{user.email} · {user.phone || 'Not set'}</div>
+                  <div className="font-mono text-rose-400 text-[11px]">
+                    {user.email} · {user.isProtectedOwnerReader ? 'Protected in Backend' : (user.phone || 'Not set')}
+                  </div>
                   <div className="text-[11px] text-emerald-400 font-semibold">
                     Notifications: Gmail {(user.notifyGmail ?? true) ? 'ON' : 'OFF'} · Mobile {(user.notifyMobile ?? true) ? 'ON' : 'OFF'}
                   </div>
@@ -1722,6 +1747,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   First-Time Customer Register
                 </button>
               </div>
+
+              {authTab === 'register' && (
+                <div className="mb-4 px-3.5 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-300 font-medium">
+                  <strong className="font-bold">New Reader Offer:</strong> First-time accounts receive a{' '}
+                  <strong className="font-bold">30-Day Free One-Month Premium Trial (₹49 value)</strong> on login. Your Gmail and mobile number are verified to prevent duplicate accounts.
+                </div>
+              )}
 
               {/* Clean Gmail + Mobile Number Connected Banner */}
               <div className="mb-5 p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1938,15 +1970,26 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           <div className="flex items-center gap-1.5 font-extrabold text-slate-800 dark:text-slate-100">
                             <CreditCard className="w-3.5 h-3.5 text-amber-500" />
                             <span>
-                              Razorpay Premium Status:{' '}
-                              {verifiedRazorpayStatus?.hasActiveSubscription ? (
-                                <span className="text-emerald-600 dark:text-emerald-400">
-                                  ACTIVE ({verifiedRazorpayStatus.activePlan === '6_months' ? '6 Months · ₹249' : '1 Month · ₹49'})
-                                </span>
+                              {verifiedRazorpayStatus?.isComplimentaryAdminAccess ? (
+                                <>
+                                  Access Status:{' '}
+                                  <span className="text-emerald-600 dark:text-emerald-400">
+                                    ALL COMICS PERMANENTLY UNLOCKED (COMPLIMENTARY)
+                                  </span>
+                                </>
                               ) : (
-                                <span className="text-amber-600 dark:text-amber-400">
-                                  NO PAID RAZORPAY PASS FOUND
-                                </span>
+                                <>
+                                  Razorpay Premium Status:{' '}
+                                  {verifiedRazorpayStatus?.hasActiveSubscription ? (
+                                    <span className="text-emerald-600 dark:text-emerald-400">
+                                      ACTIVE ({verifiedRazorpayStatus.activePlan === '6_months' ? '6 Months · ₹249' : '1 Month · ₹49'})
+                                    </span>
+                                  ) : (
+                                    <span className="text-amber-600 dark:text-amber-400">
+                                      NO PAID RAZORPAY PASS FOUND
+                                    </span>
+                                  )}
+                                </>
                               )}
                             </span>
                           </div>
@@ -1957,7 +2000,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           )}
                         </div>
 
-                        {verifiedRazorpayStatus?.hasActiveSubscription ? (
+                        {verifiedRazorpayStatus?.isComplimentaryAdminAccess ? (
+                          <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
+                            Permanent Unrestricted Reader Access · No ₹49 / ₹249 plan needed
+                          </div>
+                        ) : verifiedRazorpayStatus?.hasActiveSubscription ? (
                           <div className="text-[11px] font-mono text-slate-600 dark:text-slate-300 flex flex-wrap gap-x-4 gap-y-1">
                             {verifiedRazorpayStatus.transactionId && (
                               <span>Payment ID: {verifiedRazorpayStatus.transactionId}</span>
@@ -3111,7 +3158,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         </span>
                       </div>
                       <div className="font-mono font-bold text-slate-900 dark:text-white">
-                        {user.phone || 'Not set'}
+                        {user.isProtectedOwnerReader ? 'Protected in Backend' : (user.phone || 'Not set')}
                       </div>
                     </div>
 
@@ -3328,22 +3375,51 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       : 'bg-amber-500/10 border-amber-500/30 text-slate-900 dark:text-slate-100'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                      {hasActivePremium ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider flex items-center gap-1 tabular-nums">
+                      {hasComplimentaryAdminAccess ? (
                         <>
-                          <Unlock className="w-3.5 h-3.5 text-emerald-500" />
+                          <Unlock className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            All Comics Unlocked · Complimentary
+                          </span>
+                        </>
+                      ) : isFreeTrialActive ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            Free Trial · {trialDaysRemaining} {trialDaysRemaining === 1 ? 'Day' : 'Days'} Left
+                          </span>
+                        </>
+                      ) : hasActivePremium ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                           <span className="text-emerald-600 dark:text-emerald-400">Gmail Paywall Unlocked</span>
+                        </>
+                      ) : trialExpired ? (
+                        <>
+                          <Lock className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                          <span className="text-rose-600 dark:text-rose-400">Free Trial Ended</span>
                         </>
                       ) : (
                         <>
-                          <Lock className="w-3.5 h-3.5 text-amber-500" />
+                          <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
                           <span className="text-amber-600 dark:text-amber-400">No Active Premium Pass</span>
                         </>
                       )}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">Checked {lastVerifiedAt}</span>
                   </div>
+                  {hasComplimentaryAdminAccess && (
+                    <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">
+                      Permanent Unrestricted Reader Access enabled. All premium comics, chapters, and pages are unlocked without any subscription.
+                    </div>
+                  )}
+                  {isFreeTrialActive && formattedProfileExpiryIst && (
+                    <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium tabular-nums">
+                      1-Month Free Offer (₹49 value) active until {formattedProfileExpiryIst}. Payments are paused during your trial.
+                    </div>
+                  )}
 
                   <button
                     type="button"
@@ -3400,10 +3476,14 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         <span className="text-xs font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400">
                           1 Month Pass
                         </span>
-                        <span className="text-[11px] font-mono text-slate-400">
-                          {hasActivePremium && user.premiumPlan === '1_month'
-                            ? 'ACTIVE PLAN'
-                            : '30 Days Validity'}
+                        <span className="text-[11px] font-mono text-slate-400 tabular-nums">
+                          {hasComplimentaryAdminAccess
+                            ? 'ALL UNLOCKED'
+                            : isFreeTrialActive
+                              ? `FREE TRIAL · ${trialDaysRemaining}D LEFT`
+                              : hasActivePremium && user.premiumPlan === '1_month'
+                                ? 'ACTIVE PLAN'
+                                : '30 Days Validity'}
                         </span>
                       </div>
                       <div className="flex items-baseline gap-1">
@@ -3411,19 +3491,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         <span className="text-xs text-slate-500">/ 1 Month</span>
                       </div>
                       <p className="text-xs text-slate-600 dark:text-slate-400">
-                        {hasActivePremium
-                          ? user.premiumPlan === '1_month'
-                            ? `Currently active until ${
-                                user.premiumExpiresAt
-                                  ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                  : 'expiry'
-                              }. Only one plan can be active at a time — you can choose a new plan after your current plan ends.`
-                            : `Your 6 Months (₹249) plan is currently active until ${
-                                user.premiumExpiresAt
-                                  ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                  : 'expiry'
-                              }. Another plan cannot be placed until your current plan ends.`
-                          : 'Unlocks all paywalled comics & chapters for 30 days. Verified automatically via your Gmail.'}
+                        {hasComplimentaryAdminAccess
+                          ? 'All premium comics, chapters, and pages are permanently unlocked on this account with Complimentary Reader Access. No subscription payment is required.'
+                          : isFreeTrialActive
+                            ? `Your 30-Day Free One-Month Premium Trial (₹49 value) is active with ${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'day' : 'days'} remaining until ${formattedProfileExpiryIst || 'expiry'}. Payments are locked during your free period.`
+                            : hasActivePremium
+                              ? user.premiumPlan === '1_month'
+                                ? `Currently active until ${formattedProfileExpiryIst || 'expiry'}. Only one plan can be active at a time — you can choose a new plan after your current plan ends.`
+                                : `Your 6 Months (₹249) plan is currently active until ${formattedProfileExpiryIst || 'expiry'}. Another plan cannot be placed until your current plan ends.`
+                              : 'Unlocks all paywalled comics & chapters for 30 days. Verified automatically via your Gmail.'}
                       </p>
                     </div>
 
@@ -3431,23 +3507,19 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="button"
                         disabled
-                        className={`w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors ${
-                          user.premiumPlan === '1_month'
-                            ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
+                        className={`w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider shadow-md transition-colors tabular-nums ${
+                          hasComplimentaryAdminAccess || isFreeTrialActive || user.premiumPlan === '1_month'
+                            ? 'bg-emerald-600/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
                             : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
                         }`}
                       >
-                        {user.premiumPlan === '1_month'
-                          ? `✓ Active Until ${
-                              user.premiumExpiresAt
-                                ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                : 'Expiry'
-                            } · Choose After Plan Ends`
-                          : `Available After Current Plan Ends (${
-                              user.premiumExpiresAt
-                                ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                : ''
-                            })`}
+                        {hasComplimentaryAdminAccess
+                          ? '✓ All Comics Permanently Unlocked · No Payment Needed'
+                          : isFreeTrialActive
+                            ? `Free Trial · ${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'Day' : 'Days'} Left (Payment Locked)`
+                            : user.premiumPlan === '1_month'
+                              ? `✓ Active Until ${formattedProfileExpiryIst || 'Expiry'} · Choose After Plan Ends`
+                              : `Available After Current Plan Ends (${formattedProfileExpiryIst})`}
                       </button>
                     ) : (
                       <div className="space-y-2">
@@ -3486,9 +3558,11 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                           6 Months Pass · Best Value
                         </span>
                         <span className="text-[11px] font-mono text-amber-600 dark:text-amber-400 font-bold">
-                          {hasActivePremium && user.premiumPlan === '6_months'
-                            ? 'ACTIVE PLAN'
-                            : '180 Days Validity'}
+                          {hasComplimentaryAdminAccess
+                            ? 'ALL UNLOCKED'
+                            : !isFreeTrialActive && hasActivePremium && user.premiumPlan === '6_months'
+                              ? 'ACTIVE PLAN'
+                              : '180 Days Validity'}
                         </span>
                       </div>
                       <div className="flex items-baseline gap-1">
@@ -3496,19 +3570,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         <span className="text-xs text-slate-500">/ 6 Months</span>
                       </div>
                       <p className="text-xs text-slate-600 dark:text-slate-400">
-                        {hasActivePremium
-                          ? user.premiumPlan === '6_months'
-                            ? `Currently active until ${
-                                user.premiumExpiresAt
-                                  ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                  : 'expiry'
-                              }. Only one plan can be active at a time — you can choose a new plan after your current plan ends.`
-                            : `Your 1 Month (₹49) plan is currently active until ${
-                                user.premiumExpiresAt
-                                  ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                  : 'expiry'
-                              }. Another plan cannot be placed until your current plan ends.`
-                          : '6 months of uninterrupted access to every paywalled comic series & episode linked to your Gmail.'}
+                        {hasComplimentaryAdminAccess
+                          ? 'Permanent Unrestricted Reader Access is active on your account. You can read every comic series, chapter, and episode with zero subscription fees.'
+                          : isFreeTrialActive
+                            ? `Your 30-Day Free One-Month Premium Trial is active until ${formattedProfileExpiryIst || 'expiry'} (${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'day' : 'days'} left). You can choose a paid plan after your free trial ends.`
+                            : hasActivePremium
+                              ? user.premiumPlan === '6_months'
+                                ? `Currently active until ${formattedProfileExpiryIst || 'expiry'}. Only one plan can be active at a time — you can choose a new plan after your current plan ends.`
+                                : `Your 1 Month (₹49) plan is currently active until ${formattedProfileExpiryIst || 'expiry'}. Another plan cannot be placed until your current plan ends.`
+                              : '6 months of uninterrupted access to every paywalled comic series & episode linked to your Gmail.'}
                       </p>
                     </div>
 
@@ -3516,23 +3586,19 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       <button
                         type="button"
                         disabled
-                        className={`w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors ${
-                          user.premiumPlan === '6_months'
+                        className={`w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-md transition-colors tabular-nums ${
+                          hasComplimentaryAdminAccess || (!isFreeTrialActive && user.premiumPlan === '6_months')
                             ? 'bg-emerald-600/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/40 cursor-not-allowed'
                             : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-not-allowed'
                         }`}
                       >
-                        {user.premiumPlan === '6_months'
-                          ? `✓ Active Until ${
-                              user.premiumExpiresAt
-                                ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                : 'Expiry'
-                            } · Choose After Plan Ends`
-                          : `Available After Current Plan Ends (${
-                              user.premiumExpiresAt
-                                ? new Date(user.premiumExpiresAt).toLocaleDateString()
-                                : ''
-                            })`}
+                        {hasComplimentaryAdminAccess
+                          ? '✓ All Comics Permanently Unlocked · No Payment Needed'
+                          : isFreeTrialActive
+                            ? `Free Trial Ongoing · ${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'Day' : 'Days'} Left (Payment Locked)`
+                            : user.premiumPlan === '6_months'
+                              ? `✓ Active Until ${formattedProfileExpiryIst || 'Expiry'} · Choose After Plan Ends`
+                              : `Available After Current Plan Ends (${formattedProfileExpiryIst})`}
                       </button>
                     ) : (
                       <div className="space-y-2">
@@ -3673,8 +3739,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                         </h4>
                         <p className="text-[11px] text-slate-500">By {comic.authorName}</p>
                         {hasActivePremium ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                            <CheckCircle2 className="w-3 h-3" /> Gmail Verified · Unlocked
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 tabular-nums">
+                            <CheckCircle2 className="w-3 h-3" />{' '}
+                            {hasComplimentaryAdminAccess
+                              ? 'Complimentary Access · Unlocked'
+                              : isFreeTrialActive
+                                ? `Free Trial · ${trialDaysRemaining}d Left`
+                                : 'Gmail Verified · Unlocked'}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
@@ -3878,7 +3949,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         </>
       )}
 
-      {profileCheckoutPlan && (
+      {profileCheckoutPlan && !isFreeTrialActive && !hasActivePremium && (
         <RazorpayCheckoutModal
           isOpen={Boolean(profileCheckoutPlan)}
           onClose={() => setProfileCheckoutPlan(null)}

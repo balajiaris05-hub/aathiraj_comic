@@ -17,6 +17,35 @@
       "countryCode": "+91",
       "countryName": "India",
       "isSuspended": false
+    },
+    {
+      "id": "usr_admin_reader",
+      "name": "Balaji Reader",
+      "email": "balajiaris05@gmail.com",
+      "phone": "+91 8610950780",
+      "countryCode": "+91",
+      "countryName": "India",
+      "passwordHash": "scrypt:b9a89241db237bea7ecd035a94681ebf:803db89a56c4ef4276ce9b457d81ef633731ec0274e556e6058a308c1caaea05a8f6bec64059ad3a012f7065b9f3f41d5b5c7b6785f4ccb237ff4d39ffb236c4",
+      "role": "reader",
+      "isVerified": true,
+      "emailVerified": true,
+      "isSuspended": false,
+      "hasComplimentaryAdminAccess": true,
+      "isProtectedOwnerReader": true,
+      "notifyGmail": true,
+      "notifyMobile": false,
+      "bookmarks": [],
+      "favorites": [],
+      "readingHistory": [],
+      "avatar": "https://api.dicebear.com/7.x/bottts/svg?seed=BalajiReader",
+      "bio": "Personal Reader Account on Aathirai_Comic.",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "premiumPlan": null,
+      "isFreeTrial": false,
+      "freeTrialPopupSeenAt": "2026-01-01T00:00:00Z",
+      "failedLoginAttempts": 0,
+      "lockedUntil": null,
+      "lastLoginAt": "2026-11-20T07:32:09.631Z"
     }
   ],
   "otps": {},
@@ -233,14 +262,14 @@
   ],
   "migrationReport": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-20T05:15:53.765Z",
-    "completedAt": "2026-11-20T05:15:53.767Z",
+    "startedAt": "2026-11-20T07:31:38.806Z",
+    "completedAt": "2026-11-20T07:31:38.808Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "ef0561e74073285e5f067d2dd80240ea7474a7e4fb1fad85c88a60cd60153ec5",
+    "backupSha256": "ea10afb12a127b8484e3fa0b24270a1c1c5759993a9a65d312cb575c44f8552d",
     "status": "verified",
     "counts": {
-      "users": 1,
+      "users": 2,
       "authorApplications": 0,
       "comics": 0,
       "chapters": 0,
@@ -258,8 +287,8 @@
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: ef0561e74073285e...)",
-      "Migrated 1 users with isolated PII and scrypt password hashes",
+      "Backed up aathirai_db.json (SHA-256: ea10afb12a127b84...)",
+      "Migrated 2 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",
       "Verified relationships across comments (0), ratings (0), and votes (0)"
@@ -291,5 +320,6 @@
   },
   "activityLogArchiveState": {
     "pendingRetryMonths": []
-  }
+  },
+  "freeTrialClaims": []
 }
