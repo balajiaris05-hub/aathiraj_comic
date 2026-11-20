@@ -406,7 +406,7 @@ export async function syncGstSettingsToFirestore(params: {
     invoicePrefix: (params.invoicePrefix || 'AAC/2627/').trim().slice(0, 12),
     defaultSacCode: (params.defaultSacCode || '998431').trim().slice(0, 10),
     applicableGstRate: Math.min(28, Math.max(0, Number(params.applicableGstRate) || 18)),
-    updatedByEmail: (params.updatedByEmail || currentUser.email || 'balajiaris05@gmail.com').trim().slice(0, 120),
+    updatedByEmail: (params.updatedByEmail || currentUser.email || 'admin@aathirai.com').trim().slice(0, 120),
   };
 
   try {

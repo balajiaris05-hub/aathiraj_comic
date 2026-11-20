@@ -212,13 +212,13 @@ export function getDefaultGstBusinessSettings(): GstBusinessSettings {
     applicableGstRate: 18,
     applyGstToDomesticSales: true,
     updatedAt: '2026-11-01T00:00:00Z',
-    updatedByEmail: 'balajiaris05@gmail.com',
+    updatedByEmail: 'admin@aathirai.com',
     auditHistory: [
       {
         id: 'gst_aud_init',
         timestamp: '2026-11-01T00:00:00Z',
         adminId: 'usr_admin',
-        adminEmail: 'balajiaris05@gmail.com',
+        adminEmail: 'admin@aathirai.com',
         action: 'GST_PROFILE_INITIALIZED',
         summary:
           'Initialized GST & Billing settings (SAC 998431, 18% GST-inclusive formula, State 33 - Tamil Nadu).',

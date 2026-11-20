@@ -105,6 +105,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+    if (user?.role === 'admin' && user?.sessionToken) {
+      headers['Authorization'] = `Bearer ${user.sessionToken}`;
+      return headers;
+    }
     const fbToken = await getCurrentFirebaseIdToken();
     if (fbToken) {
       headers['Authorization'] = `Bearer ${fbToken}`;
@@ -112,7 +116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       headers['Authorization'] = `Bearer ${user.sessionToken}`;
     }
     return headers;
-  }, [user?.sessionToken]);
+  }, [user?.role, user?.sessionToken]);
 
   const hasActivePremium = Boolean(
     user?.premiumPlan &&

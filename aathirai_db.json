@@ -13,7 +13,10 @@
       "emailVerified": true,
       "bookmarks": [],
       "favorites": [],
-      "readingHistory": []
+      "readingHistory": [],
+      "countryCode": "+91",
+      "countryName": "India",
+      "isSuspended": false
     }
   ],
   "otps": {},
@@ -137,6 +140,46 @@
   "creditNotes": [],
   "activityLogs": [
     {
+      "id": "log_1795133369238_nuf",
+      "timestamp": "2026-11-20T00:09:29.238Z",
+      "action": "ADMIN_DUAL_OTP_REQUESTED",
+      "actorEmail": "Protected Backend Admin Gmail",
+      "actorRole": "admin",
+      "details": "Dual-OTP challenge (both) verified in backend DB for Admin Console (Protected Backend Admin Gmail + Protected Backend Admin Mobile).",
+      "targetType": "admin_auth",
+      "targetId": "usr_admin"
+    },
+    {
+      "id": "log_1795133086899_99p",
+      "timestamp": "2026-11-20T00:04:46.899Z",
+      "action": "ADMIN_DUAL_AUTH_DENIED",
+      "actorEmail": "protected_admin",
+      "actorRole": "admin",
+      "details": "Rejected unverified Dual-OTP credential check for Admin Console.",
+      "targetType": "admin_auth",
+      "targetId": "admin_login"
+    },
+    {
+      "id": "log_1795131889953_x4b",
+      "timestamp": "2026-11-19T23:44:49.953Z",
+      "action": "ADMIN_DUAL_AUTH_DENIED",
+      "actorEmail": "protected_admin",
+      "actorRole": "admin",
+      "details": "Rejected unverified Dual-OTP credential check for Admin Console.",
+      "targetType": "admin_auth",
+      "targetId": "admin_login"
+    },
+    {
+      "id": "log_1795131889935_ore",
+      "timestamp": "2026-11-19T23:44:49.935Z",
+      "action": "ADMIN_DUAL_AUTH_DENIED",
+      "actorEmail": "protected_admin",
+      "actorRole": "admin",
+      "details": "Rejected unverified Dual-OTP credential check for Customer Export Vault.",
+      "targetType": "admin_auth",
+      "targetId": "customer_export"
+    },
+    {
       "id": "log_1795041292885_0k3",
       "timestamp": "2026-11-18T22:34:52.885Z",
       "action": "COMIC_DELETED",
@@ -179,11 +222,11 @@
   ],
   "migrationReport": {
     "migrationId": "mig_ai-studio-aathirai",
-    "startedAt": "2026-11-19T00:25:16.130Z",
-    "completedAt": "2026-11-19T00:25:16.132Z",
+    "startedAt": "2026-11-20T00:09:16.816Z",
+    "completedAt": "2026-11-20T00:09:16.818Z",
     "firestoreDatabaseId": "ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f",
     "backupFilePath": "/app/applet/backups/aathirai_db.latest_backup.json",
-    "backupSha256": "533e4a2187e38fb36685ad46fa05142def7833af42827235d34566f6a61aea1c",
+    "backupSha256": "49d816c76c6124a202e2dd7e0ee90f4e7463022ffb8879c72f33544b0455618c",
     "status": "verified",
     "counts": {
       "users": 1,
@@ -200,15 +243,39 @@
       "reports": 0,
       "deleteRequests": 0,
       "copyrightDocs": 2,
-      "activityLogs": 4
+      "activityLogs": 7
     },
     "integrityChecksPassed": true,
     "details": [
-      "Backed up aathirai_db.json (SHA-256: 533e4a2187e38fb3...)",
+      "Backed up aathirai_db.json (SHA-256: 49d816c76c6124a2...)",
       "Migrated 1 users with isolated PII and scrypt password hashes",
       "Migrated 0 comics, 0 chapters, and 0 episodes",
       "Preserved 0 historical purchases and 0 payment transactions",
       "Verified relationships across comments (0), ratings (0), and votes (0)"
     ]
+  },
+  "adminDualOtps": {
+    "01cae428-ec68-4e27-833f-232e3c88dfe6": {
+      "challengeId": "01cae428-ec68-4e27-833f-232e3c88dfe6",
+      "purpose": "admin_login",
+      "adminId": "usr_admin",
+      "emailOtpHash": "254947e1182148a37e3163d9faeabe27114178f08f3fba72d2397e0925073ec4",
+      "smsOtpHash": "1481f05ad8c009ad478e7b5d976420edab331e96fb7aad6899caaf03303f8dd8",
+      "smsMode": "firebase",
+      "expiresAt": 1795133967535,
+      "attempts": 0,
+      "createdAt": 1795133367535
+    },
+    "e3066afb-0627-46e4-bfee-fd09e754caab": {
+      "challengeId": "e3066afb-0627-46e4-bfee-fd09e754caab",
+      "purpose": "admin_login",
+      "adminId": "usr_admin",
+      "emailOtpHash": "8a60e7f2928cb63b9322dbd9218eabf9ff3791334fca8a208bf01b89ad8230a1",
+      "smsOtpHash": "bbfdd3635c911132af04cc841b8141201ddb4843e73f84ca3d7a7d4235070caf",
+      "smsMode": "backend",
+      "expiresAt": 1795133969262,
+      "attempts": 0,
+      "createdAt": 1795133369262
+    }
   }
 }

@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
-import { db } from './src/server/storage.ts';
+import { db, IMMUTABLE_ADMIN_VAULT } from './src/server/storage.ts';
 import {
   getSmtpConfigSummary,
   verifySmtpConnection,
@@ -44,6 +44,11 @@ import {
   validateAndNormalizeDob,
   createVerificationProofToken,
   verifyVerificationProofToken,
+  hashOtpCode,
+  verifyOtpCodeHash,
+  createAdminExportToken,
+  verifyAdminExportToken,
+  redactAdminSecrets,
 } from './src/server/security.ts';
 import {
   hasRealRazorpayApiKeys,
@@ -99,297 +104,346 @@ async function startServer() {
   const paymentRateLimiter = createRateLimiter({ maxRequests: 40, windowMs: 15 * 60 * 1000 });
 
   // -------------------------------------------------------------
-  // SECURE DEDICATED ADMIN 2FA OTP AUTHENTICATION
+  // SECURE UNIFIED DUAL-OTP AUTHENTICATION (GMAIL + MOBILE SMS)
+  // Shared by both Admin Panel Gate & Hidden Customer Export Vault
   // -------------------------------------------------------------
 
-  const resolveAndVerifyStoredAdminCredential = (
-    rawCredential: unknown,
-    requestedChannel?: unknown
+  const timingSafeDigestEqual = (a: string, b: string): boolean => {
+    const hashA = crypto.createHash('sha256').update(a).digest();
+    const hashB = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(hashA, hashB);
+  };
+
+  const requireAdminAuth = async (req: express.Request, res: express.Response): Promise<User | null> => {
+    const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
+    if (!authCtx.user || authCtx.authMethod !== 'token') {
+      res.status(401).json({
+        error: 'Administrator authentication required. Complete Dual-OTP verification first.',
+      });
+      return null;
+    }
+    if (authCtx.role !== 'admin') {
+      res.status(403).json({
+        error: 'Access Denied: Administrator clearance required.',
+      });
+      return null;
+    }
+    return authCtx.user;
+  };
+
+  const verifyBothStoredAdminCredentials = (
+    rawEmail: unknown,
+    rawPhone: unknown
   ): {
     ok: boolean;
     status: number;
     error?: string;
     adminUser?: User;
-    channel?: 'email' | 'sms';
-    destination?: string;
-    maskedDestination?: string;
-    normalizedInput?: string;
+    storedEmail?: string;
+    storedPhone?: string;
+    emailMasked?: string;
+    phoneMasked?: string;
   } => {
-    const cleanInput = String(rawCredential || '').trim();
-    if (!cleanInput) {
+    const cleanEmail = String(rawEmail || '').trim().toLowerCase();
+    const cleanPhone = String(rawPhone || '').trim();
+    const genericDenied =
+      'Access Denied: Administrator credentials could not be verified against the backend vault.';
+
+    if (!cleanEmail || !cleanPhone) {
       return {
         ok: false,
         status: 400,
-        error: 'Please enter your registered Administrator Gmail or Mobile Number.',
+        error: 'Both registered Administrator Gmail and Mobile Number are required.',
+      };
+    }
+
+    if (!cleanEmail.includes('@') || /[a-zA-Z]/.test(cleanPhone)) {
+      return {
+        ok: false,
+        status: 403,
+        error: genericDenied,
       };
     }
 
     const snapshot = db.getSnapshot();
     const adminUser = snapshot.users.find(
-      (u: User) => u.id === 'usr_admin' || u.role === 'admin'
+      (u: User) => u.id === IMMUTABLE_ADMIN_VAULT.id || u.role === 'admin'
     );
     if (!adminUser || adminUser.isSuspended) {
       return {
         ok: false,
         status: 403,
-        error: 'Access Denied: No active administrator account is configured in the backend database.',
+        error: genericDenied,
       };
     }
 
-    const storedEmail = String(adminUser.email || '').trim().toLowerCase();
-    const storedPhone = String(adminUser.phone || '').trim();
+    // Always validate against the frozen immutable backend vault (never alterable via UI/API/DB tampering)
+    const storedEmail = IMMUTABLE_ADMIN_VAULT.email.toLowerCase();
+    const storedPhone = IMMUTABLE_ADMIN_VAULT.phone;
     const storedPhoneDigits = storedPhone.replace(/\D/g, '');
     const storedTail10 =
       storedPhoneDigits.length >= 10 ? storedPhoneDigits.slice(-10) : storedPhoneDigits;
 
-    const looksLikeEmail = cleanInput.includes('@');
-    const chosenChannel =
-      requestedChannel === 'email' || requestedChannel === 'sms'
-        ? requestedChannel
-        : looksLikeEmail
-          ? 'email'
-          : 'sms';
+    // Constant-time email comparison
+    const emailMatches = timingSafeDigestEqual(cleanEmail, storedEmail);
 
-    if (looksLikeEmail) {
-      const inputEmailLower = cleanInput.toLowerCase();
-      if (!storedEmail || inputEmailLower !== storedEmail) {
-        return {
-          ok: false,
-          status: 403,
-          error:
-            'Access Denied: This Gmail address does not match the registered administrator account stored in the backend database.',
-        };
-      }
-      if (chosenChannel !== 'email') {
-        return {
-          ok: false,
-          status: 400,
-          error:
-            "You entered a Gmail address. Please select 'Send OTP to Gmail' or enter your registered Mobile Number for SMS.",
-        };
-      }
-      const [localPart, domainPart] = storedEmail.split('@');
-      const maskedEmail =
-        localPart.length > 3
-          ? `${localPart[0]}${'*'.repeat(Math.max(3, localPart.length - 3))}${localPart.slice(-2)}@${domainPart}`
-          : `${localPart[0] || '*'}***@${domainPart}`;
+    // Constant-time exact 10-digit or +91 12-digit Indian mobile match
+    const inputDigits = cleanPhone.replace(/\D/g, '');
+    const normalizedInputTail10 =
+      inputDigits.length === 12 && inputDigits.startsWith('91')
+        ? inputDigits.slice(-10)
+        : inputDigits.length === 10
+          ? inputDigits
+          : '';
+    const phoneMatches =
+      normalizedInputTail10.length === 10 &&
+      storedTail10.length === 10 &&
+      timingSafeDigestEqual(normalizedInputTail10, storedTail10);
 
-      return {
-        ok: true,
-        status: 200,
-        adminUser,
-        channel: 'email',
-        destination: storedEmail,
-        maskedDestination: maskedEmail,
-        normalizedInput: storedEmail,
-      };
-    }
-
-    // Mobile number validation (reject text/usernames or arbitrary digits)
-    if (/[a-zA-Z]/.test(cleanInput)) {
+    if (!emailMatches || !phoneMatches) {
       return {
         ok: false,
         status: 403,
-        error:
-          'Access Denied: Please enter your exact registered Administrator Gmail or Mobile Number stored in the backend database.',
+        error: genericDenied,
       };
     }
-
-    const inputDigits = cleanInput.replace(/\D/g, '');
-    const isExactPhoneMatch =
-      inputDigits.length >= 10 &&
-      storedPhoneDigits.length >= 10 &&
-      (inputDigits === storedPhoneDigits ||
-        (inputDigits.length === 10 &&
-          storedPhoneDigits.startsWith('91') &&
-          inputDigits === storedTail10));
-
-    if (!isExactPhoneMatch) {
-      return {
-        ok: false,
-        status: 403,
-        error:
-          'Access Denied: This mobile number does not match the registered administrator account stored in the backend database.',
-      };
-    }
-
-    if (chosenChannel !== 'sms') {
-      return {
-        ok: false,
-        status: 400,
-        error:
-          "You entered a mobile number. Please select 'Send OTP to SMS (+91)' or enter your registered Gmail address for Gmail OTP.",
-      };
-    }
-
-    const maskedPhone =
-      storedTail10.length === 10
-        ? `+91 ******${storedTail10.slice(-4)}`
-        : '+91 ******';
 
     return {
       ok: true,
       status: 200,
       adminUser,
-      channel: 'sms',
-      destination: storedPhone,
-      maskedDestination: maskedPhone,
-      normalizedInput: storedPhone,
+      storedEmail,
+      storedPhone,
+      // Zero partial email/phone characters leaked in Network JSON or Website Inspect
+      emailMasked: 'Protected Backend Admin Gmail',
+      phoneMasked: 'Protected Backend Admin Mobile',
     };
   };
 
-  app.post('/api/admin-auth/request-otp', authRateLimiter, async (req, res) => {
-    const { credential, channel, smsChannel, firebaseSmsSent } = req.body || {};
+  // Disable legacy single-channel admin auth bypass so BOTH Gmail + Mobile SMS OTPs are always enforced
+  app.post('/api/admin-auth/request-otp', authRateLimiter, (_req, res) => {
+    return res.status(410).json({
+      error: 'Single-channel admin OTP is disabled. Dual-OTP verification (Admin Gmail + Mobile SMS) is required.',
+    });
+  });
 
-    const check = resolveAndVerifyStoredAdminCredential(credential, channel);
-    if (!check.ok || !check.adminUser || !check.channel || !check.destination) {
+  app.post('/api/admin-auth/verify-otp', authRateLimiter, (_req, res) => {
+    return res.status(410).json({
+      error: 'Single-channel admin OTP is disabled. Dual-OTP verification (Admin Gmail + Mobile SMS) is required.',
+    });
+  });
+
+  app.post('/api/admin-auth/request-dual-otp', authRateLimiter, async (req, res) => {
+    const {
+      email,
+      phone,
+      purpose: rawPurpose,
+      smsChannel,
+      resendOnly,
+      existingChallengeId,
+    } = req.body || {};
+
+    const purpose: 'admin_login' | 'customer_export' =
+      rawPurpose === 'customer_export' ? 'customer_export' : 'admin_login';
+    const resendMode: 'both' | 'email' | 'sms' =
+      resendOnly === 'email' || resendOnly === 'sms' ? resendOnly : 'both';
+    const requestedSmsMode: 'firebase' | 'backend' =
+      smsChannel === 'backend' ? 'backend' : 'firebase';
+
+    const check = verifyBothStoredAdminCredentials(email, phone);
+    if (!check.ok || !check.adminUser || !check.storedEmail || !check.storedPhone) {
+      if (check.status === 403) {
+        db.logActivity(
+          'ADMIN_DUAL_AUTH_DENIED',
+          'protected_admin',
+          'admin',
+          `Rejected unverified Dual-OTP credential check for ${purpose === 'customer_export' ? 'Customer Export Vault' : 'Admin Console'}.`,
+          'admin_auth',
+          purpose
+        );
+      }
       return res.status(check.status).json({
         verifiedInDatabase: false,
         error:
           check.error ||
-          'Access Denied: Unrecognized administrator credentials.',
+          'Access Denied: Administrator credentials could not be verified against the backend database.',
       });
     }
 
-    const targetChannel = check.channel;
-    const targetDestination = check.destination;
-    const maskedDestination = check.maskedDestination || targetDestination;
+    const now = Date.now();
+    const expiresAt = now + 10 * 60 * 1000; // 10 minutes
+    const snapshot = db.getSnapshot();
+    const existingRecord =
+      typeof existingChallengeId === 'string' && existingChallengeId.trim()
+        ? snapshot.adminDualOtps?.[existingChallengeId.trim()]
+        : undefined;
 
-    const otp = crypto.randomInt(100000, 999999).toString();
+    const canReuseChallenge = Boolean(
+      resendMode !== 'both' &&
+        existingRecord &&
+        existingRecord.purpose === purpose &&
+        existingRecord.adminId === check.adminUser.id &&
+        existingRecord.expiresAt > now
+    );
 
-    db.mutate(d => {
-      d.adminOtp = {
-        code: otp,
-        expiresAt: Date.now() + 10 * 60 * 1000, // Valid for 10 minutes
-        channel: targetChannel,
-        sentTo: targetDestination,
-        verifiedCredential: check.normalizedInput,
-        attempts: 0,
+    const challengeId = canReuseChallenge && existingRecord
+      ? existingRecord.challengeId
+      : crypto.randomUUID();
+
+    const shouldSendEmail = resendMode === 'both' || resendMode === 'email';
+    const shouldSendSms = resendMode === 'both' || resendMode === 'sms';
+
+    const emailOtp = shouldSendEmail ? crypto.randomInt(100000, 999999).toString() : '';
+    const smsOtp = shouldSendSms ? crypto.randomInt(100000, 999999).toString() : '';
+
+    const emailOtpHash =
+      shouldSendEmail
+        ? hashOtpCode(challengeId, emailOtp)
+        : existingRecord?.emailOtpHash || '';
+    const smsOtpHash =
+      shouldSendSms
+        ? hashOtpCode(challengeId, smsOtp)
+        : existingRecord?.smsOtpHash || '';
+
+    db.mutate((d) => {
+      if (!d.adminDualOtps) d.adminDualOtps = {};
+      // Prune expired challenges
+      for (const key of Object.keys(d.adminDualOtps)) {
+        if (!d.adminDualOtps[key] || d.adminDualOtps[key].expiresAt <= now) {
+          delete d.adminDualOtps[key];
+        }
+      }
+      d.adminDualOtps[challengeId] = {
+        challengeId,
+        purpose,
+        adminId: check.adminUser!.id,
+        emailOtpHash,
+        smsOtpHash,
+        smsMode: shouldSendSms ? requestedSmsMode : existingRecord?.smsMode || requestedSmsMode,
+        expiresAt,
+        attempts: canReuseChallenge && existingRecord ? existingRecord.attempts : 0,
+        createdAt: canReuseChallenge && existingRecord ? existingRecord.createdAt : now,
       };
     });
     await db.persistChanges({ collections: ['otps'] });
 
-    if (targetChannel === 'email') {
-      const emailResult = await sendAdminOtpEmail(targetDestination, otp);
+    let emailDelivered = !shouldSendEmail;
+    let smtpConfigured = true;
+    let emailError: string | undefined;
 
-      db.logActivity(
-        'ADMIN_OTP_REQUESTED',
-        check.adminUser.email,
-        'admin',
-        `Admin requested 2FA OTP via GMAIL to ${maskedDestination} (SMTP Sent: ${emailResult.sent}).`,
-        'admin_auth',
-        check.adminUser.id
-      );
+    if (shouldSendEmail) {
+      const emailResult = await sendAdminOtpEmail(check.storedEmail, emailOtp, purpose);
+      emailDelivered = emailResult.sent;
+      smtpConfigured = emailResult.configured;
+      emailError = emailResult.error;
 
       if (!emailResult.sent) {
+        if (!canReuseChallenge) {
+          db.mutate((d) => {
+            if (d.adminDualOtps) delete d.adminDualOtps[challengeId];
+          });
+        }
         return res.status(emailResult.configured ? 502 : 503).json({
           success: false,
           verifiedInDatabase: true,
-          channel: 'email',
           emailDelivered: false,
-          smsDelivered: false,
-          smtpConfigured: emailResult.configured,
+          smtpConfigured,
           error:
-            emailResult.error ||
-            'Unable to send 6-digit OTP to your registered Gmail address. Please check SMTP configuration and try again.',
+            emailError ||
+            'Unable to send 6-digit Gmail OTP. Please check SMTP configuration and try again.',
         });
       }
-
-      return res.json({
-        success: true,
-        verifiedInDatabase: true,
-        emailDelivered: true,
-        smsDelivered: false,
-        smtpConfigured: emailResult.configured,
-        channel: 'email',
-        destinationMasked: maskedDestination,
-        expiresInSeconds: 600,
-        message: `Verified against backend database. 6-digit OTP sent to ${maskedDestination}. Valid for 10 minutes.`,
-      });
     }
 
-    // targetChannel === 'sms'
-    const useFirebaseSms = smsChannel === 'firebase' || smsChannel === undefined;
-    if (useFirebaseSms) {
-      db.logActivity(
-        'ADMIN_OTP_REQUESTED',
-        check.adminUser.email,
-        'admin',
-        `Admin identity verified in DB for SMS 2FA OTP to ${maskedDestination} (Firebase Phone Auth handshake).`,
-        'admin_auth',
-        check.adminUser.id
-      );
+    let smsDelivered = !shouldSendSms;
+    let smsProvider: 'firebase' | 'fast2sms' | 'twilio' | 'textbelt' | 'none' =
+      requestedSmsMode === 'firebase' ? 'firebase' : 'none';
+    let smsError: string | undefined;
 
-      return res.json({
-        success: true,
-        verifiedInDatabase: true,
-        emailDelivered: false,
-        smsDelivered: Boolean(firebaseSmsSent),
-        smsProvider: 'firebase',
-        smsConfigured: true,
-        channel: 'sms',
-        verifiedPhone: targetDestination,
-        destinationMasked: maskedDestination,
-        expiresInSeconds: 600,
-        message: `Verified against backend database. Sending 6-digit SMS OTP to ${maskedDestination}. Valid for 10 minutes.`,
+    if (shouldSendSms && requestedSmsMode === 'backend') {
+      const smsResult = await sendOtpSms({
+        phone: check.storedPhone,
+        countryCode: '+91',
+        otp: smsOtp,
+        purpose: 'admin_2fa',
       });
-    }
+      smsDelivered = smsResult.sent;
+      smsProvider = smsResult.provider;
+      smsError = smsResult.error;
 
-    const smsResult = await sendOtpSms({
-      phone: targetDestination,
-      countryCode: '+91',
-      otp,
-      purpose: 'admin_2fa',
-    });
+      if (!smsResult.sent) {
+        return res.status(smsResult.configured ? 502 : 503).json({
+          success: false,
+          verifiedInDatabase: true,
+          challengeId,
+          emailDelivered,
+          smsDelivered: false,
+          smsProvider,
+          error:
+            smsError ||
+            'Unable to deliver Mobile SMS OTP via backend SMS provider.',
+        });
+      }
+    }
 
     db.logActivity(
-      'ADMIN_OTP_REQUESTED',
-      check.adminUser.email,
+      purpose === 'customer_export' ? 'ADMIN_EXPORT_DUAL_OTP_REQUESTED' : 'ADMIN_DUAL_OTP_REQUESTED',
+      check.emailMasked || 'protected_admin',
       'admin',
-      `Admin requested 2FA OTP via SMS to ${maskedDestination} (SMS Sent: ${smsResult.sent} [${smsResult.provider}]).`,
+      `Dual-OTP challenge (${resendMode}) verified in backend DB for ${purpose === 'customer_export' ? 'Customer Export Vault' : 'Admin Console'} (${check.emailMasked} + ${check.phoneMasked}).`,
       'admin_auth',
       check.adminUser.id
     );
 
-    if (!smsResult.sent) {
-      return res.status(smsResult.configured ? 502 : 503).json({
-        success: false,
-        verifiedInDatabase: true,
-        channel: 'sms',
-        emailDelivered: false,
-        smsDelivered: false,
-        smsProvider: smsResult.provider,
-        smsConfigured: smsResult.configured,
-        error:
-          smsResult.error ||
-          'Unable to send SMS OTP to your registered mobile number. Please check Firebase/SMS provider configuration or verify via Gmail.',
-      });
-    }
-
     return res.json({
       success: true,
       verifiedInDatabase: true,
-      emailDelivered: false,
-      smsDelivered: true,
-      smsProvider: smsResult.provider,
-      smsConfigured: smsResult.configured,
-      channel: 'sms',
-      verifiedPhone: targetDestination,
-      destinationMasked: maskedDestination,
+      challengeId,
+      purpose,
+      emailDelivered,
+      smsProvider,
+      smsDelivered,
+      emailMasked: check.emailMasked,
+      phoneMasked: check.phoneMasked,
       expiresInSeconds: 600,
-      message: `Verified against backend database. 6-digit SMS OTP sent to ${maskedDestination}. Valid for 10 minutes.`,
+      message:
+        resendMode === 'email'
+          ? `Fresh 6-digit Gmail OTP sent to ${check.emailMasked}.`
+          : resendMode === 'sms'
+            ? `Fresh 6-digit Mobile SMS OTP ready for ${check.phoneMasked}.`
+            : `Both credentials verified in backend database. Enter the 6-digit Gmail OTP (${check.emailMasked}) AND 6-digit Mobile SMS OTP (${check.phoneMasked}).`,
     });
   });
 
-  app.post('/api/admin-auth/verify-otp', authRateLimiter, async (req, res) => {
-    const { credential, otp, channel } = req.body || {};
-    const check = resolveAndVerifyStoredAdminCredential(credential, channel);
+  app.post('/api/admin-auth/verify-dual-otp', authRateLimiter, async (req, res) => {
+    const {
+      challengeId,
+      email,
+      phone,
+      emailOtp,
+      smsOtp,
+      purpose: rawPurpose,
+    } = req.body || {};
 
-    if (!check.ok || !check.adminUser || !check.channel) {
+    const purpose: 'admin_login' | 'customer_export' =
+      rawPurpose === 'customer_export' ? 'customer_export' : 'admin_login';
+
+    const check = verifyBothStoredAdminCredentials(email, phone);
+    if (!check.ok || !check.adminUser || !check.storedPhone) {
       return res.status(check.status).json({
         error:
           check.error ||
-          'Access Denied: Credentials do not match the registered administrator account.',
+          'Access Denied: Administrator credentials could not be verified against the backend database.',
+      });
+    }
+
+    const cleanChallengeId = String(challengeId || '').trim();
+    const cleanEmailOtp = String(emailOtp || '').trim();
+    const cleanSmsOtp = String(smsOtp || '').trim();
+
+    if (!cleanChallengeId) {
+      return res.status(400).json({
+        error: 'Verification session missing. Please request Dual OTPs again.',
       });
     }
 
@@ -397,79 +451,123 @@ async function startServer() {
     const hasFirebasePhoneClaim = Boolean(tokenInfo?.phoneNumber);
     const firebasePhoneMatchesAdmin = Boolean(
       tokenInfo?.phoneNumber &&
-        check.adminUser.phone &&
-        phonesMatch(check.adminUser.phone, tokenInfo.phoneNumber, '+91')
+        phonesMatch(check.storedPhone, tokenInfo.phoneNumber, '+91')
     );
 
-    if (!otp && !hasFirebasePhoneClaim) {
-      return res.status(400).json({ error: 'Please enter the 6-digit verification OTP.' });
+    if (cleanEmailOtp.length !== 6) {
+      return res.status(400).json({
+        error: 'Please enter the 6-digit OTP sent to your registered Admin Gmail.',
+      });
+    }
+
+    if (!hasFirebasePhoneClaim && cleanSmsOtp.length !== 6) {
+      return res.status(400).json({
+        error: 'Please enter the 6-digit SMS OTP sent to your registered Admin Mobile Number.',
+      });
     }
 
     if (hasFirebasePhoneClaim && !firebasePhoneMatchesAdmin) {
       return res.status(403).json({
-        error:
-          'Access Denied: Verified Firebase mobile number does not match the registered administrator mobile number stored in the backend database.',
+        error: 'Access Denied: Verified mobile number does not match the registered backend administrator.',
       });
     }
 
     await db.ensureFreshFromCloud(true);
     const snapshot = db.getSnapshot();
-    const activeOtp = snapshot.adminOtp;
+    const challenge = snapshot.adminDualOtps?.[cleanChallengeId];
 
-    if (!activeOtp || Date.now() > activeOtp.expiresAt) {
+    if (
+      !challenge ||
+      challenge.purpose !== purpose ||
+      challenge.adminId !== check.adminUser.id ||
+      Date.now() > challenge.expiresAt
+    ) {
+      return res.status(400).json({
+        error: 'Dual-OTP challenge has expired (valid for 10 minutes) or is invalid. Please request fresh OTPs.',
+      });
+    }
+
+    if (challenge.attempts >= 5) {
+      db.mutate((d) => {
+        if (d.adminDualOtps) delete d.adminDualOtps[cleanChallengeId];
+      });
+      return res.status(429).json({
+        error: 'Too many failed verification attempts. Challenge invalidated — please request new Dual OTPs.',
+      });
+    }
+
+    const emailValid = verifyOtpCodeHash(cleanChallengeId, cleanEmailOtp, challenge.emailOtpHash);
+    const smsValid = hasFirebasePhoneClaim
+      ? firebasePhoneMatchesAdmin
+      : challenge.smsMode === 'backend' &&
+        verifyOtpCodeHash(cleanChallengeId, cleanSmsOtp, challenge.smsOtpHash);
+
+    if (!emailValid || !smsValid) {
+      let attemptsRemaining = 0;
+      db.mutate((d) => {
+        const target = d.adminDualOtps?.[cleanChallengeId];
+        if (target) {
+          target.attempts = (target.attempts || 0) + 1;
+          attemptsRemaining = Math.max(0, 5 - target.attempts);
+          if (target.attempts >= 5) {
+            delete d.adminDualOtps![cleanChallengeId];
+          }
+        }
+      });
+
+      const failedLabel =
+        !emailValid && !smsValid
+          ? 'Both Gmail OTP and Mobile SMS OTP are invalid.'
+          : !emailValid
+            ? 'Invalid 6-digit Gmail OTP.'
+            : 'Invalid 6-digit Mobile SMS OTP.';
+
       return res.status(400).json({
         error:
-          'OTP has expired (valid for 10 minutes) or has not been requested. Please click Resend OTP.',
+          attemptsRemaining > 0
+            ? `${failedLabel} ${attemptsRemaining} attempt${attemptsRemaining === 1 ? '' : 's'} remaining.`
+            : 'Too many failed attempts. Challenge invalidated — please request new Dual OTPs.',
       });
     }
 
-    if (activeOtp.channel !== check.channel) {
-      return res.status(400).json({
-        error: `OTP was requested for ${activeOtp.channel.toUpperCase()}. Please verify on the matching channel or click Resend OTP.`,
-      });
-    }
-
-    if (!firebasePhoneMatchesAdmin) {
-      if ((activeOtp.attempts || 0) >= 5) {
-        db.mutate(d => {
-          delete d.adminOtp;
-        });
-        return res.status(429).json({
-          error:
-            'Too many incorrect OTP attempts. For security, this code has been invalidated. Please request a new OTP.',
-        });
+    // Consume one-time Dual-OTP challenge immediately
+    db.mutate((d) => {
+      if (d.adminDualOtps) {
+        delete d.adminDualOtps[cleanChallengeId];
       }
-
-      if (activeOtp.code !== String(otp || '').trim()) {
-        let attemptsRemaining = 0;
-        db.mutate(d => {
-          if (d.adminOtp) {
-            d.adminOtp.attempts = (d.adminOtp.attempts || 0) + 1;
-            attemptsRemaining = Math.max(0, 5 - d.adminOtp.attempts);
-            if (d.adminOtp.attempts >= 5) {
-              delete d.adminOtp;
-            }
-          }
-        });
-        return res.status(400).json({
-          error:
-            attemptsRemaining > 0
-              ? `Invalid 6-digit verification code. ${attemptsRemaining} attempt${attemptsRemaining === 1 ? '' : 's'} remaining before code resets.`
-              : 'Too many incorrect OTP attempts. Code invalidated — please click Resend OTP.',
-        });
-      }
-    }
-
-    // Clear one-time OTP after verification
-    db.mutate(d => {
-      delete d.adminOtp;
     });
 
+    if (purpose === 'customer_export') {
+      const { token: exportToken, expiresAt } = createAdminExportToken(check.adminUser.id);
+      const totalCustomers = snapshot.users.filter((u: User) => u.role !== 'admin').length;
+
+      db.logActivity(
+        'ADMIN_EXPORT_VAULT_UNLOCKED',
+        check.emailMasked || 'protected_admin',
+        'admin',
+        `Administrator verified Dual-OTP (Gmail + Mobile SMS) and unlocked the Customer Login Export Vault (${totalCustomers} accounts).`,
+        'customer_export',
+        check.adminUser.id
+      );
+      await db.persistChanges({ collections: ['otps', 'activityLogs'] });
+
+      return res.json({
+        success: true,
+        purpose: 'customer_export',
+        verifiedVia: 'dual_gmail_and_sms_otp',
+        exportToken,
+        expiresAt,
+        expiresInSeconds: 300,
+        totalCustomers,
+        message: 'Dual-OTP verified (Gmail + Mobile SMS). Customer Login Details Vault unlocked for 5 minutes.',
+      });
+    }
+
     db.logActivity(
-      'ADMIN_AUTHENTICATED',
-      check.adminUser.email,
+      'ADMIN_DUAL_OTP_AUTHENTICATED',
+      check.emailMasked || 'protected_admin',
       'admin',
-      `Administrator successfully verified 2FA ${firebasePhoneMatchesAdmin ? 'Firebase SMS OTP' : `${check.channel.toUpperCase()} OTP`} and unlocked console.`,
+      'Administrator verified Dual-OTP (Gmail + Mobile SMS) and unlocked the Admin Console.',
       'admin_auth',
       check.adminUser.id
     );
@@ -477,9 +575,105 @@ async function startServer() {
 
     return res.json({
       success: true,
-      verifiedVia: firebasePhoneMatchesAdmin ? 'firebase_sms' : `backend_${check.channel}_otp`,
+      purpose: 'admin_login',
+      verifiedVia: 'dual_gmail_and_sms_otp',
       user: sanitizeUserForClient(check.adminUser as User, true),
-      message: 'Admin identity verified against backend database! Console access unlocked.',
+      message: 'Dual-OTP verified (Gmail + Mobile SMS)! Admin Console unlocked.',
+    });
+  });
+
+  // -------------------------------------------------------------
+  // PROTECTED CUSTOMER LOGIN DETAILS EXPORT (DUAL-OTP HMAC TOKEN)
+  // -------------------------------------------------------------
+  app.get('/api/admin/export-customers', authRateLimiter, async (req, res) => {
+    const rawExportToken = req.headers['x-admin-export-token'];
+    const tokenString = Array.isArray(rawExportToken) ? rawExportToken[0] : rawExportToken;
+    const verifiedToken = verifyAdminExportToken(tokenString);
+
+    if (!verifiedToken) {
+      return res.status(401).json({
+        error:
+          'Valid Dual-OTP export authorization token required. Complete both Admin Gmail OTP and Mobile SMS OTP verification to unlock export.',
+      });
+    }
+
+    await db.ensureFreshFromCloud(true);
+    const snapshot = db.getSnapshot();
+    const adminUser = snapshot.users.find(
+      (u: User) => u.id === verifiedToken.sub && u.role === 'admin' && !u.isSuspended
+    );
+    if (!adminUser) {
+      return res.status(403).json({
+        error: 'Access Denied: Export authorization token is not linked to an active administrator.',
+      });
+    }
+
+    const now = Date.now();
+    const format = req.query.format === 'json' ? 'json' : 'csv';
+
+    // Explicit allowlist of non-sensitive customer login profile fields (NEVER includes passwordHash, password, OTPs, or secrets)
+    const customers = snapshot.users
+      .filter((u: User) => u.role !== 'admin')
+      .map((u: User) => {
+        const subStatus = getReaderSubscriptionStatus(snapshot, {
+          userId: u.id,
+          email: u.email,
+          phone: u.phone,
+        });
+        const totalPurchases = snapshot.purchases.filter(
+          (p: Purchase) =>
+            p.status === 'success' &&
+            (p.userId === u.id ||
+              (u.email && p.userEmail?.toLowerCase() === u.email.toLowerCase()))
+        ).length;
+
+        const isLocked = Boolean(
+          u.lockedUntil && Number.isFinite(new Date(u.lockedUntil).getTime()) && new Date(u.lockedUntil).getTime() > now
+        );
+        const accountStatus = u.isSuspended ? 'Suspended' : isLocked ? 'Locked' : 'Active';
+
+        return {
+          userId: u.id,
+          fullName: u.name || '',
+          email: u.email || '',
+          phone: u.phone || '',
+          countryCode: u.countryCode || '',
+          countryName: u.countryName || '',
+          role: u.role,
+          accountStatus,
+          emailVerified: Boolean(u.emailVerified ?? u.isVerified),
+          phoneVerified: Boolean(u.isVerified && u.phone),
+          authProvider: u.firebaseUid ? 'Firebase / Google / Phone' : 'Email & Password',
+          dob: u.dob || '',
+          age: typeof u.age === 'number' ? u.age : null,
+          notifyGmail: Boolean(u.notifyGmail),
+          notifyMobile: Boolean(u.notifyMobile),
+          premiumActive: subStatus.hasActiveSubscription,
+          premiumPlan: subStatus.activePlan || 'free',
+          premiumExpiresAt: subStatus.expiresAt || '',
+          totalPurchases,
+          createdAt: u.createdAt || '',
+          lastLoginAt: u.lastLoginAt || '',
+        };
+      });
+
+    db.logActivity(
+      'ADMIN_CUSTOMER_EXPORT_DOWNLOADED',
+      'protected_admin',
+      'admin',
+      `Exported ${customers.length} sanitized customer login profile(s) in ${format.toUpperCase()} format via Dual-OTP Export Vault.`,
+      'customer_export',
+      adminUser.id
+    );
+    await db.persistChanges({ collections: ['activityLogs'] });
+
+    return res.json({
+      success: true,
+      exportedAt: new Date().toISOString(),
+      format,
+      totalCustomers: customers.length,
+      excludedFields: ['password', 'passwordHash', 'sessionToken', 'otps'],
+      customers,
     });
   });
 
@@ -2269,6 +2463,14 @@ async function startServer() {
       });
     }
 
+    // Protect immutable backend administrator credentials from enumeration or reset via customer recovery
+    if (matchedUser.role === 'admin' || matchedUser.id === IMMUTABLE_ADMIN_VAULT.id) {
+      return res.status(403).json({
+        existsInDatabase: false,
+        error: 'Administrator credentials are locked in the backend vault and cannot be recovered or modified here.',
+      });
+    }
+
     const otp = crypto.randomInt(100000, 999999).toString();
     const targetEmail = (matchedUser.email || cleanEmail).toLowerCase();
     const targetSmsPhone = matchedUser.phone || formatGlobalPhone(rawPhoneInput, countryCode) || '';
@@ -2567,14 +2769,31 @@ async function startServer() {
       dobUpdate = { dob: dobCheck.dob, age: dobCheck.age };
     }
 
+    // Strictly block any modification of immutable administrator Gmail or Mobile Number
+    const preTarget = db.getSnapshot().users.find((x) => x.id === targetId);
+    if (preTarget && (preTarget.role === 'admin' || preTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+      const attemptingEmailChange =
+        cleanEmail !== undefined && cleanEmail !== IMMUTABLE_ADMIN_VAULT.email.toLowerCase();
+      const attemptingPhoneChange =
+        phone !== undefined &&
+        !phonesMatch(IMMUTABLE_ADMIN_VAULT.phone, String(phone), '+91');
+      if (attemptingEmailChange || attemptingPhoneChange) {
+        return res.status(403).json({
+          error:
+            'Forbidden: Administrator Gmail and Mobile Number are permanently locked in the backend vault and cannot be changed by any means.',
+        });
+      }
+    }
+
     let updated: User | null = null;
     let conflictError: string | null = null;
 
     db.mutate(d => {
       const u = d.users.find(x => x.id === targetId);
       if (!u) return;
+      const isImmutableAdmin = u.role === 'admin' || u.id === IMMUTABLE_ADMIN_VAULT.id;
 
-      if (cleanEmail && cleanEmail !== u.email.toLowerCase()) {
+      if (!isImmutableAdmin && cleanEmail && cleanEmail !== u.email.toLowerCase()) {
         const dupEmail = d.users.some(x => x.id !== u.id && x.email.toLowerCase() === cleanEmail);
         if (dupEmail) {
           conflictError = 'That Gmail address is already linked to another customer account.';
@@ -2583,7 +2802,7 @@ async function startServer() {
         u.email = cleanEmail;
       }
 
-      if (phone !== undefined) {
+      if (!isImmutableAdmin && phone !== undefined) {
         const nextFormattedPhone = formatGlobalPhone(phone, countryCode || u.countryCode);
         const nextDigits = nextFormattedPhone.replace(/\D/g, '');
         if (nextDigits.length > 0 && nextDigits.length < 6) {
@@ -3747,7 +3966,8 @@ async function startServer() {
 
   // Admin Paywall Toggle: Put any whole comic, chapter, or episode behind paywall (or make free)
   app.post('/api/admin/paywall-toggle', async (req, res) => {
-    const { comicId, chapterId, episodeId, isPremium, priceInr = 10 } = req.body;
+    const { comicId, chapterId, episodeId, isPremium } = req.body;
+    const nextPremium = Boolean(isPremium);
     let targetComic: Comic | null = null;
     let changeSummary = '';
 
@@ -3756,15 +3976,49 @@ async function startServer() {
       if (!c) return;
 
       targetComic = c;
+      const wasComicPremium = c.accessType === 'premium';
+
+      const recomputeParentFlags = () => {
+        if (!c.chapters || c.chapters.length === 0) return;
+        c.chapters.forEach(chItem => {
+          if (chItem.episodes && chItem.episodes.length > 0) {
+            chItem.isPremium = chItem.episodes.every(epItem => Boolean(epItem.isPremium));
+            chItem.priceInr = 0;
+          }
+        });
+        const allChaptersPremium = c.chapters.every(
+          chItem =>
+            Boolean(chItem.isPremium) &&
+            (!chItem.episodes || chItem.episodes.length === 0 || chItem.episodes.every(epItem => Boolean(epItem.isPremium)))
+        );
+        c.accessType = allChaptersPremium ? 'premium' : 'free';
+        c.fullPriceInr = 0;
+      };
 
       if (episodeId) {
         // Toggle specific episode
         for (const ch of c.chapters) {
           const ep = ch.episodes.find(e => e.id === episodeId);
           if (ep) {
-            ep.isPremium = Boolean(isPremium);
-            ep.priceInr = isPremium ? Number(priceInr) : 0;
-            changeSummary = `Episode "${ep.title}" set to ${isPremium ? `Paywall (₹${ep.priceInr})` : 'FREE'}`;
+            // If making one episode free inside a comic/chapter that was previously paywalled at parent level,
+            // preserve Premium on all sibling chapters & episodes so only the clicked episode turns Free.
+            if (!nextPremium && (wasComicPremium || ch.isPremium)) {
+              c.chapters.forEach(otherCh => {
+                const inheritAll = wasComicPremium || otherCh.isPremium;
+                if (inheritAll) {
+                  otherCh.isPremium = true;
+                  otherCh.priceInr = 0;
+                  otherCh.episodes.forEach(otherEp => {
+                    otherEp.isPremium = true;
+                    otherEp.priceInr = 0;
+                  });
+                }
+              });
+            }
+            ep.isPremium = nextPremium;
+            ep.priceInr = 0;
+            recomputeParentFlags();
+            changeSummary = `Episode "${ep.title}" set to ${nextPremium ? 'Premium' : 'FREE'}`;
             break;
           }
         }
@@ -3772,31 +4026,40 @@ async function startServer() {
         // Toggle whole chapter
         const ch = c.chapters.find(x => x.id === chapterId);
         if (ch) {
-          ch.isPremium = Boolean(isPremium);
-          ch.priceInr = isPremium ? Number(priceInr) : 0;
-          // also set episodes in chapter
+          if (!nextPremium && wasComicPremium) {
+            c.chapters.forEach(otherCh => {
+              if (otherCh.id !== chapterId) {
+                otherCh.isPremium = true;
+                otherCh.priceInr = 0;
+                otherCh.episodes.forEach(otherEp => {
+                  otherEp.isPremium = true;
+                  otherEp.priceInr = 0;
+                });
+              }
+            });
+          }
+          ch.isPremium = nextPremium;
+          ch.priceInr = 0;
           ch.episodes.forEach(ep => {
-            ep.isPremium = Boolean(isPremium);
-            ep.priceInr = isPremium ? Number(priceInr) : 0;
+            ep.isPremium = nextPremium;
+            ep.priceInr = 0;
           });
-          changeSummary = `Chapter "${ch.title}" and its episodes set to ${isPremium ? `Paywall (₹${priceInr})` : 'FREE'}`;
+          recomputeParentFlags();
+          changeSummary = `Chapter "${ch.title}" and its episodes set to ${nextPremium ? 'Premium' : 'FREE'}`;
         }
       } else {
-        // Toggle entire comic
-        c.accessType = isPremium ? 'premium' : 'free';
-        c.fullPriceInr = isPremium ? Number(priceInr) : 0;
-        if (!isPremium) {
-          // if made free, make all episodes free
-          c.chapters.forEach(ch => {
-            ch.isPremium = false;
-            ch.priceInr = 0;
-            ch.episodes.forEach(ep => {
-              ep.isPremium = false;
-              ep.priceInr = 0;
-            });
+        // Toggle entire comic — cascade cleanly to all chapters and episodes
+        c.accessType = nextPremium ? 'premium' : 'free';
+        c.fullPriceInr = 0;
+        c.chapters.forEach(ch => {
+          ch.isPremium = nextPremium;
+          ch.priceInr = 0;
+          ch.episodes.forEach(ep => {
+            ep.isPremium = nextPremium;
+            ep.priceInr = 0;
           });
-        }
-        changeSummary = `Series "${c.title}" set to ${isPremium ? `Paywall (₹${priceInr})` : 'FREE'}`;
+        });
+        changeSummary = `Series "${c.title}" set to ${nextPremium ? 'Premium' : 'FREE'}`;
       }
 
       c.updatedAt = new Date().toISOString();
@@ -3809,7 +4072,7 @@ async function startServer() {
         d.notifications.forEach(n => {
           if (n.comicId === comicId || n.targetId === comicId) {
             if (episodeId && n.episodeId === episodeId) {
-              n.isPaywalled = Boolean(isPremium);
+              n.isPaywalled = nextPremium;
             } else {
               n.isPaywalled = comicNowPaywalled;
             }
@@ -3820,16 +4083,41 @@ async function startServer() {
 
     if (!targetComic) return res.status(404).json({ error: 'Comic not found' });
 
+    const updatedComic = targetComic as Comic;
+    const paywallState = {
+      comicId: updatedComic.id,
+      accessType: updatedComic.accessType,
+      fullPriceInr: updatedComic.fullPriceInr,
+      updatedAt: updatedComic.updatedAt,
+      chapters: (updatedComic.chapters || []).map(ch => ({
+        id: ch.id,
+        isPremium: Boolean(ch.isPremium),
+        priceInr: Number(ch.priceInr) || 0,
+        episodes: (ch.episodes || []).map(ep => ({
+          id: ep.id,
+          isPremium: Boolean(ep.isPremium),
+          priceInr: Number(ep.priceInr) || 0,
+        })),
+      })),
+    };
+
     db.logActivity('PAYWALL_UPDATED', 'admin@aathirai.com', 'admin', `Admin updated paywall: ${changeSummary}`, 'paywall', comicId);
-    await db.persistChanges({
-      comics: [targetComic as Comic],
-      collections: ['notifications', 'activityLogs'],
-      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
-    });
+
+    // Persist asynchronously via StorageEngine's ordered persistQueue so UI responds instantly without blocking
+    const userFirebaseIdToken = extractFirebaseIdToken(req.headers.authorization);
+    void db
+      .persistChanges({
+        comics: [updatedComic],
+        collections: ['notifications', 'activityLogs'],
+        userFirebaseIdToken,
+      })
+      .catch(err => {
+        console.warn('[PaywallToggle] Background cloud persist warning:', err?.message || err);
+      });
 
     return res.json({
       success: true,
-      comic: targetComic,
+      paywallState,
       message: changeSummary,
     });
   });
@@ -6373,9 +6661,12 @@ async function startServer() {
   // -------------------------------------------------------------
 
   app.get('/api/admin/readers', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
     await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
     const readers = snapshot.users.map(u => {
+      const isImmutableAdmin = u.role === 'admin' || u.id === IMMUTABLE_ADMIN_VAULT.id;
       const subStatus = getReaderSubscriptionStatus(snapshot, {
         userId: u.id,
         email: u.email,
@@ -6387,8 +6678,9 @@ async function startServer() {
       const totalSpentInr = userPurchases.reduce((sum, p) => sum + p.amountInr, 0);
       return {
         ...sanitizeUserForClient(u, false),
+        isImmutableAdmin,
         age: u.age,
-        upiId: u.upiId || subStatus.upiId,
+        upiId: isImmutableAdmin ? undefined : (u.upiId || subStatus.upiId),
         premiumPlan: subStatus.activePlan,
         premiumStartedAt: subStatus.startedAt,
         premiumExpiresAt: subStatus.expiresAt,
@@ -6399,7 +6691,7 @@ async function startServer() {
           hasActiveSubscription: subStatus.hasActiveSubscription,
           plan: subStatus.activePlan,
           amountPaidInr: subStatus.amountPaidInr,
-          upiId: u.upiId || subStatus.upiId,
+          upiId: isImmutableAdmin ? undefined : (u.upiId || subStatus.upiId),
           paymentMethod: subStatus.paymentMethod,
           transactionId: subStatus.transactionId,
           receiptNumber: subStatus.activeReceipt,
@@ -6414,18 +6706,29 @@ async function startServer() {
 
   // Admin Database Management: Update or Grant/Revoke Reader Account, UPI & Paid Premium
   app.put('/api/admin/readers/:id', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+
+    const existingTarget = db.getSnapshot().users.find((x: User) => x.id === req.params.id);
+    if (existingTarget && (existingTarget.role === 'admin' || existingTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+      return res.status(403).json({
+        error:
+          'Forbidden: Protected administrator credentials (Gmail, Mobile Number, and Role) are immutable in the backend vault and cannot be altered by any means.',
+      });
+    }
+
     const { name, email, phone, age, upiId, paidPlan, paymentMethod, transactionId, role, isSuspended, suspendedReason } = req.body;
     let updatedUser: User | null = null;
 
     db.mutate(d => {
       const u = d.users.find((x: User) => x.id === req.params.id);
-      if (u) {
+      if (u && u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id) {
         if (name !== undefined && name.trim()) u.name = name.trim();
         if (email !== undefined && email.trim()) u.email = email.trim().toLowerCase();
         if (phone !== undefined) u.phone = phone.trim();
         if (age !== undefined && age !== '' && !isNaN(Number(age))) u.age = Number(age);
         if (upiId !== undefined) u.upiId = upiId.trim();
-        if (role && ['reader', 'author', 'admin'].includes(role)) {
+        if (role && ['reader', 'author'].includes(role)) {
           u.role = role;
         }
         if (typeof isSuspended === 'boolean') {
@@ -6440,7 +6743,7 @@ async function startServer() {
     });
 
     if (!updatedUser) return res.status(404).json({ error: 'Reader not found' });
-    db.logActivity('ADMIN_UPDATED_READER', 'admin@aathirai.com', 'admin', `Updated reader ${(updatedUser as User).email} (Plan: ${paidPlan || 'unchanged'}, UPI: ${upiId || 'N/A'})`, 'user', req.params.id);
+    db.logActivity('ADMIN_UPDATED_READER', 'protected_admin', 'admin', `Updated reader ${(updatedUser as User).email} (Plan: ${paidPlan || 'unchanged'}, UPI: ${upiId || 'N/A'})`, 'user', req.params.id);
     await db.persistChanges({
       users: [updatedUser as User],
       collections: ['purchases', 'activityLogs'],
@@ -6450,11 +6753,21 @@ async function startServer() {
   });
 
   app.post('/api/admin/readers/:id/suspend', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+
+    const existingTarget = db.getSnapshot().users.find((x: User) => x.id === req.params.id);
+    if (existingTarget && (existingTarget.role === 'admin' || existingTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+      return res.status(403).json({
+        error: 'Forbidden: Protected administrator account cannot be suspended.',
+      });
+    }
+
     const { isSuspended, reason } = req.body;
     let updatedUser: User | null = null;
     db.mutate(d => {
       const u = d.users.find((x: User) => x.id === req.params.id);
-      if (u) {
+      if (u && u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id) {
         u.isSuspended = Boolean(isSuspended);
         u.suspendedReason = u.isSuspended ? (reason || 'Account suspended by Administrator.') : undefined;
         updatedUser = u;
@@ -6464,7 +6777,7 @@ async function startServer() {
     const targetUser = updatedUser as User;
     db.logActivity(
       targetUser.isSuspended ? 'USER_SUSPENDED' : 'USER_REACTIVATED',
-      'admin@aathirai.com',
+      'protected_admin',
       'admin',
       `${targetUser.isSuspended ? 'Suspended' : 'Reactivated'} account ${targetUser.email}`,
       'user',
@@ -6479,16 +6792,26 @@ async function startServer() {
   });
 
   app.delete('/api/admin/readers/:id', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+
+    const existingTarget = db.getSnapshot().users.find((x: User) => x.id === req.params.id);
+    if (existingTarget && (existingTarget.role === 'admin' || existingTarget.id === IMMUTABLE_ADMIN_VAULT.id)) {
+      return res.status(403).json({
+        error: 'Forbidden: Protected administrator account cannot be deleted.',
+      });
+    }
+
     let removedEmail = '';
     db.mutate(d => {
       const idx = d.users.findIndex((x: User) => x.id === req.params.id);
-      if (idx !== -1) {
+      if (idx !== -1 && d.users[idx].role !== 'admin' && d.users[idx].id !== IMMUTABLE_ADMIN_VAULT.id) {
         removedEmail = d.users[idx].email;
         d.users.splice(idx, 1);
       }
     });
     if (!removedEmail) return res.status(404).json({ error: 'Reader not found' });
-    db.logActivity('ADMIN_DELETED_READER', 'admin@aathirai.com', 'admin', `Deleted reader account ${removedEmail}`, 'user', req.params.id);
+    db.logActivity('ADMIN_DELETED_READER', 'protected_admin', 'admin', `Deleted reader account ${removedEmail}`, 'user', req.params.id);
     await db.persistChanges({
       deletedUserIds: [req.params.id],
       collections: ['activityLogs'],
@@ -6827,16 +7150,39 @@ async function startServer() {
   // INDIAN GST & BILLING ADMIN & EXPORT ROUTES
   // -------------------------------------------------------------
 
-  app.get('/api/admin/gst/settings', async (_req, res) => {
+  app.get('/api/admin/gst/settings', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
     await db.ensureFreshFromCloud();
     const snapshot = db.getSnapshot();
-    const gstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const rawGstSettings = snapshot.gstSettings || getDefaultGstBusinessSettings();
+    const gstSettings: GstBusinessSettings = {
+      ...rawGstSettings,
+      updatedByEmail: redactAdminSecrets(
+        rawGstSettings.updatedByEmail,
+        IMMUTABLE_ADMIN_VAULT.email,
+        IMMUTABLE_ADMIN_VAULT.phone
+      ),
+      auditHistory: (rawGstSettings.auditHistory || []).map((entry) => ({
+        ...entry,
+        adminEmail: redactAdminSecrets(
+          entry.adminEmail,
+          IMMUTABLE_ADMIN_VAULT.email,
+          IMMUTABLE_ADMIN_VAULT.phone
+        ),
+        summary: redactAdminSecrets(
+          entry.summary,
+          IMMUTABLE_ADMIN_VAULT.email,
+          IMMUTABLE_ADMIN_VAULT.phone
+        ),
+      })),
+    };
     const creditNotes = snapshot.creditNotes || [];
     const invoices = snapshot.purchases.map((p, idx) =>
-      ensurePurchaseGstFields(p, gstSettings, idx + 1)
+      ensurePurchaseGstFields(p, rawGstSettings, idx + 1)
     );
     const validation = validateGstExportData({
-      settings: gstSettings,
+      settings: rawGstSettings,
       invoices,
       creditNotes,
     });
@@ -7426,8 +7772,23 @@ async function startServer() {
   });
 
   app.get('/api/admin/logs', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
     await db.ensureFreshFromCloud();
-    return res.json({ logs: db.getSnapshot().activityLogs });
+    const safeLogs = (db.getSnapshot().activityLogs || []).map((entry) => ({
+      ...entry,
+      actorEmail: redactAdminSecrets(
+        entry.actorEmail,
+        IMMUTABLE_ADMIN_VAULT.email,
+        IMMUTABLE_ADMIN_VAULT.phone
+      ),
+      details: redactAdminSecrets(
+        entry.details,
+        IMMUTABLE_ADMIN_VAULT.email,
+        IMMUTABLE_ADMIN_VAULT.phone
+      ),
+    }));
+    return res.json({ logs: safeLogs });
   });
 
   // Serve bundled asset images directly in both dev and production for legacy cover URLs

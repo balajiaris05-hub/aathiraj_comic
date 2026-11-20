@@ -119,6 +119,7 @@ export async function sendEmail(params: {
   subject: string;
   text: string;
   html: string;
+  suppressRecipientLog?: boolean;
 }): Promise<EmailSendResult> {
   const settings = getSmtpSettings();
   const primaryTransporter = createTransporter();
@@ -180,12 +181,16 @@ export async function sendEmail(params: {
       rejected.some((r: string) => r.trim().toLowerCase() === recipientLower);
 
     if (isRejected) {
-      console.error('[Aathirai_Comic SMTP] Recipient rejected by SMTP server:', {
-        to: params.to,
-        accepted,
-        rejected,
-        response: info.response,
-      });
+      if (params.suppressRecipientLog) {
+        console.error('[Aathirai_Comic SMTP] Protected security recipient rejected by SMTP server.');
+      } else {
+        console.error('[Aathirai_Comic SMTP] Recipient rejected by SMTP server:', {
+          to: params.to,
+          accepted,
+          rejected,
+          response: info.response,
+        });
+      }
       return {
         sent: false,
         configured: true,
@@ -194,17 +199,25 @@ export async function sendEmail(params: {
         accepted,
         rejected,
         response: info.response,
-        error: `Mail server rejected recipient (${params.to}). Please double-check your Gmail address.`,
+        error: params.suppressRecipientLog
+          ? 'Mail server rejected the protected recipient address.'
+          : `Mail server rejected recipient (${params.to}). Please double-check your Gmail address.`,
       };
     }
 
-    console.info('[Aathirai_Comic SMTP] Email accepted by SMTP relay:', {
-      to: params.to,
-      from: settings.fromEmail,
-      messageId: info.messageId,
-      accepted,
-      response: info.response,
-    });
+    if (params.suppressRecipientLog) {
+      console.info('[Aathirai_Comic SMTP] Protected security OTP email accepted by SMTP relay.', {
+        messageId: info.messageId,
+      });
+    } else {
+      console.info('[Aathirai_Comic SMTP] Email accepted by SMTP relay:', {
+        to: params.to,
+        from: settings.fromEmail,
+        messageId: info.messageId,
+        accepted,
+        response: info.response,
+      });
+    }
 
     return {
       sent: true,
@@ -226,18 +239,34 @@ export async function sendEmail(params: {
   }
 }
 
-export async function sendAdminOtpEmail(to: string, otp: string): Promise<EmailSendResult> {
+export async function sendAdminOtpEmail(
+  to: string,
+  otp: string,
+  purpose: 'admin_login' | 'customer_export' = 'admin_login'
+): Promise<EmailSendResult> {
   const safeOtp = escapeHtml(otp);
+  const isExport = purpose === 'customer_export';
+  const subject = isExport
+    ? 'Aathirai_Comic Customer Export Vault Dual-OTP Code'
+    : 'Aathirai_Comic Admin Console Dual-OTP Verification Code';
+  const headline = isExport
+    ? 'Aathirai_Comic Customer Export Vault'
+    : 'Aathirai_Comic Admin Security';
+  const bodyCopy = isExport
+    ? 'Use this one-time 6-digit Gmail OTP together with your Mobile SMS OTP to unlock the Customer Login Details Export Vault:'
+    : 'Use this one-time 6-digit Gmail OTP together with your Mobile SMS OTP to unlock the Administrator Console:';
+
   return sendEmail({
     to,
-    subject: 'Aathirai_Comic Admin 2FA Verification Code',
-    text: `Your Aathirai_Comic Administrator 2FA OTP is: ${otp}\n\nThis code is valid for 10 minutes. Do not share this code with anyone.`,
+    subject,
+    suppressRecipientLog: true,
+    text: `${headline}\n\nYour 6-digit Gmail verification OTP is: ${otp}\n\nEnter this code together with your Mobile SMS OTP. Valid for 10 minutes. Do not share this code with anyone.`,
     html: `
       <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;color:#f1f5f9;border-radius:12px;border:1px solid #334155;">
-        <h2 style="margin:0 0 12px;color:#fb7185;">Aathirai_Comic Admin Security</h2>
-        <p style="margin:0 0 16px;color:#cbd5e1;font-size:14px;">Use this one-time 6-digit verification code to unlock the Administrator Console:</p>
+        <h2 style="margin:0 0 12px;color:#fb7185;">${escapeHtml(headline)}</h2>
+        <p style="margin:0 0 16px;color:#cbd5e1;font-size:14px;">${escapeHtml(bodyCopy)}</p>
         <div style="font-size:28px;font-weight:700;letter-spacing:6px;padding:14px 18px;background:#1e293b;border-radius:8px;text-align:center;color:#ffffff;margin-bottom:16px;">${safeOtp}</div>
-        <p style="margin:0;color:#94a3b8;font-size:12px;">Valid for 10 minutes. If you did not request this code, ignore this email.</p>
+        <p style="margin:0;color:#94a3b8;font-size:12px;">Valid for 10 minutes. Both Gmail OTP and Mobile SMS OTP are required. If you did not request this code, ignore this email.</p>
       </div>
     `,
   });

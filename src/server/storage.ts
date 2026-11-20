@@ -72,6 +72,20 @@ export interface DatabaseSchema {
     verifiedCredential?: string;
     attempts?: number;
   };
+  adminDualOtps?: Record<
+    string,
+    {
+      challengeId: string;
+      purpose: 'admin_login' | 'customer_export';
+      adminId: string;
+      emailOtpHash: string;
+      smsOtpHash: string;
+      smsMode: 'firebase' | 'backend';
+      expiresAt: number;
+      attempts: number;
+      createdAt: number;
+    }
+  >;
   authorApplications: AuthorApplication[];
   comics: Comic[];
   comments: Comment[];
@@ -96,16 +110,69 @@ const BACKUP_DIR = path.resolve(process.cwd(), 'backups');
 const FIRESTORE_SNAPSHOT_DIR = path.resolve(process.cwd(), 'firestore_collections');
 const FIRESTORE_DB_ID = 'ai-studio-aathiraicomic-1a2e1a9d-77e7-4578-a8cf-3a14563bb24f';
 
+/**
+ * Frozen, backend-only canonical administrator identity.
+ * Never exposed in frontend code, browser console, or Website Inspect,
+ * and strictly immutable across all API endpoints, DB mutations, and cloud syncs.
+ */
+export const IMMUTABLE_ADMIN_VAULT = Object.freeze({
+  id: 'usr_admin',
+  name: 'Balaji Administrator',
+  email: 'balajiaris05@gmail.com',
+  phone: '+91 8610950780',
+  countryCode: '+91',
+  countryName: 'India',
+  role: 'admin' as const,
+});
+
+export function enforceImmutableAdminRecord(users: User[]): void {
+  if (!Array.isArray(users)) return;
+  let adminUser = users.find((u) => u.id === IMMUTABLE_ADMIN_VAULT.id || u.role === 'admin');
+  if (!adminUser) {
+    adminUser = {
+      id: IMMUTABLE_ADMIN_VAULT.id,
+      name: IMMUTABLE_ADMIN_VAULT.name,
+      email: IMMUTABLE_ADMIN_VAULT.email,
+      phone: IMMUTABLE_ADMIN_VAULT.phone,
+      countryCode: IMMUTABLE_ADMIN_VAULT.countryCode,
+      countryName: IMMUTABLE_ADMIN_VAULT.countryName,
+      role: 'admin',
+      isVerified: true,
+      emailVerified: true,
+      isSuspended: false,
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&h=200&q=80',
+      bio: 'Chief Content Administrator and Publisher at Aathirai_Comic.',
+      createdAt: '2026-01-01T00:00:00Z',
+    };
+    users.unshift(adminUser);
+  }
+  users.forEach((u) => {
+    if (u.id === IMMUTABLE_ADMIN_VAULT.id || u.role === 'admin') {
+      u.id = u.id || IMMUTABLE_ADMIN_VAULT.id;
+      u.email = IMMUTABLE_ADMIN_VAULT.email;
+      u.phone = IMMUTABLE_ADMIN_VAULT.phone;
+      u.countryCode = IMMUTABLE_ADMIN_VAULT.countryCode;
+      u.countryName = IMMUTABLE_ADMIN_VAULT.countryName;
+      u.name = IMMUTABLE_ADMIN_VAULT.name;
+      u.role = 'admin';
+      u.isVerified = true;
+      u.emailVerified = true;
+      u.isSuspended = false;
+      u.suspendedReason = undefined;
+    }
+  });
+}
+
 export function getDefaultDatabase(): DatabaseSchema {
   return {
     users: [
       {
-        id: 'usr_admin',
-        name: 'Balaji Administrator',
-        email: 'balajiaris05@gmail.com',
-        phone: '+91 8610950780',
-        countryCode: '+91',
-        countryName: 'India',
+        id: IMMUTABLE_ADMIN_VAULT.id,
+        name: IMMUTABLE_ADMIN_VAULT.name,
+        email: IMMUTABLE_ADMIN_VAULT.email,
+        phone: IMMUTABLE_ADMIN_VAULT.phone,
+        countryCode: IMMUTABLE_ADMIN_VAULT.countryCode,
+        countryName: IMMUTABLE_ADMIN_VAULT.countryName,
         role: 'admin',
         isVerified: true,
         emailVerified: true,
@@ -273,15 +340,9 @@ export class StorageEngine {
     if (!Array.isArray(parsed.creditNotes)) parsed.creditNotes = [];
     if (!Array.isArray(parsed.activityLogs)) parsed.activityLogs = def.activityLogs;
 
-    // Ensure admin user has authoritative email & phone, and hash any plaintext passwords into passwordHash
+    // Enforce immutable admin identity and hash any plaintext passwords into passwordHash
+    enforceImmutableAdminRecord(parsed.users);
     parsed.users.forEach((u: User) => {
-      if (u.role === 'admin' || u.id === 'usr_admin') {
-        u.email = 'balajiaris05@gmail.com';
-        u.phone = '+91 8610950780';
-        u.name = 'Balaji Administrator';
-        u.isVerified = true;
-        u.emailVerified = true;
-      }
       if (u.password) {
         if (!u.passwordHash && !u.password.startsWith('scrypt:')) {
           u.passwordHash = hashPassword(u.password);
@@ -514,6 +575,7 @@ export class StorageEngine {
 
   public mutate<T>(fn: (db: DatabaseSchema) => T): T {
     const res = fn(this.data);
+    enforceImmutableAdminRecord(this.data.users);
     this.saveData(this.data);
     this.writeFirestoreCollectionSnapshots(this.data);
     return res;
@@ -603,6 +665,7 @@ export class StorageEngine {
       try {
         const res = await hydrateDatabaseFromFirestore(this.data);
         if (res.hydrated) {
+          enforceImmutableAdminRecord(res.data.users);
           this.data = res.data;
           this.cloudRevision = res.revision || 1;
           this.lastRevisionCheckMs = Date.now();
@@ -640,6 +703,7 @@ export class StorageEngine {
         if (revCheck.revision > this.cloudRevision) {
           const res = await hydrateDatabaseFromFirestore(this.data);
           if (res.hydrated) {
+            enforceImmutableAdminRecord(res.data.users);
             this.data = res.data;
             this.cloudRevision = res.revision;
             this.saveData(this.data);

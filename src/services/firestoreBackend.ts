@@ -40,6 +40,22 @@ function ensureVerifiedUser() {
   return u;
 }
 
+const adminUidCache = new Map<string, boolean>();
+
+async function checkIsFirestoreAdmin(uid: string): Promise<boolean> {
+  if (!uid) return false;
+  if (adminUidCache.has(uid)) return Boolean(adminUidCache.get(uid));
+  try {
+    const safeId = sanitizeFirestoreId(uid);
+    const snap = await getDoc(doc(db, 'admins', safeId));
+    const isAdmin = snap.exists();
+    adminUidCache.set(uid, isAdmin);
+    return isAdmin;
+  } catch {
+    return false;
+  }
+}
+
 // =============================================================================
 // 1. USERS & ISOLATED PRIVATE INFO (/users/{userId} & /users/{userId}/private/info)
 // =============================================================================
@@ -63,9 +79,10 @@ export async function upsertUserAndPrivateInfoInFirestore(params: {
   const safeName = (params.name || 'Reader').trim().slice(0, 80) || 'Reader';
   const safeRole: 'reader' | 'author' | 'admin' =
     params.role === 'admin' ? 'admin' : params.role === 'author' ? 'author' : 'reader';
+  const isAdminSession = await checkIsFirestoreAdmin(currentUser.uid);
   const safeEmail = (params.email || currentUser.email || 'reader@gmail.com').trim().slice(0, 120);
-  const safePhone = (params.phone && params.phone.trim().length >= 3 ? params.phone.trim() : safeRole === 'admin' ? '+91 8610950780' : 'Not provided').slice(0, 32);
-  const safeUpiId = (params.upiId && params.upiId.trim().length >= 3 ? params.upiId.trim() : safeRole === 'admin' ? 'balajiaris05@okaxis' : 'Not provided').slice(0, 100);
+  const safePhone = (params.phone && params.phone.trim().length >= 3 ? params.phone.trim() : 'Not provided').slice(0, 32);
+  const safeUpiId = (params.upiId && params.upiId.trim().length >= 3 ? params.upiId.trim() : 'Not provided').slice(0, 100);
   const safeAge = Math.min(110, Math.max(5, Number(params.age) || 24));
   const safePlan: 'free' | '1_month' | '6_months' =
     params.paidPlan === '6_months' ? '6_months' : params.paidPlan === '1_month' ? '1_month' : 'free';
@@ -81,14 +98,14 @@ export async function upsertUserAndPrivateInfoInFirestore(params: {
       await setDoc(userRef, {
         userId,
         name: safeName,
-        role: currentUser.email === 'balajiaris05@gmail.com' ? safeRole : 'reader',
+        role: isAdminSession ? safeRole : 'reader',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
       await updateDoc(userRef, {
         name: safeName,
-        ...(currentUser.email === 'balajiaris05@gmail.com' ? { role: safeRole } : {}),
+        ...(isAdminSession ? { role: safeRole } : {}),
         updatedAt: serverTimestamp(),
       });
     }
@@ -137,6 +154,7 @@ export async function upsertUserAndPrivateInfoInFirestore(params: {
 export async function ensurePublicUserProfileExists(userIdRaw: string, name: string, role: 'reader' | 'author' | 'admin' = 'author') {
   const currentUser = ensureVerifiedUser();
   if (!currentUser) return null;
+  const isAdminSession = await checkIsFirestoreAdmin(currentUser.uid);
   const userId = sanitizeFirestoreId(userIdRaw);
   const userPath = `users/${userId}`;
   const ref = doc(db, 'users', userId);
@@ -146,7 +164,7 @@ export async function ensurePublicUserProfileExists(userIdRaw: string, name: str
       await setDoc(ref, {
         userId,
         name: (name || 'Creator').trim().slice(0, 80) || 'Creator',
-        role: currentUser.email === 'balajiaris05@gmail.com' ? role : 'reader',
+        role: isAdminSession ? role : 'reader',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -452,6 +470,7 @@ export async function upsertAuthorApplicationInFirestore(app: AuthorApplication)
 
   const path = `authorApplications/${applicationId}`;
   const ref = doc(db, 'authorApplications', applicationId);
+  const isAdminSession = await checkIsFirestoreAdmin(currentUser.uid);
   try {
     const snap = await getDoc(ref);
     const status = app.status === 'approved' ? 'approved' : app.status === 'rejected' ? 'rejected' : 'pending';
@@ -461,7 +480,7 @@ export async function upsertAuthorApplicationInFirestore(app: AuthorApplication)
         userId,
         penName: (app.authorName || 'Creator').trim().slice(0, 80) || 'Creator',
         bio: (app.bio || 'Creator bio').trim().slice(0, 600),
-        status: currentUser.email === 'balajiaris05@gmail.com' ? status : 'pending',
+        status: isAdminSession ? status : 'pending',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -469,7 +488,7 @@ export async function upsertAuthorApplicationInFirestore(app: AuthorApplication)
       await updateDoc(ref, {
         penName: (app.authorName || 'Creator').trim().slice(0, 80) || 'Creator',
         bio: (app.bio || 'Creator bio').trim().slice(0, 600),
-        ...(currentUser.email === 'balajiaris05@gmail.com' ? { status } : {}),
+        ...(isAdminSession ? { status } : {}),
         updatedAt: serverTimestamp(),
       });
     }
@@ -483,6 +502,7 @@ export async function upsertDeleteRequestInFirestore(dr: DeleteRequest) {
   const currentUser = ensureVerifiedUser();
   if (!currentUser) return null;
 
+  const isAdminSession = await checkIsFirestoreAdmin(currentUser.uid);
   const requestId = sanitizeFirestoreId(dr.id);
   const path = `deleteRequests/${requestId}`;
   const ref = doc(db, 'deleteRequests', requestId);
@@ -498,14 +518,14 @@ export async function upsertDeleteRequestInFirestore(dr: DeleteRequest) {
         authorId: sanitizeFirestoreId(dr.authorId || currentUser.uid),
         authorName: (dr.authorName || 'Creator').trim().slice(0, 80),
         reason: (dr.reason || 'Author deletion request').trim().slice(0, 300),
-        status: currentUser.email === 'balajiaris05@gmail.com' ? status : 'pending',
+        status: isAdminSession ? status : 'pending',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
       await updateDoc(ref, {
         reason: (dr.reason || 'Author deletion request').trim().slice(0, 300),
-        ...(currentUser.email === 'balajiaris05@gmail.com' ? { status } : {}),
+        ...(isAdminSession ? { status } : {}),
         updatedAt: serverTimestamp(),
       });
     }
@@ -557,7 +577,7 @@ export async function upsertPurchaseRecordInFirestore(p: Purchase) {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else if (currentUser.email === 'balajiaris05@gmail.com' && p.status === 'refunded') {
+    } else if ((await checkIsFirestoreAdmin(currentUser.uid)) && p.status === 'refunded') {
       await updateDoc(ref, {
         status: 'refunded',
         updatedAt: serverTimestamp(),
@@ -571,7 +591,7 @@ export async function upsertPurchaseRecordInFirestore(p: Purchase) {
 
 export async function upsertNotificationInFirestore(n: NotificationItem) {
   const currentUser = ensureVerifiedUser();
-  if (!currentUser || currentUser.email !== 'balajiaris05@gmail.com') return null;
+  if (!currentUser || !(await checkIsFirestoreAdmin(currentUser.uid))) return null;
 
   const notificationId = sanitizeFirestoreId(n.id);
   const path = `notifications/${notificationId}`;
@@ -674,11 +694,11 @@ export async function upsertPlatformSettingsInFirestore(
   const ref = doc(db, 'platformSettings', settingId);
   const payload = {
     settingId,
-    merchantUpiId: (settings.merchantUpiId || 'balajiaris05@okaxis').trim().slice(0, 100),
+    merchantUpiId: (settings.merchantUpiId || 'merchant@upi').trim().slice(0, 100),
     merchantUpiName: (settings.merchantUpiName || 'Aathirai_Comic Official').trim().slice(0, 100),
     razorpay1MonthUrl: 'https://rzp.io/rzp/eMyTbngF',
     razorpay6MonthsUrl: 'https://rzp.io/rzp/E077NNn',
-    updatedByEmail: (updatedByEmail || currentUser.email || 'balajiaris05@gmail.com').trim().slice(0, 120),
+    updatedByEmail: (updatedByEmail || currentUser.email || 'admin@aathirai.com').trim().slice(0, 120),
   };
 
   try {
@@ -731,7 +751,7 @@ export async function syncGstBusinessSettingsToFirestore(params: {
     invoicePrefix: (params.invoicePrefix || 'AAC/2627/').trim().slice(0, 12),
     defaultSacCode: (params.defaultSacCode || '998431').trim().slice(0, 10),
     applicableGstRate: Math.min(28, Math.max(0, Number(params.applicableGstRate) || 18)),
-    updatedByEmail: (params.updatedByEmail || currentUser.email || 'balajiaris05@gmail.com').trim().slice(0, 120),
+    updatedByEmail: (params.updatedByEmail || currentUser.email || 'admin@aathirai.com').trim().slice(0, 120),
   };
 
   try {
@@ -768,6 +788,7 @@ export async function upsertAdRequestInFirestore(adReq: AdPlacementRequest) {
       ? adReq.placementType
       : 'character_promotion';
 
+  const isAdminSession = await checkIsFirestoreAdmin(currentUser.uid);
   try {
     const snap = await getDoc(ref);
     if (!snap.exists()) {
@@ -781,12 +802,12 @@ export async function upsertAdRequestInFirestore(adReq: AdPlacementRequest) {
         targetComicTitle: (adReq.targetComicTitle || 'Any Popular Comic Series').trim().slice(0, 140) || 'Any Popular Comic Series',
         budgetRange: (adReq.budgetRange || 'Custom Campaign').trim().slice(0, 64) || 'Custom Campaign',
         description: (adReq.description || 'In-comic character promotion request.').trim().slice(0, 1000) || 'In-comic character promotion request.',
-        status: currentUser.email === 'balajiaris05@gmail.com' ? status : 'pending',
+        status: isAdminSession ? status : 'pending',
         submittedByUserId: sanitizeFirestoreId(currentUser.uid),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else if (currentUser.email === 'balajiaris05@gmail.com') {
+    } else if (isAdminSession) {
       await updateDoc(ref, {
         status,
         updatedAt: serverTimestamp(),
@@ -800,7 +821,7 @@ export async function upsertAdRequestInFirestore(adReq: AdPlacementRequest) {
 
 export async function fetchAdRequestsFromFirestore(): Promise<AdPlacementRequest[]> {
   const currentUser = ensureVerifiedUser();
-  if (!currentUser || currentUser.email !== 'balajiaris05@gmail.com') return [];
+  if (!currentUser || !(await checkIsFirestoreAdmin(currentUser.uid))) return [];
   const path = 'adRequests';
   try {
     const snap = await getDocs(collection(db, path));
@@ -858,36 +879,20 @@ export async function syncFullPlatformSnapshotToFirestore(params: {
   let syncedReports = 0;
   let syncedNotifications = 0;
 
-  // Ensure AdminRecord exists for bootstrapped admin if email matches
-  if (currentUser.email === 'balajiaris05@gmail.com') {
-    const adminId = sanitizeFirestoreId(currentUser.uid);
-    const adminPath = `admins/${adminId}`;
-    try {
-      const adminRef = doc(db, 'admins', adminId);
-      const adminSnap = await getDoc(adminRef);
-      if (!adminSnap.exists()) {
-        await setDoc(adminRef, {
-          adminId,
-          email: 'balajiaris05@gmail.com',
-          createdAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, adminPath);
-    }
-  }
+  const isAdminSession = await checkIsFirestoreAdmin(currentUser.uid);
 
   // 1. Readers & Private Info
   for (const r of params.readers) {
+    if (r.role === 'admin' || r.isImmutableAdmin) continue;
     const uid = sanitizeFirestoreId(r.id || currentUser.uid);
     await upsertUserAndPrivateInfoInFirestore({
       uid,
       name: r.name || 'Reader',
-      role: r.role === 'admin' ? 'admin' : r.role === 'author' ? 'author' : 'reader',
+      role: r.role === 'author' ? 'author' : 'reader',
       email: r.email || 'reader@gmail.com',
       age: Number(r.age) || 24,
-      phone: r.phone || (r.role === 'admin' ? '+91 8610950780' : 'Not provided'),
-      upiId: r.upiId || r.subscription?.upiId || (r.role === 'admin' ? 'balajiaris05@okaxis' : 'Not provided'),
+      phone: r.phone || 'Not provided',
+      upiId: r.upiId || r.subscription?.upiId || 'Not provided',
       paidPlan:
         r.subscription?.plan === '6_months'
           ? '6_months'
@@ -932,7 +937,7 @@ export async function syncFullPlatformSnapshotToFirestore(params: {
   }
 
   // 7. Notifications (latest 30)
-  if (currentUser.email === 'balajiaris05@gmail.com') {
+  if (isAdminSession) {
     for (const n of (params.notifications || []).slice(0, 30)) {
       await upsertNotificationInFirestore(n);
       syncedNotifications++;
@@ -940,7 +945,7 @@ export async function syncFullPlatformSnapshotToFirestore(params: {
   }
 
   // 8. GST Settings & Platform Settings
-  if (params.gstSettings && currentUser.email === 'balajiaris05@gmail.com') {
+  if (params.gstSettings && isAdminSession) {
     await syncGstBusinessSettingsToFirestore({
       legalBusinessName: params.gstSettings.legalBusinessName,
       tradeName: params.gstSettings.tradeName,
@@ -951,19 +956,19 @@ export async function syncFullPlatformSnapshotToFirestore(params: {
       invoicePrefix: params.gstSettings.invoicePrefix,
       defaultSacCode: params.gstSettings.defaultSacCode,
       applicableGstRate: params.gstSettings.applicableGstRate,
-      updatedByEmail: currentUser.email || 'balajiaris05@gmail.com',
+      updatedByEmail: currentUser.email || 'admin@aathirai.com',
     });
   }
 
-  if (params.platformSettings && currentUser.email === 'balajiaris05@gmail.com') {
+  if (params.platformSettings && isAdminSession) {
     await upsertPlatformSettingsInFirestore(
       params.platformSettings,
-      currentUser.email || 'balajiaris05@gmail.com'
+      currentUser.email || 'admin@aathirai.com'
     );
   }
 
   // 9. Purge any leftover demo records from Firestore if present
-  if (currentUser.email === 'balajiaris05@gmail.com') {
+  if (isAdminSession) {
     const demoTargets: Array<[string, ...string[]]> = [
       ['users', 'usr_rajesh', 'private', 'info'],
       ['users', 'usr_rajesh'],

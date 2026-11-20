@@ -101,6 +101,12 @@ function MainAppContent() {
     }
   };
 
+  // Instant in-memory comic patch (used by Admin Paywall Control to avoid multi-MB reloads on every click)
+  const patchComicLocal = (comicId: string, updater: (comic: Comic) => Comic) => {
+    setComics((prev) => prev.map((c) => (c.id === comicId ? updater(c) : c)));
+    setSelectedComic((prev) => (prev && prev.id === comicId ? updater(prev) : prev));
+  };
+
   useEffect(() => {
     (window as any).__AATHIRAI_MARK_MOUNTED__?.();
     (window as any).__AATHIRAI_MOUNTED__ = true;
@@ -389,6 +395,7 @@ function MainAppContent() {
               <AdminDashboard
                 comics={comics}
                 onRefreshComics={fetchComics}
+                onPatchComicLocal={patchComicLocal}
                 setCurrentTab={handleTabChange}
                 initialSubTab={currentTab === 'admin_dashboard_delete_requests' ? 'delete-requests' : undefined}
               />

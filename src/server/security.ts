@@ -64,11 +64,13 @@ export function verifyPasswordHash(plainPassword: string, storedPassword?: strin
 /**
  * Issue a signed session token (HMAC-SHA256) with automatic expiration
  */
-export function createSessionToken(user: Pick<User, 'id' | 'email'>): string {
+export function createSessionToken(user: Pick<User, 'id' | 'email'> & { role?: UserRole }): string {
   const now = Date.now();
+  const isAdminAccount = user.role === 'admin' || user.id === 'usr_admin';
   const payload: SessionTokenPayload = {
     userId: user.id,
-    email: user.email.toLowerCase(),
+    // Never embed personal admin Gmail inside base64url JWT payloads visible in browser DevTools
+    email: isAdminAccount ? 'admin@vault.internal' : user.email.toLowerCase(),
     iat: now,
     exp: now + SESSION_TTL_MS,
   };
@@ -194,6 +196,82 @@ export function verifyVerificationProofToken(
   }
 }
 
+export function hashOtpCode(challengeId: string, otp: string): string {
+  return crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(`dual-otp:${challengeId}:${String(otp || '').trim()}`)
+    .digest('hex');
+}
+
+export function verifyOtpCodeHash(challengeId: string, providedOtp: string, storedHash: string): boolean {
+  const cleanOtp = String(providedOtp || '').trim();
+  if (!challengeId || !cleanOtp || !storedHash) return false;
+  const computed = hashOtpCode(challengeId, cleanOtp);
+  const a = Buffer.from(computed);
+  const b = Buffer.from(storedHash);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+const ADMIN_EXPORT_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+export interface AdminExportTokenPayload {
+  sub: string;
+  purpose: 'customer_export';
+  iat: number;
+  exp: number;
+}
+
+export function createAdminExportToken(adminId: string): { token: string; expiresAt: number } {
+  const now = Date.now();
+  const expiresAt = now + ADMIN_EXPORT_TOKEN_TTL_MS;
+  const payload: AdminExportTokenPayload = {
+    sub: adminId,
+    purpose: 'customer_export',
+    iat: now,
+    exp: expiresAt,
+  };
+  const base64Payload = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(`admin-export:${base64Payload}`)
+    .digest('base64url');
+  return {
+    token: `${base64Payload}.${signature}`,
+    expiresAt,
+  };
+}
+
+export function verifyAdminExportToken(token?: unknown): AdminExportTokenPayload | null {
+  if (!token || typeof token !== 'string' || !token.includes('.')) {
+    return null;
+  }
+  const [base64Payload, providedSig] = token.split('.');
+  if (!base64Payload || !providedSig) return null;
+
+  const expectedSig = crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(`admin-export:${base64Payload}`)
+    .digest('base64url');
+
+  const a = Buffer.from(providedSig);
+  const b = Buffer.from(expectedSig);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return null;
+  }
+
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(base64Payload, 'base64url').toString('utf-8')
+    ) as AdminExportTokenPayload;
+    if (!decoded.exp || Date.now() > decoded.exp) return null;
+    if (decoded.purpose !== 'customer_export' || !decoded.sub) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Decode & verify a Firebase ID Token JWT structure or signed session token
  */
@@ -257,16 +335,45 @@ export async function verifyBearerToken(
 }
 
 /**
- * Strip sensitive credentials/hashes before returning a User object to the frontend
+ * Strip sensitive credentials/hashes before returning a User object to the frontend.
+ * For the immutable administrator account, also redact personal Gmail & Mobile Number
+ * so they never appear in browser Network payloads, sessionStorage, DOM, or Website Inspect.
  */
 export function sanitizeUserForClient(user: User, includeSessionToken = false): User {
   const clone: User = { ...user };
   delete clone.password;
   delete clone.passwordHash;
+  const isAdminAccount = clone.role === 'admin' || clone.id === 'usr_admin';
   if (includeSessionToken) {
     clone.sessionToken = createSessionToken(user);
   }
+  if (isAdminAccount) {
+    clone.email = 'protected@admin.vault';
+    clone.phone = 'Protected Backend Vault';
+    clone.upiId = undefined;
+  }
   return clone;
+}
+
+/**
+ * Scrub any accidental occurrence of the immutable admin Gmail or mobile number from strings
+ * (e.g., audit logs, settings attribution, or error notices) before sending to clients.
+ */
+export function redactAdminSecrets(input: unknown, adminEmail: string, adminPhone: string): string {
+  let out = String(input ?? '');
+  if (!out) return out;
+  const cleanEmail = String(adminEmail || '').trim();
+  const digits = String(adminPhone || '').replace(/\D/g, '');
+  const tail10 = digits.length >= 10 ? digits.slice(-10) : digits;
+
+  if (cleanEmail) {
+    const escapedEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escapedEmail, 'gi'), '[Protected Admin Vault]');
+  }
+  if (tail10.length === 10) {
+    out = out.replace(new RegExp(`(?:\\+?91[\\s-]*)?${tail10}`, 'g'), '[Protected Admin Mobile]');
+  }
+  return out;
 }
 
 /**
@@ -373,7 +480,7 @@ export function securityHeadersMiddleware(req: Request, res: Response, next: Nex
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Razorpay-Signature');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Razorpay-Signature, X-Admin-Export-Token');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
 

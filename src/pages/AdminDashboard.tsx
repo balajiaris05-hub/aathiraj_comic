@@ -14,15 +14,12 @@ import {
   AdPlacementRequest,
 } from '../types/comic';
 import { AdminPublishingStudio } from '../components/AdminPublishingStudio';
+import { DualOtpSecurityPanel, DualOtpVerifiedPayload } from '../components/DualOtpSecurityPanel';
 import {
   firebaseConfig,
   syncAllPlatformDataToFirestore,
   syncGstSettingsToFirestore,
-  sendFirebaseSmsOtp,
-  verifyFirebaseSmsOtp,
   clearRecaptchaVerifier,
-  listenForDeviceSmsOtp,
-  ConfirmationResult,
 } from '../firebase';
 import { upsertComicAndEpisodesInFirestore, upsertAdRequestInFirestore, fetchAdRequestsFromFirestore } from '../services/firestoreBackend';
 import {
@@ -86,12 +83,15 @@ import {
   Maximize2,
   FolderPlus,
   Sun,
-  Moon
+  Moon,
+  ShieldCheck,
+  X
 } from 'lucide-react';
 
 interface AdminDashboardProps {
   comics: Comic[];
   onRefreshComics: () => void;
+  onPatchComicLocal?: (comicId: string, updater: (comic: Comic) => Comic) => void;
   setCurrentTab: (tab: string) => void;
   initialSubTab?: string;
 }
@@ -99,6 +99,7 @@ interface AdminDashboardProps {
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   comics,
   onRefreshComics,
+  onPatchComicLocal,
   setCurrentTab,
   initialSubTab,
 }) => {
@@ -190,9 +191,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [directPublishSuccess, setDirectPublishSuccess] = useState<string | null>(null);
 
   // Paywall modal / controls
-  const [paywallComicId, setPaywallComicId] = useState<string | null>(null);
-  const [paywallPrice, setPaywallPrice] = useState(10);
   const [expandedComicPaywall, setExpandedComicPaywall] = useState<Record<string, boolean>>({});
+  const [paywallBusyKeys, setPaywallBusyKeys] = useState<Record<string, boolean>>({});
+  const paywallSeqRef = useRef<Record<string, number>>({});
+  const paywallQueueRef = useRef<Record<string, Promise<void>>>({});
+  const actionMessageTimerRef = useRef<number | null>(null);
 
   // Submission review note & Comic Queue review modal state
   const [comicReviewNote, setComicReviewNote] = useState('');
@@ -209,41 +212,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [txSearch, setTxSearch] = useState('');
   const [txStatusFilter, setTxStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
 
-  // Dedicated Admin 2FA Security Gate State - Always locked by default for security
+  // Dedicated Admin Dual-OTP Security Gate State - Always locked by default for security
   const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
 
-  // Admin Login Inputs (Security: input is empty by default so no email or number is shown)
-  const [adminCredentialInput, setAdminCredentialInput] = useState('');
-  const [adminChannelChoice, setAdminChannelChoice] = useState<'email' | 'sms'>('email');
-  const [adminOtpInput, setAdminOtpInput] = useState('');
-  const [otpStep, setOtpStep] = useState<'enter_credential' | 'enter_otp'>('enter_credential');
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [otpError, setOtpError] = useState<string | null>(null);
-  const [otpSuccessMessage, setOtpSuccessMessage] = useState<string | null>(null);
-  const [otpDestinationMasked, setOtpDestinationMasked] = useState<string>('');
-  const [firebaseAdminConfirmation, setFirebaseAdminConfirmation] = useState<ConfirmationResult | null>(null);
-  const [adminSmsNotice, setAdminSmsNotice] = useState<string | null>(null);
-  const [adminResendCooldown, setAdminResendCooldown] = useState<number>(0);
-  const adminOtpInputRef = useRef<HTMLInputElement>(null);
+  // Hidden 3-Tap Customer Login Details Export Vault State
+  const secretExportTapTimesRef = useRef<number[]>([]);
+  const [showCustomerExportModal, setShowCustomerExportModal] = useState(false);
+  const [customerExportSession, setCustomerExportSession] = useState<{
+    exportToken: string;
+    expiresAt: number;
+    totalCustomers: number;
+  } | null>(null);
+  const [exportVaultSecondsLeft, setExportVaultSecondsLeft] = useState(0);
+  const [exportDownloadLoading, setExportDownloadLoading] = useState<'csv' | 'json' | null>(null);
+  const [exportVaultError, setExportVaultError] = useState<string | null>(null);
+  const [exportVaultSuccess, setExportVaultSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    if (adminResendCooldown <= 0) return;
-    const timer = window.setInterval(() => {
-      setAdminResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
-    }, 1000);
+    if (!customerExportSession) {
+      setExportVaultSecondsLeft(0);
+      return;
+    }
+    const updateRemaining = () => {
+      const remaining = Math.max(0, Math.ceil((customerExportSession.expiresAt - Date.now()) / 1000));
+      setExportVaultSecondsLeft(remaining);
+      if (remaining <= 0) {
+        setCustomerExportSession(null);
+        setExportVaultError('Export Vault session expired (5-minute limit). Verify Dual OTPs again to continue.');
+      }
+    };
+    updateRemaining();
+    const timer = window.setInterval(updateRemaining, 1000);
     return () => window.clearInterval(timer);
-  }, [adminResendCooldown]);
+  }, [customerExportSession]);
 
   useEffect(() => {
     return () => {
       clearRecaptchaVerifier('firebase-recaptcha-admin');
+      clearRecaptchaVerifier('firebase-recaptcha-export');
     };
   }, []);
-
-  useEffect(() => {
-    if (isAdminUnlocked || otpStep !== 'enter_otp') return;
-    return listenForDeviceSmsOtp((code) => setAdminOtpInput(code));
-  }, [isAdminUnlocked, otpStep]);
 
   // Delete Comic Confirmation Modal State
   const [comicToDelete, setComicToDelete] = useState<Comic | null>(null);
@@ -259,19 +267,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [previewSampleApp, setPreviewSampleApp] = useState<AuthorApplication | null>(null);
   const [previewSamplePageIdx, setPreviewSamplePageIdx] = useState<number>(0);
 
-  // Fetch all admin data (including pending comics and delete requests)
-  const fetchAdminData = async () => {
-    // Helper to safely fetch and set data
+  // Fetch all admin data ONLY after Dual-OTP unlock (never leaks admin data pre-auth in Network tab)
+  const fetchAdminData = async (overrideSessionToken?: string | React.MouseEvent) => {
+    const tokenOverride = typeof overrideSessionToken === 'string' ? overrideSessionToken : undefined;
+    if (!isAdminUnlocked && !tokenOverride) {
+      return;
+    }
+    // Helper to safely fetch and set data with authenticated admin token
     const safeFetch = async (url: string, setter: (data: any) => void) => {
       try {
-        const headers = await getAuthHeaders();
+        const headers = tokenOverride
+          ? { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenOverride}` }
+          : await getAuthHeaders();
         const res = await fetch(url, { headers });
         if (res.ok) {
           const d = await res.json();
           setter(d);
         }
-      } catch (e) {
-        console.error(`Error fetching ${url}:`, e);
+      } catch {
+        // Silent fail without leaking endpoints or credentials to browser console
       }
     };
 
@@ -358,6 +372,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   useEffect(() => {
+    if (!isAdminUnlocked) return;
     fetchAdminData();
   }, [isAdminUnlocked, activeTab]);
 
@@ -367,183 +382,192 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   }, [initialSubTab]);
 
-  // Send or Resend 2FA OTP strictly to the verified Gmail or Mobile Number stored in backend DB
-  const dispatchAdminOtp = async (isResend = false) => {
-    const trimmed = adminCredentialInput.trim();
-    if (!trimmed) {
-      setOtpError('Please enter your registered Administrator Gmail or Mobile Number.');
+  // Unified Dual-OTP Callback: Unlock Admin Console after BOTH Gmail OTP and Mobile SMS OTP succeed
+  const handleAdminDualOtpVerified = (result: DualOtpVerifiedPayload) => {
+    sessionStorage.removeItem('aathirai_admin_unlocked');
+    setIsAdminUnlocked(true);
+    if (result.user) {
+      setAuthenticatedUser(result.user);
+    }
+    switchDemoRole('admin');
+    setActionMessage(result.message || 'Dual-OTP Verified (Gmail + Mobile SMS)! Terminal Unlocked.');
+    fetchAdminData(result.user?.sessionToken);
+    onRefreshComics();
+    setTimeout(() => setActionMessage(null), 5000);
+  };
+
+  // Hidden 3-Tap Secret Trigger on Activity Logs entry count label
+  const handleSecretExportTap = () => {
+    const now = Date.now();
+    const recentTaps = secretExportTapTimesRef.current.filter((ts) => now - ts <= 2000);
+    recentTaps.push(now);
+    secretExportTapTimesRef.current = recentTaps;
+
+    if (recentTaps.length >= 3) {
+      secretExportTapTimesRef.current = [];
+      setExportVaultError(null);
+      setExportVaultSuccess(null);
+      setCustomerExportSession(null);
+      setShowCustomerExportModal(true);
+    }
+  };
+
+  const handleCloseCustomerExportModal = () => {
+    setShowCustomerExportModal(false);
+    setCustomerExportSession(null);
+    setExportVaultError(null);
+    setExportVaultSuccess(null);
+    setExportDownloadLoading(null);
+    clearRecaptchaVerifier('firebase-recaptcha-export');
+  };
+
+  const handleCustomerExportVaultVerified = (result: DualOtpVerifiedPayload) => {
+    if (!result.exportToken || !result.expiresAt) {
+      setExportVaultError('Vault authorization token was not returned. Please verify again.');
       return;
     }
-    if (isResend && adminResendCooldown > 0) return;
+    setExportVaultError(null);
+    setExportVaultSuccess(null);
+    setCustomerExportSession({
+      exportToken: result.exportToken,
+      expiresAt: result.expiresAt,
+      totalCustomers: typeof result.totalCustomers === 'number' ? result.totalCustomers : 0,
+    });
+  };
 
-    const looksLikeEmail = trimmed.includes('@');
-    const resolvedChannel: 'email' | 'sms' = looksLikeEmail ? 'email' : adminChannelChoice;
-
-    if (resolvedChannel === 'email' && !looksLikeEmail) {
-      setOtpError("Please enter your registered Administrator Gmail address or select 'Send OTP to SMS (+91)'.");
+  const handleDownloadCustomerLogins = async (format: 'csv' | 'json') => {
+    if (!customerExportSession?.exportToken) {
+      setExportVaultError('Vault session locked. Please verify Dual OTPs again.');
       return;
     }
-    if (resolvedChannel === 'sms' && (looksLikeEmail || /[a-zA-Z]/.test(trimmed) || trimmed.replace(/\D/g, '').length < 10)) {
-      setOtpError("Please enter your registered 10-digit Indian Mobile Number (+91) or select 'Send OTP to Gmail'.");
-      return;
-    }
 
-    setOtpLoading(true);
-    setOtpError(null);
-    setOtpSuccessMessage(null);
-    setAdminSmsNotice(null);
+    setExportDownloadLoading(format);
+    setExportVaultError(null);
+    setExportVaultSuccess(null);
 
     try {
-      const res = await fetch('/api/admin-auth/request-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credential: trimmed,
-          channel: resolvedChannel,
-          smsChannel: resolvedChannel === 'sms' ? 'firebase' : undefined,
-        }),
+      const res = await fetch(`/api/admin/export-customers?format=${format}`, {
+        method: 'GET',
+        headers: {
+          'X-Admin-Export-Token': customerExportSession.exportToken,
+        },
       });
-
       const data = await res.json();
 
-      if (!res.ok) {
-        setOtpLoading(false);
-        setOtpError(data.error || 'Access Denied: Credentials do not match the administrator stored in the backend database.');
-        return;
-      }
-
-      if (resolvedChannel === 'email') {
-        setOtpLoading(false);
-        setFirebaseAdminConfirmation(null);
-        if (isResend) setAdminOtpInput('');
-        setOtpStep('enter_otp');
-        setOtpDestinationMasked(data.destinationMasked || trimmed);
-        setAdminResendCooldown(30);
-        setOtpSuccessMessage(
-          data.message ||
-            `Verified in backend database! 6-digit OTP ${isResend ? 'resent' : 'sent'} to ${data.destinationMasked || trimmed}.`
-        );
-        setTimeout(() => adminOtpInputRef.current?.focus(), 40);
-        return;
-      }
-
-      // resolvedChannel === 'sms' -> Dispatch SMS exclusively to the stored admin phone verified by backend
-      const targetPhone = data.verifiedPhone || trimmed;
-      const fbSms = await sendFirebaseSmsOtp(targetPhone, 'firebase-recaptcha-admin', '+91');
-      if (fbSms.sent && fbSms.confirmationResult) {
-        setOtpLoading(false);
-        setFirebaseAdminConfirmation(fbSms.confirmationResult);
-        if (isResend) setAdminOtpInput('');
-        setOtpStep('enter_otp');
-        setOtpDestinationMasked(data.destinationMasked || fbSms.phoneE164 || targetPhone);
-        setAdminResendCooldown(30);
-        const smsMsg = `Verified in backend database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${data.destinationMasked || fbSms.phoneE164}.`;
-        setAdminSmsNotice(smsMsg);
-        setOtpSuccessMessage(smsMsg);
-        setTimeout(() => adminOtpInputRef.current?.focus(), 40);
-        return;
-      }
-
-      // Fallback attempt to configured backend SMS provider (no email redirect)
-      const backendSmsRes = await fetch('/api/admin-auth/request-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credential: trimmed,
-          channel: 'sms',
-          smsChannel: 'backend',
-        }),
-      });
-      const backendSmsData = await backendSmsRes.json();
-      setOtpLoading(false);
-
-      if (backendSmsRes.ok && backendSmsData.smsDelivered) {
-        setFirebaseAdminConfirmation(null);
-        if (isResend) setAdminOtpInput('');
-        setOtpStep('enter_otp');
-        setOtpDestinationMasked(backendSmsData.destinationMasked || targetPhone);
-        setAdminResendCooldown(30);
-        const smsMsg =
-          backendSmsData.message ||
-          `Verified in backend database! 6-digit SMS OTP ${isResend ? 'resent' : 'sent'} to ${backendSmsData.destinationMasked || targetPhone}.`;
-        setAdminSmsNotice(smsMsg);
-        setOtpSuccessMessage(smsMsg);
-        setTimeout(() => adminOtpInputRef.current?.focus(), 40);
-        return;
-      }
-
-      setFirebaseAdminConfirmation(null);
-      setOtpError(
-        fbSms.errorMessage ||
-          backendSmsData.error ||
-          'Could not deliver SMS OTP to your registered mobile number. Please check Firebase/SMS provider setup or switch to Gmail.'
-      );
-    } catch (err: any) {
-      setOtpLoading(false);
-      setOtpError('Network error while verifying backend identity and dispatching OTP.');
-    }
-  };
-
-  // Request 2FA OTP
-  const handleRequestAdminOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await dispatchAdminOtp(false);
-  };
-
-  // Verify 2FA OTP
-  const handleVerifyAdminOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!adminOtpInput.trim()) return;
-
-    setOtpLoading(true);
-    setOtpError(null);
-
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      let fbVerifyError: string | null = null;
-      if (firebaseAdminConfirmation) {
-        const fbVerify = await verifyFirebaseSmsOtp(firebaseAdminConfirmation, adminOtpInput.trim());
-        if (fbVerify.verified && fbVerify.idToken) {
-          headers['Authorization'] = `Bearer ${fbVerify.idToken}`;
-          setFirebaseAdminConfirmation(null);
-        } else {
-          fbVerifyError = fbVerify.error || null;
+      if (!res.ok || !data.success) {
+        if (res.status === 401 || res.status === 403) {
+          setCustomerExportSession(null);
         }
-      }
-
-      const res = await fetch('/api/admin-auth/verify-otp', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          credential: adminCredentialInput.trim(),
-          channel: adminChannelChoice,
-          otp: adminOtpInput.trim(),
-        }),
-      });
-
-      const data = await res.json();
-      setOtpLoading(false);
-
-      if (!res.ok) {
-        setOtpError(fbVerifyError || data.error || 'Invalid 6-digit verification code.');
+        setExportVaultError(data.error || 'Failed to fetch customer login details from backend.');
+        setExportDownloadLoading(null);
         return;
       }
 
-      setAdminSmsNotice(null);
-      setAdminResendCooldown(0);
-      sessionStorage.removeItem('aathirai_admin_unlocked');
-      setIsAdminUnlocked(true);
-      if (data.user) {
-        setAuthenticatedUser(data.user);
+      const customers: any[] = Array.isArray(data.customers) ? data.customers : [];
+      const dateSlug = new Date().toISOString().slice(0, 10);
+
+      if (format === 'json') {
+        const jsonPayload = {
+          platform: 'Aathirai_Comic',
+          exportedAt: data.exportedAt || new Date().toISOString(),
+          totalCustomers: customers.length,
+          securityNote: 'Password hashes, passwords, OTPs, and secret tokens are excluded.',
+          customers,
+        };
+        const blob = new Blob([JSON.stringify(jsonPayload, null, 2)], {
+          type: 'application/json;charset=utf-8;',
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `Aathirai_Comic_Customer_Logins_${dateSlug}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      } else {
+        const escapeSafeCsv = (value: unknown) => {
+          let str = String(value ?? '').replace(/\r?\n/g, ' ');
+          if (/^[=+\-@\t\r]/.test(str)) {
+            str = `'${str}`;
+          }
+          if (/[",\n]/.test(str)) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        };
+
+        const headers = [
+          'User ID',
+          'Full Name',
+          'Email',
+          'Mobile Number',
+          'Country Code',
+          'Country',
+          'Role',
+          'Account Status',
+          'Email Verified',
+          'Phone Verified',
+          'Auth Provider',
+          'Date of Birth',
+          'Age',
+          'Gmail Alerts',
+          'Mobile Alerts',
+          'Premium Active',
+          'Premium Plan',
+          'Premium Expires At',
+          'Total Purchases',
+          'Created At',
+          'Last Login At',
+        ];
+
+        const rows = customers.map((c) => [
+          c.userId,
+          c.fullName,
+          c.email,
+          c.phone,
+          c.countryCode,
+          c.countryName,
+          c.role,
+          c.accountStatus,
+          c.emailVerified ? 'Yes' : 'No',
+          c.phoneVerified ? 'Yes' : 'No',
+          c.authProvider,
+          c.dob,
+          c.age ?? '',
+          c.notifyGmail ? 'Yes' : 'No',
+          c.notifyMobile ? 'Yes' : 'No',
+          c.premiumActive ? 'Yes' : 'No',
+          c.premiumPlan,
+          c.premiumExpiresAt,
+          c.totalPurchases,
+          c.createdAt,
+          c.lastLoginAt,
+        ]);
+
+        const csvContent =
+          '\uFEFF' +
+          [headers.map(escapeSafeCsv).join(','), ...rows.map((row) => row.map(escapeSafeCsv).join(','))].join('\n');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `Aathirai_Comic_Customer_Logins_${dateSlug}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
       }
-      switchDemoRole('admin');
-      setActionMessage('Admin Identity Verified! Terminal Unlocked.');
+
+      setExportVaultSuccess(
+        `Downloaded ${customers.length} customer login ${customers.length === 1 ? 'record' : 'records'} (${format.toUpperCase()}).`
+      );
       fetchAdminData();
-      onRefreshComics();
-      setTimeout(() => setActionMessage(null), 5000);
-    } catch (err: any) {
-      setOtpLoading(false);
-      setOtpError('Network error while verifying OTP.');
+    } catch {
+      setExportVaultError('Network error while downloading customer login details.');
+    } finally {
+      setExportDownloadLoading(null);
     }
   };
 
@@ -551,15 +575,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleLockAdminConsole = () => {
     sessionStorage.removeItem('aathirai_admin_unlocked');
     setIsAdminUnlocked(false);
+    handleCloseCustomerExportModal();
     switchDemoRole('reader');
-    setOtpStep('enter_credential');
-    setAdminCredentialInput('');
-    setAdminOtpInput('');
-    setOtpError(null);
-    setOtpSuccessMessage(null);
-    setFirebaseAdminConfirmation(null);
-    setAdminSmsNotice(null);
-    setAdminResendCooldown(0);
   };
 
   // Comic deletion handler with modal confirmation
@@ -909,31 +926,244 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   };
 
-  // Toggle Paywall for Comic, Chapter, or Episode
-  const handleTogglePaywall = async (params: {
+  // Pure helper: mirror server-side comic/chapter/episode paywall reconciliation locally for 0ms UI feedback
+  const applyPaywallToggleLocally = (
+    comic: Comic,
+    params: { chapterId?: string; episodeId?: string; isPremium: boolean }
+  ): Comic => {
+    const nextPremium = Boolean(params.isPremium);
+    const wasComicPremium = comic.accessType === 'premium';
+
+    const clonedChapters = (comic.chapters || []).map((ch) => ({
+      ...ch,
+      episodes: (ch.episodes || []).map((ep) => ({ ...ep })),
+    }));
+
+    const recomputeParents = () => {
+      if (clonedChapters.length === 0) {
+        return nextPremium ? ('premium' as const) : ('free' as const);
+      }
+      clonedChapters.forEach((chItem) => {
+        if (chItem.episodes.length > 0) {
+          chItem.isPremium = chItem.episodes.every((epItem) => Boolean(epItem.isPremium));
+          chItem.priceInr = 0;
+        }
+      });
+      const allPremium = clonedChapters.every(
+        (chItem) =>
+          Boolean(chItem.isPremium) &&
+          (chItem.episodes.length === 0 || chItem.episodes.every((epItem) => Boolean(epItem.isPremium)))
+      );
+      return allPremium ? ('premium' as const) : ('free' as const);
+    };
+
+    let nextAccessType: 'free' | 'premium' = comic.accessType;
+
+    if (params.episodeId) {
+      for (const ch of clonedChapters) {
+        const ep = ch.episodes.find((e) => e.id === params.episodeId);
+        if (ep) {
+          if (!nextPremium && (wasComicPremium || ch.isPremium)) {
+            clonedChapters.forEach((otherCh) => {
+              if (wasComicPremium || otherCh.isPremium) {
+                otherCh.isPremium = true;
+                otherCh.priceInr = 0;
+                otherCh.episodes.forEach((otherEp) => {
+                  otherEp.isPremium = true;
+                  otherEp.priceInr = 0;
+                });
+              }
+            });
+          }
+          ep.isPremium = nextPremium;
+          ep.priceInr = 0;
+          nextAccessType = recomputeParents();
+          break;
+        }
+      }
+    } else if (params.chapterId) {
+      const ch = clonedChapters.find((x) => x.id === params.chapterId);
+      if (ch) {
+        if (!nextPremium && wasComicPremium) {
+          clonedChapters.forEach((otherCh) => {
+            if (otherCh.id !== params.chapterId) {
+              otherCh.isPremium = true;
+              otherCh.priceInr = 0;
+              otherCh.episodes.forEach((otherEp) => {
+                otherEp.isPremium = true;
+                otherEp.priceInr = 0;
+              });
+            }
+          });
+        }
+        ch.isPremium = nextPremium;
+        ch.priceInr = 0;
+        ch.episodes.forEach((ep) => {
+          ep.isPremium = nextPremium;
+          ep.priceInr = 0;
+        });
+        nextAccessType = recomputeParents();
+      }
+    } else {
+      nextAccessType = nextPremium ? 'premium' : 'free';
+      clonedChapters.forEach((ch) => {
+        ch.isPremium = nextPremium;
+        ch.priceInr = 0;
+        ch.episodes.forEach((ep) => {
+          ep.isPremium = nextPremium;
+          ep.priceInr = 0;
+        });
+      });
+    }
+
+    return {
+      ...comic,
+      accessType: nextAccessType,
+      fullPriceInr: 0,
+      chapters: clonedChapters,
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  // Merge compact server paywallState response into existing comic without dropping page images
+  const mergeServerPaywallState = (
+    comic: Comic,
+    paywallState: {
+      accessType: 'free' | 'premium';
+      fullPriceInr?: number;
+      updatedAt?: string;
+      chapters?: Array<{
+        id: string;
+        isPremium: boolean;
+        priceInr?: number;
+        episodes?: Array<{ id: string; isPremium: boolean; priceInr?: number }>;
+      }>;
+    }
+  ): Comic => {
+    const chMap = new Map((paywallState.chapters || []).map((ch) => [ch.id, ch]));
+    return {
+      ...comic,
+      accessType: paywallState.accessType,
+      fullPriceInr: Number(paywallState.fullPriceInr) || 0,
+      updatedAt: paywallState.updatedAt || comic.updatedAt,
+      chapters: (comic.chapters || []).map((ch) => {
+        const srvCh = chMap.get(ch.id);
+        if (!srvCh) return ch;
+        const epMap = new Map((srvCh.episodes || []).map((ep) => [ep.id, ep]));
+        return {
+          ...ch,
+          isPremium: Boolean(srvCh.isPremium),
+          priceInr: Number(srvCh.priceInr) || 0,
+          episodes: (ch.episodes || []).map((ep) => {
+            const srvEp = epMap.get(ep.id);
+            if (!srvEp) return ep;
+            return {
+              ...ep,
+              isPremium: Boolean(srvEp.isPremium),
+              priceInr: Number(srvEp.priceInr) || 0,
+            };
+          }),
+        };
+      }),
+    };
+  };
+
+  const showTransientActionMessage = (msg: string, durationMs = 3500) => {
+    setActionMessage(msg);
+    if (actionMessageTimerRef.current) {
+      window.clearTimeout(actionMessageTimerRef.current);
+    }
+    actionMessageTimerRef.current = window.setTimeout(() => {
+      setActionMessage(null);
+      actionMessageTimerRef.current = null;
+    }, durationMs);
+  };
+
+  // Toggle Paywall for Comic, Chapter, or Episode — instant optimistic UI + ordered per-comic queue (zero lag, zero race overwrites)
+  const handleTogglePaywall = (params: {
     comicId: string;
     chapterId?: string;
     episodeId?: string;
     isPremium: boolean;
     priceInr?: number;
   }) => {
-    try {
-      const res = await fetch('/api/admin/paywall-toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      });
+    const targetKey = params.episodeId
+      ? `ep:${params.episodeId}`
+      : params.chapterId
+        ? `ch:${params.chapterId}`
+        : `comic:${params.comicId}`;
 
-      const data = await res.json();
-      if (res.ok) {
-        setActionMessage(data.message);
-        onRefreshComics();
-        fetchAdminData();
-        setTimeout(() => setActionMessage(null), 4000);
+    // Guard against double-click on the exact same control while in flight
+    if (paywallBusyKeys[targetKey]) return;
+
+    const nextSeq = (paywallSeqRef.current[params.comicId] || 0) + 1;
+    paywallSeqRef.current[params.comicId] = nextSeq;
+
+    // 1. Capture rollback snapshot & apply optimistic update immediately (0ms perceived lag)
+    const rollbackComic = allComicsWithPending.find((c) => c.id === params.comicId) || null;
+    setAllComicsWithPending((prev) =>
+      prev.map((c) => (c.id === params.comicId ? applyPaywallToggleLocally(c, params) : c))
+    );
+    onPatchComicLocal?.(params.comicId, (c) => applyPaywallToggleLocally(c, params));
+    setPaywallBusyKeys((prev) => ({ ...prev, [targetKey]: true }));
+
+    // 2. Serialize network calls per comic so rapid clicks (e.g. Ep 1 -> Ep 2 -> Ep 3) execute in strict order
+    const prevChain = paywallQueueRef.current[params.comicId] || Promise.resolve();
+    const run = async () => {
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch('/api/admin/paywall-toggle', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            comicId: params.comicId,
+            chapterId: params.chapterId,
+            episodeId: params.episodeId,
+            isPremium: params.isPremium,
+            priceInr: 0,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.paywallState) {
+          // Only reconcile from server response if this is still the latest mutation for this comic
+          if (paywallSeqRef.current[params.comicId] === nextSeq) {
+            setAllComicsWithPending((prev) =>
+              prev.map((c) => (c.id === params.comicId ? mergeServerPaywallState(c, data.paywallState) : c))
+            );
+            onPatchComicLocal?.(params.comicId, (c) => mergeServerPaywallState(c, data.paywallState));
+          }
+          if (data.message) {
+            showTransientActionMessage(data.message);
+          }
+        } else {
+          // Roll back only if no newer optimistic update superseded this one
+          if (rollbackComic && paywallSeqRef.current[params.comicId] === nextSeq) {
+            const snap = rollbackComic;
+            setAllComicsWithPending((prev) => prev.map((c) => (c.id === params.comicId ? snap : c)));
+            onPatchComicLocal?.(params.comicId, () => snap);
+          }
+          showTransientActionMessage(data.error || 'Failed to update paywall status. Please retry.', 5000);
+        }
+      } catch (err) {
+        console.error('Paywall toggle error:', err);
+        if (rollbackComic && paywallSeqRef.current[params.comicId] === nextSeq) {
+          const snap = rollbackComic;
+          setAllComicsWithPending((prev) => prev.map((c) => (c.id === params.comicId ? snap : c)));
+          onPatchComicLocal?.(params.comicId, () => snap);
+        }
+        showTransientActionMessage('Network error while updating paywall status. Please retry.', 5000);
+      } finally {
+        setPaywallBusyKeys((prev) => {
+          if (!prev[targetKey]) return prev;
+          const next = { ...prev };
+          delete next[targetKey];
+          return next;
+        });
       }
-    } catch (err) {
-      console.error(err);
-    }
+    };
+
+    paywallQueueRef.current[params.comicId] = prevChain.then(run, run);
   };
 
   // Author Application Approval / Rejection / Reset to Pending
@@ -1095,6 +1325,77 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } catch (e) {
       console.error('Error generating PDF bill:', e);
     }
+  };
+
+  // Download Chronological Platform Activity Logs as CSV or JSON
+  const handleDownloadActivityLogs = (format: 'csv' | 'json' = 'csv') => {
+    const dateSlug = new Date().toISOString().slice(0, 10);
+    if (format === 'json') {
+      const payload = {
+        platform: 'Aathirai Comic',
+        exportedAt: new Date().toISOString(),
+        totalLogs: activityLogs.length,
+        logs: activityLogs,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Aathirai_Comic_Activity_Logs_${dateSlug}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      showTransientActionMessage(`Downloaded ${activityLogs.length} activity log entries (JSON).`);
+      return;
+    }
+
+    const escapeCsv = (value: unknown) => {
+      const str = String(value ?? '').replace(/\r?\n/g, ' ');
+      if (/[",\n]/.test(str)) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const headers = [
+      'Log ID',
+      'Timestamp (ISO)',
+      'Local Date & Time',
+      'Action',
+      'Actor Email',
+      'Actor Role',
+      'Target Type',
+      'Target ID',
+      'Details',
+    ];
+
+    const rows = activityLogs.map((log) => [
+      log.id,
+      log.timestamp,
+      log.timestamp ? new Date(log.timestamp).toLocaleString() : '',
+      log.action,
+      log.actorEmail,
+      (log as any).actorRole || '',
+      (log as any).targetType || '',
+      (log as any).targetId || '',
+      log.details,
+    ]);
+
+    const csvContent =
+      '\uFEFF' +
+      [headers.map(escapeCsv).join(','), ...rows.map((row) => row.map(escapeCsv).join(','))].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Aathirai_Comic_Activity_Logs_${dateSlug}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    showTransientActionMessage(`Downloaded ${activityLogs.length} activity log entries (CSV).`);
   };
 
   // Download GST Sales & Tax Reconciliation CSV (works even if 0 bills / Nil Return month)
@@ -1302,7 +1603,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return matchSearch && matchStatus;
   });
 
-  // IF ADMIN IS LOCKED: Render 2-Factor Authentication Security Gate
+  // IF ADMIN IS LOCKED: Render Unified Dual-OTP Authentication Security Gate (Gmail + Mobile SMS)
   if (!isAdminUnlocked) {
     return (
       <div className="max-w-xl mx-auto py-12 px-4 space-y-6 animate-fade-in">
@@ -1331,15 +1632,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {/* Security Shield Card */}
         <div className="p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl relative overflow-hidden">
           {/* Ambient security gradient header */}
-          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-amber-500 via-rose-500 to-amber-500" />
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-500" />
           
-          <div className="flex items-center gap-3 mb-6">
+          <div className="flex items-center gap-3 mb-5">
             <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center justify-center">
               <KeyRound className="w-6 h-6" />
             </div>
             <div>
               <span className="text-[10px] uppercase font-bold tracking-wider text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 inline-block mb-1">
-                Restricted Terminal · 2FA Security
+                Restricted Terminal · Dual-OTP Security
               </span>
               <h2 className="text-xl font-black text-slate-900 dark:text-white font-heading">
                 Admin Authentication Gate
@@ -1348,242 +1649,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <p className="text-xs text-slate-600 dark:text-slate-400 mb-6 leading-relaxed">
-            For platform integrity, administrator access is protected with 2-Factor Authentication (OTP). Enter your registered admin credentials to receive your verification code.
+            Administrator access requires simultaneous Dual-OTP verification. Both your backend-registered Admin Gmail and Mobile Number must match before Gmail and Mobile SMS verification codes are dispatched.
           </p>
 
-          {/* Invisible Firebase reCAPTCHA container for Admin SMS 2FA */}
-          <div id="firebase-recaptcha-admin" />
-
-          {otpError && (
-            <div className="p-3.5 mb-5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2">
-              <ShieldAlert className="w-4 h-4 shrink-0" />
-              <span>{otpError}</span>
-            </div>
-          )}
-
-          {otpSuccessMessage && (
-            <div className="p-3.5 mb-5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>{otpSuccessMessage}</span>
-            </div>
-          )}
-
-          {adminSmsNotice && (
-            <div className="p-3.5 mb-5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-medium flex items-start gap-2">
-              <Phone className="w-4 h-4 shrink-0 mt-0.5 text-sky-500" />
-              <span>{adminSmsNotice}</span>
-            </div>
-          )}
-
-          {otpStep === 'enter_credential' ? (
-            <form onSubmit={handleRequestAdminOtp} className="space-y-5">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
-                  Enter Administrator Credential
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={adminCredentialInput}
-                    onChange={(e) => {
-                      const nextVal = e.target.value;
-                      setAdminCredentialInput(nextVal);
-                      setOtpError(null);
-                      if (nextVal.includes('@')) {
-                        setAdminChannelChoice('email');
-                      } else if (/^\+?\d[\d\s-]{5,}$/.test(nextVal.trim())) {
-                        setAdminChannelChoice('sms');
-                      }
-                    }}
-                    placeholder={
-                      adminChannelChoice === 'email'
-                        ? 'Enter your registered Admin Gmail address'
-                        : 'Enter your registered Admin Mobile Number (+91...)'
-                    }
-                    autoComplete="off"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-xs font-mono placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    required
-                  />
-                  <div className="absolute left-3.5 top-3.5 text-slate-400">
-                    <Users className="w-4 h-4" />
-                  </div>
-                </div>
-              </div>
-
-              {/* Delivery Channel Radio Choice */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
-                  Select OTP Dispatch Channel
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <label
-                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      adminChannelChoice === 'email'
-                        ? 'border-amber-500 bg-amber-500/10 text-slate-900 dark:text-white font-bold shadow-sm'
-                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 hover:border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="adminChannel"
-                      value="email"
-                      checked={adminChannelChoice === 'email'}
-                      onChange={() => {
-                        setAdminChannelChoice('email');
-                        setOtpError(null);
-                      }}
-                      className="text-amber-500 focus:ring-amber-500"
-                    />
-                    <div className="flex items-center gap-2 text-xs">
-                      <Mail className="w-4 h-4 text-rose-500" />
-                      <span>Send OTP to Gmail</span>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      adminChannelChoice === 'sms'
-                        ? 'border-amber-500 bg-amber-500/10 text-slate-900 dark:text-white font-bold shadow-sm'
-                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 hover:border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="adminChannel"
-                      value="sms"
-                      checked={adminChannelChoice === 'sms'}
-                      onChange={() => {
-                        setAdminChannelChoice('sms');
-                        setOtpError(null);
-                      }}
-                      className="text-amber-500 focus:ring-amber-500"
-                    />
-                    <div className="flex items-center gap-2 text-xs">
-                      <Phone className="w-4 h-4 text-emerald-500" />
-                      <span>Send OTP to SMS (+91)</span>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={otpLoading || !adminCredentialInput.trim()}
-                aria-busy={otpLoading}
-                data-loading={otpLoading ? 'true' : 'false'}
-                className={processingClass(
-                  otpLoading,
-                  'w-full py-3.5 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer'
-                )}
-              >
-                {otpLoading ? (
-                  <span>Verifying &amp; Sending OTP...</span>
-                ) : (
-                  <>
-                    <KeyRound className="w-4 h-4" />
-                    <span>
-                      {adminChannelChoice === 'email'
-                        ? 'Verify & Send OTP to Gmail'
-                        : 'Verify & Send OTP to SMS'}
-                    </span>
-                  </>
-                )}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleVerifyAdminOtp} className="space-y-5">
-              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-700 dark:text-slate-300">OTP Sent To:</span>
-                  <span className="font-mono text-amber-600 dark:text-amber-400 font-bold">{otpDestinationMasked}</span>
-                </div>
-                <div className="flex items-center justify-between text-slate-500">
-                  <span>Validity:</span>
-                  <span className="text-emerald-500 font-semibold flex items-center gap-1">
-                    <Clock className="w-3.5 h-3.5" /> 10 Minutes (600 seconds)
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-                    Enter 6-Digit Verification Code
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => dispatchAdminOtp(true)}
-                    disabled={otpLoading || adminResendCooldown > 0}
-                    aria-busy={otpLoading}
-                    data-loading={otpLoading ? 'true' : 'false'}
-                    className={processingClass(
-                      otpLoading,
-                      'inline-flex items-center gap-1 text-xs font-bold text-amber-600 dark:text-amber-400 hover:text-amber-500 disabled:text-slate-400 disabled:cursor-not-allowed cursor-pointer'
-                    )}
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>
-                      {adminResendCooldown > 0
-                        ? `Resend OTP in ${adminResendCooldown}s`
-                        : 'Resend OTP'}
-                    </span>
-                  </button>
-                </div>
-                <input
-                  ref={adminOtpInputRef}
-                  type="text"
-                  name="otp"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  pattern="[0-9]*"
-                  maxLength={6}
-                  value={adminOtpInput}
-                  onChange={(e) => setAdminOtpInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="• • • • • •"
-                  className="w-full text-center tracking-[0.5em] text-2xl font-black font-mono py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  autoFocus
-                  required
-                />
-              </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOtpStep('enter_credential');
-                    setAdminOtpInput('');
-                    setOtpError(null);
-                    setOtpSuccessMessage(null);
-                    setAdminSmsNotice(null);
-                    setAdminResendCooldown(0);
-                  }}
-                  className="py-3 px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white text-xs font-semibold transition-colors cursor-pointer"
-                >
-                  Change Channel / ID
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={otpLoading || adminOtpInput.length < 6}
-                  aria-busy={otpLoading}
-                  data-loading={otpLoading ? 'true' : 'false'}
-                  className={processingClass(
-                    otpLoading,
-                    'flex-1 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer'
-                  )}
-                >
-                  {otpLoading ? (
-                    <span>Verifying...</span>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Unlock Admin Console</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          )}
+          <DualOtpSecurityPanel
+            purpose="admin_login"
+            recaptchaContainerId="firebase-recaptcha-admin"
+            onVerified={handleAdminDualOtpVerified}
+          />
         </div>
 
         {/* Persistence & Lifecycle Explainer: "When will it reset?" */}
@@ -2079,7 +2152,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       fetchAdminData();
                     } catch (e: any) {
                       console.error('Firestore sync error:', e);
-                      setActionMessage(`Firestore sync notice: ${e?.message || 'Please sign in with Google Admin (balajiaris05@gmail.com) to sync directly.'}`);
+                      setActionMessage(`Firestore sync notice: ${e?.message || 'Please sign in with your registered Admin Google account to sync directly.'}`);
                       setTimeout(() => setActionMessage(null), 6000);
                     } finally {
                       setIsSyncingFirestore(false);
@@ -3015,7 +3088,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="space-y-4">
             {allComicsWithPending.map((comic) => {
               const isExpanded = !!expandedComicPaywall[comic.id];
-              const isPaywalled = comic.accessType === 'premium';
+              const totalEpisodes = (comic.chapters || []).reduce((acc, ch) => acc + (ch.episodes?.length || 0), 0);
+              const premiumEpisodes = (comic.chapters || []).reduce(
+                (acc, ch) =>
+                  acc +
+                  (ch.episodes || []).filter((ep) => Boolean(ep.isPremium || ch.isPremium || comic.accessType === 'premium')).length,
+                0
+              );
+              const isFullyPremium =
+                comic.accessType === 'premium' ||
+                (totalEpisodes > 0 && premiumEpisodes === totalEpisodes);
+              const isPartiallyPremium = !isFullyPremium && (premiumEpisodes > 0 || (comic.chapters || []).some((ch) => Boolean(ch.isPremium)));
+              const isComicToggling = Boolean(paywallBusyKeys[`comic:${comic.id}`]);
 
               return (
                 <div
@@ -3030,12 +3114,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         className="w-12 h-16 rounded-lg object-cover shrink-0"
                       />
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="font-bold text-sm text-slate-900 dark:text-white">{comic.title}</h4>
-                          {isPaywalled ? (
+                          {isFullyPremium ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-0.5">
                               <Lock className="w-2.5 h-2.5" />
                               <span>PREMIUM</span>
+                            </span>
+                          ) : isPartiallyPremium ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/10 text-sky-400 border border-sky-500/20 flex items-center gap-0.5">
+                              <Lock className="w-2.5 h-2.5" />
+                              <span>PARTIAL PREMIUM ({premiumEpisodes}/{totalEpisodes} Ep)</span>
                             </span>
                           ) : (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center gap-0.5">
@@ -3056,33 +3145,49 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                     {/* Paywall Quick Toggle Action */}
                     <div className="flex items-center gap-2 self-end sm:self-center">
-                      {isPaywalled ? (
+                      {isFullyPremium ? (
                         <button
+                          type="button"
+                          disabled={isComicToggling}
+                          aria-busy={isComicToggling}
+                          data-loading={isComicToggling ? 'true' : 'false'}
                           onClick={() => handleTogglePaywall({ comicId: comic.id, isPremium: false })}
-                          className="py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                          className={processingClass(
+                            isComicToggling,
+                            'py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                          )}
                         >
                           <Unlock className="w-3.5 h-3.5" />
-                          <span>Make Entire Comic Free</span>
+                          <span>{isComicToggling ? 'Updating...' : 'Make Entire Comic Free'}</span>
                         </button>
                       ) : (
                         <button
+                          type="button"
+                          disabled={isComicToggling}
+                          aria-busy={isComicToggling}
+                          data-loading={isComicToggling ? 'true' : 'false'}
                           onClick={() => handleTogglePaywall({ comicId: comic.id, isPremium: true, priceInr: 0 })}
-                          className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                          className={processingClass(
+                            isComicToggling,
+                            'py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                          )}
                         >
                           <Lock className="w-3.5 h-3.5" />
-                          <span>Put Entire Comic on Premium</span>
+                          <span>{isComicToggling ? 'Updating...' : 'Put Entire Comic on Premium'}</span>
                         </button>
                       )}
 
                       <button
+                        type="button"
                         onClick={() => setExpandedComicPaywall(prev => ({ ...prev, [comic.id]: !prev[comic.id] }))}
-                        className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-400 hover:text-white"
+                        className="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-400 hover:text-white cursor-pointer"
                         title="Manage Chapters &amp; Episodes Paywall"
                       >
                         {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => setComicToDelete(comic)}
                         className="py-1.5 px-3 rounded-lg bg-rose-600/10 hover:bg-rose-600 hover:text-white text-rose-600 dark:text-rose-400 border border-rose-500/20 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                         title="Delete comic series permanently"
@@ -3104,62 +3209,100 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
 
                       <div className="space-y-3">
-                        {comic.chapters.map(ch => (
-                          <div key={ch.id} className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-2 bg-white dark:bg-slate-900">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-slate-900 dark:text-white">
-                                Chapter {ch.chapterNumber}: {ch.title}
-                              </span>
+                        {comic.chapters.map(ch => {
+                          const isChapterPremium = Boolean(ch.isPremium || comic.accessType === 'premium');
+                          const isChapterToggling = Boolean(paywallBusyKeys[`ch:${ch.id}`] || isComicToggling);
 
-                              <div className="flex items-center gap-2">
-                                {ch.isPremium ? (
-                                  <button
-                                    onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, isPremium: false })}
-                                    className="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 text-white rounded"
-                                  >
-                                    Chapter Paywalled (Make Free)
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, isPremium: true, priceInr: 0 })}
-                                    className="px-2.5 py-1 text-[11px] font-bold bg-amber-500 text-slate-950 rounded"
-                                  >
-                                    Put Chapter on Premium
-                                  </button>
-                                )}
+                          return (
+                            <div key={ch.id} className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-2 bg-white dark:bg-slate-900">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-slate-900 dark:text-white">
+                                  Chapter {ch.chapterNumber}: {ch.title}
+                                </span>
+
+                                <div className="flex items-center gap-2">
+                                  {isChapterPremium ? (
+                                    <button
+                                      type="button"
+                                      disabled={isChapterToggling}
+                                      aria-busy={isChapterToggling}
+                                      data-loading={isChapterToggling ? 'true' : 'false'}
+                                      onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, isPremium: false })}
+                                      className={processingClass(
+                                        isChapterToggling,
+                                        'px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed transition-colors'
+                                      )}
+                                    >
+                                      {isChapterToggling ? 'Updating...' : 'Chapter Premium (Make Free)'}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled={isChapterToggling}
+                                      aria-busy={isChapterToggling}
+                                      data-loading={isChapterToggling ? 'true' : 'false'}
+                                      onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, isPremium: true, priceInr: 0 })}
+                                      className={processingClass(
+                                        isChapterToggling,
+                                        'px-2.5 py-1 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed transition-colors'
+                                      )}
+                                    >
+                                      {isChapterToggling ? 'Updating...' : 'Put Chapter on Premium'}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Episode list inside chapter */}
+                              <div className="pl-3 border-l border-slate-200 dark:border-slate-800 space-y-1 pt-1">
+                                {ch.episodes.map(ep => {
+                                  const isEpPremium = Boolean(ep.isPremium || ch.isPremium || comic.accessType === 'premium');
+                                  const isEpToggling = Boolean(paywallBusyKeys[`ep:${ep.id}`] || isChapterToggling);
+
+                                  return (
+                                    <div key={ep.id} className="flex items-center justify-between text-[11px] py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
+                                      <span className="text-slate-600 dark:text-slate-300">
+                                        Ep {ep.episodeNumber}: {ep.title}
+                                      </span>
+
+                                      <div className="flex items-center gap-2">
+                                        {isEpPremium ? (
+                                          <button
+                                            type="button"
+                                            disabled={isEpToggling}
+                                            aria-busy={isEpToggling}
+                                            data-loading={isEpToggling ? 'true' : 'false'}
+                                            onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: false })}
+                                            className={processingClass(
+                                              isEpToggling,
+                                              'text-emerald-500 font-bold hover:underline cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                                            )}
+                                          >
+                                            {isEpToggling ? 'Updating...' : 'Premium (Make Free)'}
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            disabled={isEpToggling}
+                                            aria-busy={isEpToggling}
+                                            data-loading={isEpToggling ? 'true' : 'false'}
+                                            onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: true, priceInr: 0 })}
+                                            className={processingClass(
+                                              isEpToggling,
+                                              'text-amber-500 font-bold hover:underline cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed'
+                                            )}
+                                          >
+                                            {isEpToggling ? 'Updating...' : 'Free (Set Premium)'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
-
-                            {/* Episode list inside chapter */}
-                            <div className="pl-3 border-l border-slate-200 dark:border-slate-800 space-y-1 pt-1">
-                              {ch.episodes.map(ep => (
-                                <div key={ep.id} className="flex items-center justify-between text-[11px] py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
-                                  <span className="text-slate-600 dark:text-slate-300">
-                                    Ep {ep.episodeNumber}: {ep.title}
-                                  </span>
-
-                                  <div className="flex items-center gap-2">
-                                    {ep.isPremium ? (
-                                      <button
-                                        onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: false })}
-                                        className="text-emerald-500 font-bold hover:underline"
-                                      >
-                                        Premium (Make Free)
-                                      </button>
-                                    ) : (
-                                      <button
-                                        onClick={() => handleTogglePaywall({ comicId: comic.id, chapterId: ch.id, episodeId: ep.id, isPremium: true, priceInr: 0 })}
-                                        className="text-amber-500 font-bold hover:underline"
-                                      >
-                                        Free (Set Premium)
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -3873,7 +4016,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
               <span className="text-[11px] text-slate-400 font-mono">
-                Last Updated: {new Date(gstSettings.updatedAt).toLocaleString()} by {gstSettings.updatedByEmail || 'balajiaris05@gmail.com'}
+                Last Updated: {new Date(gstSettings.updatedAt).toLocaleString()} by {gstSettings.updatedByEmail || 'Administrator'}
               </span>
               <button
                 type="submit"
@@ -4702,8 +4845,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="balajiaris05@okaxis"
-                value={settings.merchantUpiId || 'balajiaris05@okaxis'}
+                placeholder="merchant@upi"
+                value={settings.merchantUpiId || ''}
                 onChange={(e) => setSettings({ ...settings, merchantUpiId: e.target.value })}
                 className="w-full px-3 py-2 text-xs font-mono font-bold rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
               />
@@ -5000,28 +5143,215 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* TAB 11: AUDIT LOGS */}
       {activeTab === 'logs' && (
         <div className="space-y-4">
-          <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
-            Chronological Platform Audit Trail
-          </h3>
-
-          <div className="space-y-2">
-            {activityLogs.map((log) => (
-              <div
-                key={log.id}
-                className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs"
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
+            <div>
+              <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
+                Chronological Platform Audit Trail
+              </h3>
+              <p
+                onClick={handleSecretExportTap}
+                className="text-xs text-slate-500 select-none"
               >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-rose-500">{log.action}</span>
-                    <span className="text-slate-400">by {log.actorEmail}</span>
+                {activityLogs.length} {activityLogs.length === 1 ? 'entry' : 'entries'} recorded
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                disabled={activityLogs.length === 0}
+                onClick={() => handleDownloadActivityLogs('csv')}
+                className="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                title="Download all activity logs as a spreadsheet-ready CSV file"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Logs (CSV)</span>
+              </button>
+              <button
+                type="button"
+                disabled={activityLogs.length === 0}
+                onClick={() => handleDownloadActivityLogs('json')}
+                className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Download all activity logs in JSON format"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>JSON</span>
+              </button>
+            </div>
+          </div>
+
+          {activityLogs.length === 0 ? (
+            <div className="p-8 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
+              No activity logs recorded yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {activityLogs.map((log) => (
+                <div
+                  key={log.id}
+                  className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 text-xs"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono font-bold text-rose-500">{log.action}</span>
+                      <span className="text-slate-400">by {log.actorEmail}</span>
+                    </div>
+                    <p className="text-slate-700 dark:text-slate-300 mt-0.5">{log.details}</p>
                   </div>
-                  <p className="text-slate-700 dark:text-slate-300 mt-0.5">{log.details}</p>
+                  <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                    {new Date(log.timestamp).toLocaleString()}
+                  </span>
                 </div>
-                <span className="text-[10px] text-slate-400 font-mono shrink-0">
-                  {new Date(log.timestamp).toLocaleString()}
-                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* HIDDEN 3-TAP CUSTOMER LOGIN DETAILS EXPORT GATEWAY MODAL */}
+      {showCustomerExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden relative">
+            <div className="h-1.5 w-full bg-gradient-to-r from-indigo-500 via-rose-500 to-emerald-500" />
+
+            <div className="p-6 sm:p-7 space-y-5 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 flex items-center justify-center shrink-0">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 inline-block mb-1">
+                      Encrypted Admin Vault · Dual-OTP
+                    </span>
+                    <h3 className="text-lg font-black text-slate-900 dark:text-white font-heading">
+                      Customer Login Details Export
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCloseCustomerExportModal}
+                  aria-label="Close export vault"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-            ))}
+
+              {!customerExportSession ? (
+                <>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                    Verify both your backend-stored Admin Gmail OTP and Mobile SMS OTP to obtain a 5-minute signed download authorization for customer login profiles.
+                  </p>
+                  <DualOtpSecurityPanel
+                    purpose="customer_export"
+                    recaptchaContainerId="firebase-recaptcha-export"
+                    onVerified={handleCustomerExportVaultVerified}
+                    onCancel={handleCloseCustomerExportModal}
+                  />
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                      <div>
+                        <p className="text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
+                          Dual-OTP Verified · Vault Unlocked
+                        </p>
+                        <p className="text-[11px] text-emerald-700/80 dark:text-emerald-400/80">
+                          HMAC-signed export session active
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="block text-[10px] uppercase font-bold tracking-wider text-slate-500">
+                        Auto-Locks In
+                      </span>
+                      <span className="font-mono text-sm font-black tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {String(Math.floor(exportVaultSecondsLeft / 60)).padStart(2, '0')}:
+                        {String(exportVaultSecondsLeft % 60).padStart(2, '0')}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                        Customer Profiles
+                      </span>
+                      <span className="text-lg font-black font-mono tabular-nums text-slate-900 dark:text-white">
+                        {customerExportSession.totalCustomers}
+                      </span>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                        Security Scope
+                      </span>
+                      <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 leading-snug block">
+                        Full login profile · Password hashes &amp; tokens excluded
+                      </span>
+                    </div>
+                  </div>
+
+                  {exportVaultError && (
+                    <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 shrink-0" />
+                      <span>{exportVaultError}</span>
+                    </div>
+                  )}
+
+                  {exportVaultSuccess && (
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-700 dark:text-emerald-400 text-xs font-semibold flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>{exportVaultSuccess}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <button
+                      type="button"
+                      disabled={exportDownloadLoading !== null}
+                      aria-busy={exportDownloadLoading === 'csv'}
+                      data-loading={exportDownloadLoading === 'csv' ? 'true' : 'false'}
+                      onClick={() => handleDownloadCustomerLogins('csv')}
+                      className={processingClass(
+                        exportDownloadLoading === 'csv',
+                        'py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 transition-colors cursor-pointer'
+                      )}
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>{exportDownloadLoading === 'csv' ? 'Exporting CSV...' : 'Download CSV'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={exportDownloadLoading !== null}
+                      aria-busy={exportDownloadLoading === 'json'}
+                      data-loading={exportDownloadLoading === 'json' ? 'true' : 'false'}
+                      onClick={() => handleDownloadCustomerLogins('json')}
+                      className={processingClass(
+                        exportDownloadLoading === 'json',
+                        'py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white border border-slate-700 font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer'
+                      )}
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>{exportDownloadLoading === 'json' ? 'Exporting JSON...' : 'Download JSON'}</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleCloseCustomerExportModal}
+                    className="w-full py-2.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Lock &amp; Close Vault</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
