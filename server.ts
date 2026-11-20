@@ -6708,6 +6708,254 @@ async function startServer() {
     return res.json({ readers });
   });
 
+  // Customer Tracker: Look up customer profile by registered Gmail or Mobile Number (strictly excludes immutable admin vault)
+  app.get('/api/admin/customers/track', async (req, res) => {
+    const admin = await requireAdminAuth(req, res);
+    if (!admin) return;
+    await db.ensureFreshFromCloud();
+
+    const snapshot = db.getSnapshot();
+    const rawQuery = String(req.query.q || '').trim();
+    const queryLower = rawQuery.toLowerCase();
+    const queryDigits = rawQuery.replace(/\D/g, '');
+
+    const customerUsers = (snapshot.users || []).filter(
+      (u: User) => u.role !== 'admin' && u.id !== IMMUTABLE_ADMIN_VAULT.id
+    );
+
+    let activePlanCustomers = 0;
+    for (const u of customerUsers) {
+      const sub = getReaderSubscriptionStatus(snapshot, {
+        userId: u.id,
+        email: u.email,
+        phone: u.phone,
+      });
+      if (sub.hasActiveSubscription) {
+        activePlanCustomers += 1;
+      }
+    }
+
+    const summary = {
+      totalCustomers: customerUsers.length,
+      activePlanCustomers,
+      freeCustomers: Math.max(0, customerUsers.length - activePlanCustomers),
+    };
+
+    if (!rawQuery) {
+      return res.json({ query: '', summary, matches: [] });
+    }
+
+    const scoredMatches: Array<{ user: User; score: number }> = [];
+    for (const u of customerUsers) {
+      const emailLower = String(u.email || '').trim().toLowerCase();
+      const phoneDigits = String(u.phone || '').replace(/\D/g, '');
+      const last10User = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
+      const last10Query = queryDigits.length >= 10 ? queryDigits.slice(-10) : queryDigits;
+
+      let score = 0;
+      if (emailLower && emailLower === queryLower) {
+        score = 100;
+      } else if (last10Query.length >= 10 && last10User && last10User === last10Query) {
+        score = 100;
+      } else if (queryDigits.length >= 6 && phoneDigits && phoneDigits === queryDigits) {
+        score = 95;
+      } else if (queryLower.length >= 2 && emailLower.includes(queryLower)) {
+        score = 70;
+      } else if (queryDigits.length >= 4 && phoneDigits.includes(queryDigits)) {
+        score = 65;
+      }
+
+      if (score > 0) {
+        scoredMatches.push({ user: u, score });
+      }
+    }
+
+    scoredMatches.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return new Date(b.user.createdAt || 0).getTime() - new Date(a.user.createdAt || 0).getTime();
+    });
+
+    const nowMs = Date.now();
+    const matches = scoredMatches.slice(0, 15).map(({ user: u }) => {
+      const emailLower = String(u.email || '').trim().toLowerCase();
+      const phoneDigits = String(u.phone || '').replace(/\D/g, '');
+      const last10Phone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+
+      const subStatus = getReaderSubscriptionStatus(snapshot, {
+        userId: u.id,
+        email: u.email,
+        phone: u.phone,
+      });
+
+      const userPurchases = (snapshot.purchases || []).filter((p: Purchase) => {
+        if (p.userId && p.userId === u.id) return true;
+        if (emailLower && p.userEmail?.toLowerCase() === emailLower) return true;
+        if (last10Phone && p.userPhone && p.userPhone.replace(/\D/g, '').endsWith(last10Phone)) return true;
+        return false;
+      });
+
+      const userPaymentTxs = (snapshot.paymentTransactions || []).filter((tx: PaymentTransaction) => {
+        if (tx.userId && tx.userId === u.id) return true;
+        if (emailLower && tx.userEmail?.toLowerCase() === emailLower) return true;
+        return false;
+      });
+
+      // Merge purchases and paymentTransactions cleanly (deduplicated by paymentId / orderId / id)
+      const historyMap = new Map<
+        string,
+        {
+          id: string;
+          date: string;
+          itemTitle: string;
+          plan: string;
+          amountInr: number;
+          status: 'success' | 'pending' | 'failed' | 'refunded';
+          paymentMethod: string;
+          receiptNumber: string;
+          transactionId: string;
+          orderId: string;
+        }
+      >();
+
+      for (const p of userPurchases) {
+        const dedupKey = p.razorpayPaymentId || p.razorpayOrderId || p.id;
+        const planLabel =
+          p.subscriptionPlan === '6_months'
+            ? '6-Months Pass (₹249)'
+            : p.subscriptionPlan === '1_month'
+              ? '1-Month Pass (₹49)'
+              : p.type === 'subscription'
+                ? 'Premium Subscription'
+                : p.type;
+        const mappedStatus: 'success' | 'pending' | 'failed' | 'refunded' =
+          p.status === 'success'
+            ? 'success'
+            : p.status === 'failed'
+              ? 'failed'
+              : p.status === 'refunded'
+                ? 'refunded'
+                : 'pending';
+        historyMap.set(dedupKey, {
+          id: p.id,
+          date: p.createdAt,
+          itemTitle: p.comicTitle || planLabel,
+          plan: planLabel,
+          amountInr: Number(p.amountInr || 0),
+          status: mappedStatus,
+          paymentMethod: p.paymentMethod || 'Razorpay / UPI',
+          receiptNumber: p.receiptNumber || '',
+          transactionId: p.razorpayPaymentId || '',
+          orderId: p.razorpayOrderId || '',
+        });
+      }
+
+      for (const tx of userPaymentTxs) {
+        const dedupKey = tx.paymentId || tx.orderId || tx.id;
+        if (historyMap.has(dedupKey)) continue;
+        const planLabel =
+          tx.subscriptionPlan === '6_months'
+            ? '6-Months Pass (₹249)'
+            : tx.subscriptionPlan === '1_month'
+              ? '1-Month Pass (₹49)'
+              : tx.type;
+        const mappedStatus: 'success' | 'pending' | 'failed' | 'refunded' =
+          tx.status === 'verified'
+            ? 'success'
+            : tx.status === 'failed'
+              ? 'failed'
+              : tx.status === 'refunded'
+                ? 'refunded'
+                : 'pending';
+        historyMap.set(dedupKey, {
+          id: tx.id,
+          date: tx.createdAt,
+          itemTitle: tx.itemTitle || planLabel,
+          plan: planLabel,
+          amountInr: Number(tx.amountInr || 0),
+          status: mappedStatus,
+          paymentMethod: 'Razorpay',
+          receiptNumber: '',
+          transactionId: tx.paymentId || '',
+          orderId: tx.orderId || '',
+        });
+      }
+
+      const paymentHistory = Array.from(historyMap.values()).sort(
+        (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+      );
+
+      const successfulPayments = paymentHistory.filter((item) => item.status === 'success');
+      const pendingPayments = paymentHistory.filter((item) => item.status === 'pending');
+      const failedPayments = paymentHistory.filter((item) => item.status === 'failed');
+      const totalSpentInr = Number(
+        successfulPayments.reduce((sum, item) => sum + Number(item.amountInr || 0), 0).toFixed(2)
+      );
+
+      let daysRemaining = 0;
+      if (subStatus.hasActiveSubscription && subStatus.expiresAt) {
+        const expMs = new Date(subStatus.expiresAt).getTime();
+        if (Number.isFinite(expMs) && expMs > nowMs) {
+          daysRemaining = Math.ceil((expMs - nowMs) / (24 * 60 * 60 * 1000));
+        }
+      }
+
+      let paymentStatus: 'paid_active' | 'paid_expired' | 'pending_payment' | 'unpaid' = 'unpaid';
+      let paymentStatusLabel = 'Unpaid · Free Account';
+      if (subStatus.hasActiveSubscription) {
+        paymentStatus = 'paid_active';
+        paymentStatusLabel = 'Paid · Ongoing Plan Active';
+      } else if (successfulPayments.length > 0) {
+        paymentStatus = 'paid_expired';
+        paymentStatusLabel = 'Previously Paid · Plan Expired';
+      } else if (pendingPayments.length > 0) {
+        paymentStatus = 'pending_payment';
+        paymentStatusLabel = 'Payment Pending / Incomplete';
+      }
+
+      const ongoingPlanLabel = subStatus.hasActiveSubscription
+        ? subStatus.activePlan === '6_months'
+          ? '6-Months Pass (₹249)'
+          : '1-Month Pass (₹49)'
+        : 'No Ongoing Plan (Free Account)';
+
+      return {
+        ...sanitizeUserForClient(u, false),
+        age: u.age,
+        dob: u.dob,
+        countryName: u.countryName,
+        upiId: u.upiId || subStatus.upiId || '',
+        ongoingPlan: {
+          hasActivePlan: subStatus.hasActiveSubscription,
+          plan: subStatus.activePlan,
+          planLabel: ongoingPlanLabel,
+          amountPaidInr: subStatus.amountPaidInr || 0,
+          startedAt: subStatus.startedAt || null,
+          expiresAt: subStatus.expiresAt || null,
+          daysRemaining,
+          paymentMethod: subStatus.paymentMethod || null,
+          transactionId: subStatus.transactionId || null,
+          receiptNumber: subStatus.activeReceipt || null,
+        },
+        paymentSummary: {
+          status: paymentStatus,
+          statusLabel: paymentStatusLabel,
+          totalSpentInr,
+          successfulPaymentsCount: successfulPayments.length,
+          pendingPaymentsCount: pendingPayments.length,
+          failedPaymentsCount: failedPayments.length,
+          lastPaymentAt: paymentHistory[0]?.date || null,
+        },
+        paymentHistory,
+      };
+    });
+
+    return res.json({
+      query: rawQuery,
+      summary,
+      matches,
+    });
+  });
+
   // Admin Database Management: Update or Grant/Revoke Reader Account, UPI & Paid Premium
   app.put('/api/admin/readers/:id', async (req, res) => {
     const admin = await requireAdminAuth(req, res);

@@ -110,10 +110,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const { isLoading: isRowActionLoading, runWithKey: runRowAction } = useButtonLoadingMap();
   const { theme, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'ad-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
+    'overview' | 'customer-tracker' | 'my-comics-episodes-upload' | 'publish-direct' | 'comic-queue' | 'delete-requests' | 'ad-requests' | 'comics' | 'gst-billing' | 'authors' | 'financial' | 'comments' | 'ratings' | 'copyright' | 'settings' | 'logs'
   >(() => {
     if (initialSubTab === 'delete-requests') return 'delete-requests';
     if (initialSubTab === 'gst-billing') return 'gst-billing';
+    if (initialSubTab === 'customer-tracker') return 'customer-tracker';
     return 'overview';
   });
 
@@ -157,10 +158,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [showArchiveLogsModal, setShowArchiveLogsModal] = useState(false);
   const [isArchivingLogs, setIsArchivingLogs] = useState(false);
   const [isSendingSampleLogEmail, setIsSendingSampleLogEmail] = useState(false);
+  const [isLoadingActivityLogs, setIsLoadingActivityLogs] = useState(false);
+  const [activityLogsLoaded, setActivityLogsLoaded] = useState(false);
   const [archiveLogsFeedback, setArchiveLogsFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [allComments, setAllComments] = useState<any[]>([]);
   const [allRatings, setAllRatings] = useState<any[]>([]);
   const [readerAccounts, setReaderAccounts] = useState<any[]>([]);
+
+  // Customer Tracker Tab State
+  const [customerTrackQuery, setCustomerTrackQuery] = useState('');
+  const [customerTrackLoading, setCustomerTrackLoading] = useState(false);
+  const [customerTrackError, setCustomerTrackError] = useState<string | null>(null);
+  const [customerTrackHasSearched, setCustomerTrackHasSearched] = useState(false);
+  const [customerTrackLastQuery, setCustomerTrackLastQuery] = useState('');
+  const [customerTrackMatches, setCustomerTrackMatches] = useState<any[]>([]);
+  const [selectedTrackedCustomerId, setSelectedTrackedCustomerId] = useState<string | null>(null);
+  const [customerTrackSummary, setCustomerTrackSummary] = useState<{
+    totalCustomers: number;
+    activePlanCustomers: number;
+    freeCustomers: number;
+  } | null>(null);
+  const [confirmDeleteTrackedId, setConfirmDeleteTrackedId] = useState<string | null>(null);
 
   // GST & Billing Module State
   const [gstSettings, setGstSettings] = useState<GstBusinessSettings>(DEFAULT_GST_SETTINGS);
@@ -316,26 +334,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       safeFetch('/api/admin/transactions', (d) => setTransactions(Array.isArray(d) ? d : (d.transactions || []))),
       safeFetch('/api/admin/copyright', (d) => setCopyrightDocs(Array.isArray(d) ? d : (d.copyrightDocs || []))),
       safeFetch('/api/admin/settings', (d) => setSettings(d.settings || d)),
-      safeFetch('/api/admin/logs', (d) => {
-        if (Array.isArray(d)) {
-          setActivityLogs(d);
-          return;
-        }
-        setActivityLogs(Array.isArray(d?.logs) ? d.logs : []);
-        setActivityLogMeta({
-          todayCount: Number(d?.todayCount ?? (Array.isArray(d?.logs) ? d.logs.length : 0)),
-          currentMonthCount: Number(d?.currentMonthCount ?? 0),
-          currentIstDayKey: String(d?.currentIstDayKey || ''),
-          currentIstMonthKey: String(d?.currentIstMonthKey || ''),
-          currentIstMonthLabel: String(d?.currentIstMonthLabel || ''),
-          nextRolloverLabel: String(d?.nextRolloverLabel || ''),
-          adminActionsMonthCount: Number(d?.adminActionsMonthCount ?? 0),
-          payments49MonthCount: Number(d?.payments49MonthCount ?? 0),
-          payments249MonthCount: Number(d?.payments249MonthCount ?? 0),
-          totalRevenueMonthInr: Number(d?.totalRevenueMonthInr ?? 0),
-          archiveState: d?.archiveState,
-        });
-      }),
       safeFetch('/api/admin/comments', (d) => setAllComments(Array.isArray(d) ? d : (d.comments || []))),
       safeFetch('/api/admin/ratings', (d) => setAllRatings(Array.isArray(d) ? d : (d.ratings || []))),
       safeFetch('/api/comics?includePending=true&role=admin', (d) => setAllComicsWithPending(Array.isArray(d) ? d : (d.comics || []))),
@@ -361,6 +359,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       safeFetch('/api/admin/firestore/status', (d) => setFirestoreStatus(d)),
     ]);
   };
+
+  // On-demand Activity Logs loader: runs ONLY when the Admin opens the Activity Logs tab
+  const fetchActivityLogs = async (tokenOverride?: string) => {
+    if (!isAdminUnlocked && !tokenOverride) return;
+    setIsLoadingActivityLogs(true);
+    try {
+      const headers = tokenOverride
+        ? { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenOverride}` }
+        : await getAuthHeaders();
+      const res = await fetch('/api/admin/logs', { headers });
+      if (res.ok) {
+        const d = await res.json();
+        if (Array.isArray(d)) {
+          setActivityLogs(d);
+        } else {
+          setActivityLogs(Array.isArray(d?.logs) ? d.logs : []);
+          setActivityLogMeta({
+            todayCount: Number(d?.todayCount ?? (Array.isArray(d?.logs) ? d.logs.length : 0)),
+            currentMonthCount: Number(d?.currentMonthCount ?? 0),
+            currentIstDayKey: String(d?.currentIstDayKey || ''),
+            currentIstMonthKey: String(d?.currentIstMonthKey || ''),
+            currentIstMonthLabel: String(d?.currentIstMonthLabel || ''),
+            nextRolloverLabel: String(d?.nextRolloverLabel || ''),
+            adminActionsMonthCount: Number(d?.adminActionsMonthCount ?? 0),
+            payments49MonthCount: Number(d?.payments49MonthCount ?? 0),
+            payments249MonthCount: Number(d?.payments249MonthCount ?? 0),
+            totalRevenueMonthInr: Number(d?.totalRevenueMonthInr ?? 0),
+            archiveState: d?.archiveState,
+          });
+        }
+        setActivityLogsLoaded(true);
+      }
+    } catch {
+      // Silent fail without leaking endpoints or credentials
+    } finally {
+      setIsLoadingActivityLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAdminUnlocked && activeTab === 'logs') {
+      void fetchActivityLogs();
+    }
+  }, [activeTab, isAdminUnlocked]);
 
   // Admin approves or rejects author's deletion request
   const handleModerateDeleteRequest = async (requestId: string, action: 'approve' | 'reject') => {
@@ -1521,7 +1563,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             'Unable to email the monthly archive right now. All backend logs were safely preserved and will retry automatically.',
         });
         setShowArchiveLogsModal(false);
-        await fetchAdminData();
+        await fetchActivityLogs();
         return;
       }
 
@@ -1531,7 +1573,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setArchiveLogsFeedback({ type: 'success', text: successText });
       showTransientActionMessage(successText);
       setShowArchiveLogsModal(false);
-      await fetchAdminData();
+      await fetchActivityLogs();
     } catch {
       setArchiveLogsFeedback({
         type: 'error',
@@ -1575,6 +1617,96 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } finally {
       setIsSendingSampleLogEmail(false);
     }
+  };
+
+  // Customer Tracker Lookup by Registered Gmail or Mobile Number
+  const handleTrackCustomer = async (overrideQuery?: string) => {
+    const q = (overrideQuery !== undefined ? overrideQuery : customerTrackQuery).trim();
+    if (!q) {
+      setCustomerTrackError('Enter a customer registered Gmail address or mobile number to track their profile.');
+      return;
+    }
+    setCustomerTrackLoading(true);
+    setCustomerTrackError(null);
+    setConfirmDeleteTrackedId(null);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`/api/admin/customers/track?q=${encodeURIComponent(q)}`, { headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCustomerTrackError(data?.error || 'Unable to look up customer profile right now.');
+        return;
+      }
+      const matches = Array.isArray(data?.matches) ? data.matches : [];
+      setCustomerTrackMatches(matches);
+      setCustomerTrackHasSearched(true);
+      setCustomerTrackLastQuery(q);
+      if (data?.summary) {
+        setCustomerTrackSummary(data.summary);
+      }
+      setSelectedTrackedCustomerId((prev) => {
+        if (prev && matches.some((m: any) => m.id === prev)) return prev;
+        return matches[0]?.id || null;
+      });
+    } catch {
+      setCustomerTrackError('Network error while looking up customer profile.');
+    } finally {
+      setCustomerTrackLoading(false);
+    }
+  };
+
+  const handleTrackedCustomerUpdate = async (
+    customerId: string,
+    payload: Record<string, any>,
+    successMsg: string
+  ) => {
+    await runRowAction(`track-upd-${customerId}-${JSON.stringify(payload)}`, async () => {
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`/api/admin/readers/${customerId}`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setCustomerTrackError(data?.error || 'Unable to update customer profile.');
+          return;
+        }
+        showTransientActionMessage(successMsg);
+        await fetchAdminData();
+        if (customerTrackLastQuery) {
+          await handleTrackCustomer(customerTrackLastQuery);
+        }
+      } catch {
+        setCustomerTrackError('Network error while updating customer profile.');
+      }
+    });
+  };
+
+  const handleTrackedCustomerDelete = async (customerId: string) => {
+    await runRowAction(`track-del-${customerId}`, async () => {
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`/api/admin/readers/${customerId}`, {
+          method: 'DELETE',
+          headers,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setCustomerTrackError(data?.error || 'Unable to delete customer account.');
+          return;
+        }
+        setConfirmDeleteTrackedId(null);
+        showTransientActionMessage('Customer account removed from database.');
+        await fetchAdminData();
+        if (customerTrackLastQuery) {
+          await handleTrackCustomer(customerTrackLastQuery);
+        }
+      } catch {
+        setCustomerTrackError('Network error while deleting customer account.');
+      }
+    });
   };
 
   // Download GST Sales & Tax Reconciliation CSV (works even if 0 bills / Nil Return month)
@@ -2000,6 +2132,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="flex items-center gap-1 overflow-x-auto pb-1 text-xs font-bold border-b border-slate-200 dark:border-slate-800">
         {[
           { id: 'overview', label: 'Overview Metrics' },
+          { id: 'customer-tracker', label: 'Customer Tracker' },
           { id: 'my-comics-episodes-upload', label: 'My Comic & Episode / Upload New Comic' },
           { id: 'comic-queue', label: `Comic Approvals Queue (${pendingComics.length})` },
           { id: 'delete-requests', label: `🗑️ Delete Requests (${deleteRequests.filter(r => r.status === 'pending').length})` },
@@ -2017,7 +2150,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <button
             key={t.id}
             onClick={() => {
-              setActiveTab(t.id as any);
+              const nextTab = t.id as any;
+              if (nextTab === 'logs') {
+                if (activeTab === 'logs' && isAdminUnlocked) {
+                  void fetchActivityLogs();
+                } else {
+                  setActiveTab('logs');
+                }
+                return;
+              }
+              setActiveTab(nextTab);
               if (isAdminUnlocked) fetchAdminData();
             }}
             className={`py-2 px-3.5 rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
@@ -2280,28 +2422,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
           </div>
 
-          {/* Tracked Reader Accounts (Gmail & Mobile Number + ₹49 / ₹249 Premium Status) */}
-          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        </div>
+      )}
+
+      {/* TAB 1B: CUSTOMER TRACKER */}
+      {activeTab === 'customer-tracker' && (() => {
+        const nonAdminReaders = readerAccounts.filter((r: any) => r.role !== 'admin' && !r.isImmutableAdmin);
+        const totalCustomers = customerTrackSummary?.totalCustomers ?? nonAdminReaders.length;
+        const activePlanCustomers =
+          customerTrackSummary?.activePlanCustomers ??
+          nonAdminReaders.filter((r: any) => r.subscription?.hasActiveSubscription || r.hasActiveSubscription).length;
+        const freeCustomers =
+          customerTrackSummary?.freeCustomers ?? Math.max(0, totalCustomers - activePlanCustomers);
+
+        const selectedCustomer =
+          customerTrackMatches.find((m: any) => m.id === selectedTrackedCustomerId) ||
+          customerTrackMatches[0] ||
+          null;
+
+        const formatIstDateTime = (iso?: string | null) => {
+          if (!iso) return 'Not recorded';
+          const d = new Date(iso);
+          if (Number.isNaN(d.getTime())) return String(iso);
+          return `${d.toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+          })} IST`;
+        };
+
+        return (
+          <div className="space-y-6">
+            {/* Header & Cloud Sync Action */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
               <div>
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 mb-1">
-                  <Users className="w-3 h-3" />
-                  <span>
-                    Reader Account Tracking ({readerAccounts.length} Accounts) · Firebase Project: {firebaseConfig.projectId} · DB:{' '}
-                    {firestoreStatus?.connected ? 'Connected' : 'Checking...'}
-                  </span>
-                </div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
-                  Tracked Reader Accounts (Gmail, Mobile, UPI ID &amp; Premium Paywall Status)
+                  Customer Tracker
                 </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Tracks every reader&apos;s connected Gmail, Mobile Number, UPI ID, and active 1-Month (₹49) or 6-Months (₹249) Premium subscription.
-                  {firestoreStatus?.publishedComicsInFirestore !== undefined
-                    ? ` Live Firestore Catalog: ${firestoreStatus.publishedComicsInFirestore} published series.`
-                    : ''}
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Enter a customer&apos;s registered Gmail address or mobile number to inspect profile creation date, ongoing plan, and payment status.
                 </p>
               </div>
-              <div className="flex items-center gap-2 flex-wrap self-start">
+              <div className="flex items-center gap-2 self-start sm:self-auto">
                 <button
                   type="button"
                   disabled={isSyncingFirestore}
@@ -2324,172 +2490,515 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         method: 'POST',
                         headers,
                       }).catch(() => null);
-                      setActionMessage(
-                        `Synced to Firebase Firestore (${firebaseConfig.projectId}): ${res?.syncedReaders || 0} readers, ${res?.syncedComics || 0} comics, ${res?.syncedEpisodes || 0} episodes, ${res?.syncedPurchases || 0} purchases.`
+                      showTransientActionMessage(
+                        `Synced to Firebase Firestore (${firebaseConfig.projectId}): ${res?.syncedReaders || 0} customers, ${res?.syncedPurchases || 0} payments.`
                       );
-                      setTimeout(() => setActionMessage(null), 6000);
                       fetchAdminData();
                     } catch (e: any) {
-                      console.error('Firestore sync error:', e);
-                      setActionMessage(`Firestore sync notice: ${e?.message || 'Please sign in with your registered Admin Google account to sync directly.'}`);
-                      setTimeout(() => setActionMessage(null), 6000);
+                      showTransientActionMessage(
+                        `Firestore sync notice: ${e?.message || 'Sign in with your registered Admin account to sync.'}`
+                      );
                     } finally {
                       setIsSyncingFirestore(false);
                     }
                   }}
                   className={processingClass(
                     isSyncingFirestore,
-                    'py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer'
+                    'py-2 px-3.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap'
                   )}
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  <span>
-                    {isSyncingFirestore
-                      ? 'Syncing All 15 Collections...'
-                      : `Store All in Firebase Firestore (${firebaseConfig.projectId})`}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={fetchAdminData}
-                  className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Refresh Readers</span>
+                  <span>{isSyncingFirestore ? 'Syncing Cloud...' : 'Sync Firestore'}</span>
                 </button>
               </div>
             </div>
 
-            {readerAccounts.length === 0 ? (
-              <div className="p-6 text-center rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-500">
-                No tracked reader accounts yet.
+            {/* Compact 3-Metric Customer Summary Strip */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="text-xs font-medium text-slate-500">Registered Customers</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
+                  {totalCustomers}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Cloud DB: {firestoreStatus?.connected ? 'Connected' : 'Ready'}
+                </div>
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-slate-200 dark:border-slate-800 text-[10px] uppercase tracking-wider text-slate-400 font-bold">
-                      <th className="py-2.5 px-3">Customer Name</th>
-                      <th className="py-2.5 px-3">Age</th>
-                      <th className="py-2.5 px-3">Gmail Address</th>
-                      <th className="py-2.5 px-3">Mobile &amp; UPI ID</th>
-                      <th className="py-2.5 px-3">Paid Detail of Premium</th>
-                      <th className="py-2.5 px-3">Total Spend</th>
-                      <th className="py-2.5 px-3">Database Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
-                    {readerAccounts.map((r: any) => (
-                      <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">
-                          <div>{r.name}</div>
-                          <div className="text-[10px] font-mono text-slate-400 font-normal">
-                            {r.lastLoginAt ? new Date(r.lastLoginAt).toLocaleDateString() : r.createdAt}
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 font-mono font-bold text-sky-600 dark:text-sky-400">
-                          {r.age ? `${r.age} yrs` : '24 yrs'}
-                        </td>
-                        <td className="py-3 px-3 font-mono text-rose-600 dark:text-rose-400">
-                          {r.email}
-                        </td>
-                        <td className="py-3 px-3 font-mono text-slate-700 dark:text-slate-300">
-                          <div>{r.phone || 'Not linked'}</div>
-                          <div className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
-                            UPI: {r.upiId || r.subscription?.upiId || 'Not set'}
-                          </div>
-                        </td>
-                        <td className="py-3 px-3">
-                          {r.subscription?.hasActiveSubscription ? (
-                            <div className="space-y-0.5">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>
-                                  {r.subscription.plan === '6_months' ? '6 Months Paid (₹249)' : '1 Month Paid (₹49)'}
-                                </span>
-                              </span>
-                              <div className="text-[10px] font-mono text-slate-400">
-                                {r.subscription.paymentMethod || 'UPI'} · {r.subscription.receiptNumber || 'Verified'}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-500">
-                              Free / Unpaid (₹0)
+              <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="text-xs font-medium text-slate-500">Ongoing Paid Plans</div>
+                <div className="mt-1 text-2xl font-bold text-emerald-600 dark:text-emerald-400 font-mono tabular-nums">
+                  {activePlanCustomers}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">Active ₹49 / ₹249 passes</div>
+              </div>
+              <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="text-xs font-medium text-slate-500">Free / Unpaid Accounts</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
+                  {freeCustomers}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">No active subscription</div>
+              </div>
+            </div>
+
+            {/* Lookup Form: Registered Gmail or Mobile Number */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleTrackCustomer();
+              }}
+              className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3"
+            >
+              <label
+                htmlFor="customer-tracker-input"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-200"
+              >
+                Search by Registered Gmail or Mobile Number
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    id="customer-tracker-input"
+                    type="text"
+                    value={customerTrackQuery}
+                    onChange={(e) => {
+                      setCustomerTrackQuery(e.target.value);
+                      if (customerTrackError) setCustomerTrackError(null);
+                    }}
+                    placeholder="Enter customer Gmail (e.g. reader@gmail.com) or mobile number (e.g. +91 9876543210)"
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={customerTrackLoading}
+                  aria-busy={customerTrackLoading}
+                  data-loading={customerTrackLoading ? 'true' : 'false'}
+                  className={processingClass(
+                    customerTrackLoading,
+                    'py-2.5 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0'
+                  )}
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>{customerTrackLoading ? 'Searching...' : 'Track Customer'}</span>
+                </button>
+                {(customerTrackQuery || customerTrackHasSearched) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerTrackQuery('');
+                      setCustomerTrackMatches([]);
+                      setSelectedTrackedCustomerId(null);
+                      setCustomerTrackHasSearched(false);
+                      setCustomerTrackLastQuery('');
+                      setCustomerTrackError(null);
+                      setConfirmDeleteTrackedId(null);
+                    }}
+                    className="py-2.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {customerTrackError && (
+                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                  <span>{customerTrackError}</span>
+                </div>
+              )}
+            </form>
+
+            {/* Initial Empty Prompt */}
+            {!customerTrackHasSearched && !customerTrackLoading && (
+              <div className="p-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-1.5">
+                <Users className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  Ready to Track a Customer Profile
+                </p>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  Enter a customer&apos;s registered Gmail address or 10-digit mobile number above to view their account creation date, contact details, ongoing subscription plan, and complete payment status.
+                </p>
+              </div>
+            )}
+
+            {/* No Match Found */}
+            {customerTrackHasSearched && !customerTrackLoading && customerTrackMatches.length === 0 && (
+              <div className="p-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-1.5">
+                <AlertTriangle className="w-6 h-6 text-amber-500 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  No customer profile found for &ldquo;{customerTrackLastQuery}&rdquo;
+                </p>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  Check the spelling of the customer&apos;s registered Gmail address or verify their 10-digit mobile number and try searching again.
+                </p>
+              </div>
+            )}
+
+            {/* Multiple Matches Switcher */}
+            {customerTrackMatches.length > 1 && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+                  Found {customerTrackMatches.length} matching customer profiles — select one to inspect:
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {customerTrackMatches.map((m: any) => {
+                    const isSelected = selectedCustomer?.id === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedTrackedCustomerId(m.id);
+                          setConfirmDeleteTrackedId(null);
+                        }}
+                        className={`px-3.5 py-2 rounded-lg text-left text-xs border transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500/15 border-amber-500 text-slate-900 dark:text-white font-bold'
+                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-600'
+                        }`}
+                      >
+                        <div>{m.name || 'Unnamed Customer'}</div>
+                        <div className="text-[11px] font-mono text-slate-500">
+                          {m.email} {m.phone ? `· ${m.phone}` : ''}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Selected Customer Profile Detail View */}
+            {selectedCustomer && (
+              <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800">
+                {/* 1. Profile Identity Header */}
+                <div className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1 min-w-0">
+                    <h4 className="text-lg font-bold text-slate-900 dark:text-white font-heading">
+                      {selectedCustomer.name || 'Registered Customer'}
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                      <span className="font-mono text-slate-600 dark:text-slate-400">
+                        ID: {selectedCustomer.id}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="capitalize">{selectedCustomer.role || 'reader'}</span>
+                      <span aria-hidden="true">·</span>
+                      <span
+                        className={
+                          selectedCustomer.isSuspended
+                            ? 'font-semibold text-rose-600 dark:text-rose-400'
+                            : 'font-semibold text-emerald-600 dark:text-emerald-400'
+                        }
+                      >
+                        {selectedCustomer.isSuspended ? 'Suspended Account' : 'Active Account'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-xs text-left sm:text-right">
+                    <div className="text-slate-500">Payment Status</div>
+                    <div
+                      className={`mt-0.5 font-bold ${
+                        selectedCustomer.paymentSummary?.status === 'paid_active'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : selectedCustomer.paymentSummary?.status === 'paid_expired'
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : selectedCustomer.paymentSummary?.status === 'pending_payment'
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {selectedCustomer.paymentSummary?.statusLabel || 'Unpaid · Free Account'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Core Profile Details: Created Date, Registered Gmail, Mobile Number, Account Meta */}
+                <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 text-xs">
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium text-slate-500">Profile Created</div>
+                    <div className="font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
+                      {formatIstDateTime(selectedCustomer.createdAt)}
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono tabular-nums">
+                      Last login: {selectedCustomer.lastLoginAt ? formatIstDateTime(selectedCustomer.lastLoginAt) : 'Not recorded'}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 min-w-0">
+                    <div className="text-[11px] font-medium text-slate-500">Registered Gmail</div>
+                    <div className="font-mono font-semibold text-slate-900 dark:text-white break-all">
+                      {selectedCustomer.email || 'Not linked'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {selectedCustomer.emailVerified || selectedCustomer.isVerified ? 'Email verified' : 'Unverified email'}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 min-w-0">
+                    <div className="text-[11px] font-medium text-slate-500">Registered Mobile Number</div>
+                    <div className="font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
+                      {selectedCustomer.phone || 'Not linked'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {selectedCustomer.upiId ? `UPI: ${selectedCustomer.upiId}` : selectedCustomer.countryName || 'India'}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium text-slate-500">Customer Details</div>
+                    <div className="font-semibold text-slate-900 dark:text-white tabular-nums">
+                      {selectedCustomer.age ? `${selectedCustomer.age} yrs` : 'Age not set'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono tabular-nums">
+                      {selectedCustomer.dob ? `DOB: ${selectedCustomer.dob}` : 'Standard profile'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Ongoing Plan & Payment Summary Split */}
+                <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
+                  <div className="space-y-2.5">
+                    <div className="text-xs font-bold text-slate-900 dark:text-white">
+                      Ongoing Plan on Profile
+                    </div>
+                    {selectedCustomer.ongoingPlan?.hasActivePlan ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2 text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" />
+                          <span>{selectedCustomer.ongoingPlan.planLabel}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1 text-slate-600 dark:text-slate-300">
+                          <div>
+                            <span className="text-slate-500">Started: </span>
+                            <span className="font-mono tabular-nums">
+                              {formatIstDateTime(selectedCustomer.ongoingPlan.startedAt)}
                             </span>
-                          )}
-                        </td>
-                        <td className="py-3 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                          ₹{r.totalSpentInr || 0}
-                        </td>
-                        <td className="py-3 px-3">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await fetch(`/api/admin/readers/${r.id}`, {
-                                  method: 'PUT',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ paidPlan: '1_month', paymentMethod: 'Admin DB Grant (UPI)' }),
-                                });
-                                fetchAdminData();
-                              }}
-                              className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
-                              title="Grant 1 Month Premium (₹49) in Database"
-                            >
-                              1M ₹49
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await fetch(`/api/admin/readers/${r.id}`, {
-                                  method: 'PUT',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ paidPlan: '6_months', paymentMethod: 'Admin DB Grant (UPI)' }),
-                                });
-                                fetchAdminData();
-                              }}
-                              className="px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold cursor-pointer"
-                              title="Grant 6 Months Premium (₹249) in Database"
-                            >
-                              6M ₹249
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await fetch(`/api/admin/readers/${r.id}`, {
-                                  method: 'PUT',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ paidPlan: 'free' }),
-                                });
-                                fetchAdminData();
-                              }}
-                              className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-semibold cursor-pointer"
-                              title="Reset to Free Account in Database"
-                            >
-                              Free
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await fetch(`/api/admin/readers/${r.id}`, { method: 'DELETE' });
-                                fetchAdminData();
-                              }}
-                              className="p-1 rounded text-rose-500 hover:bg-rose-500/10 cursor-pointer"
-                              title="Delete Reader Account from Database"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          <div>
+                            <span className="text-slate-500">Expires: </span>
+                            <span className="font-mono tabular-nums">
+                              {formatIstDateTime(selectedCustomer.ongoingPlan.expiresAt)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Remaining: </span>
+                            <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                              {selectedCustomer.ongoingPlan.daysRemaining} day{selectedCustomer.ongoingPlan.daysRemaining === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Method: </span>
+                            <span>{selectedCustomer.ongoingPlan.paymentMethod || 'Razorpay / UPI'}</span>
+                          </div>
+                          {selectedCustomer.ongoingPlan.receiptNumber && (
+                            <div className="col-span-2">
+                              <span className="text-slate-500">Receipt: </span>
+                              <span className="font-mono">{selectedCustomer.ongoingPlan.receiptNumber}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 text-slate-600 dark:text-slate-400">
+                        <div className="font-semibold text-slate-800 dark:text-slate-200">
+                          No Ongoing Plan Active
+                        </div>
+                        <p>This customer currently has a Free account with no active ₹49 or ₹249 subscription.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2.5 lg:border-l lg:border-slate-200 dark:lg:border-slate-800 lg:pl-6">
+                    <div className="text-xs font-bold text-slate-900 dark:text-white">
+                      Payment Status &amp; Spend Summary
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 pt-0.5">
+                      <div>
+                        <div className="text-[11px] text-slate-500">Total Paid</div>
+                        <div className="text-xl font-bold text-emerald-600 dark:text-emerald-400 font-mono tabular-nums">
+                          ₹{Number(selectedCustomer.paymentSummary?.totalSpentInr || 0).toLocaleString('en-IN')}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-slate-500">Transactions</div>
+                        <div className="text-xs font-mono text-slate-800 dark:text-slate-200 mt-1 tabular-nums">
+                          {selectedCustomer.paymentSummary?.successfulPaymentsCount ?? 0} Paid ·{' '}
+                          {selectedCustomer.paymentSummary?.pendingPaymentsCount ?? 0} Pending ·{' '}
+                          {selectedCustomer.paymentSummary?.failedPaymentsCount ?? 0} Failed
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono tabular-nums">
+                      Last payment activity:{' '}
+                      {selectedCustomer.paymentSummary?.lastPaymentAt
+                        ? formatIstDateTime(selectedCustomer.paymentSummary.lastPaymentAt)
+                        : 'No payments recorded'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Payment History Table */}
+                <div className="p-5 space-y-3">
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    Payment History ({selectedCustomer.paymentHistory?.length || 0})
+                  </div>
+                  {!selectedCustomer.paymentHistory || selectedCustomer.paymentHistory.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      No payment records found for this customer profile.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 font-semibold">
+                            <th className="py-2 pr-3">Date (IST)</th>
+                            <th className="py-2 px-3">Plan / Item</th>
+                            <th className="py-2 px-3">Method</th>
+                            <th className="py-2 px-3">Receipt / Payment ID</th>
+                            <th className="py-2 px-3">Status</th>
+                            <th className="py-2 pl-3 text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                          {selectedCustomer.paymentHistory.map((tx: any) => (
+                            <tr key={tx.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                              <td className="py-2.5 pr-3 font-mono text-[11px] text-slate-600 dark:text-slate-300 tabular-nums whitespace-nowrap">
+                                {formatIstDateTime(tx.date)}
+                              </td>
+                              <td className="py-2.5 px-3 font-medium text-slate-900 dark:text-white">
+                                {tx.itemTitle || tx.plan}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
+                                {tx.paymentMethod || 'Razorpay'}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500">
+                                {tx.receiptNumber || tx.transactionId || tx.orderId || '—'}
+                              </td>
+                              <td className="py-2.5 px-3 font-semibold">
+                                {tx.status === 'success' ? (
+                                  <span className="text-emerald-600 dark:text-emerald-400">Success</span>
+                                ) : tx.status === 'failed' ? (
+                                  <span className="text-rose-600 dark:text-rose-400">Failed</span>
+                                ) : tx.status === 'refunded' ? (
+                                  <span className="text-amber-600 dark:text-amber-400">Refunded</span>
+                                ) : (
+                                  <span className="text-amber-600 dark:text-amber-400">Pending</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 pl-3 text-right font-mono font-bold text-slate-900 dark:text-white tabular-nums">
+                                ₹{Number(tx.amountInr || 0).toLocaleString('en-IN')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* 5. Admin Profile Controls */}
+                <div className="p-4 bg-slate-50/70 dark:bg-slate-950/50 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-semibold text-slate-500 mr-1">Plan Controls:</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleTrackedCustomerUpdate(
+                          selectedCustomer.id,
+                          { paidPlan: '1_month', paymentMethod: 'Admin DB Grant (UPI)' },
+                          `Granted 1-Month Pass (₹49) to ${selectedCustomer.email}.`
+                        )
+                      }
+                      className="py-1.5 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Grant 1M (₹49)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleTrackedCustomerUpdate(
+                          selectedCustomer.id,
+                          { paidPlan: '6_months', paymentMethod: 'Admin DB Grant (UPI)' },
+                          `Granted 6-Months Pass (₹249) to ${selectedCustomer.email}.`
+                        )
+                      }
+                      className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Grant 6M (₹249)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleTrackedCustomerUpdate(
+                          selectedCustomer.id,
+                          { paidPlan: 'free' },
+                          `Reset ${selectedCustomer.email} to Free plan.`
+                        )
+                      }
+                      className="py-1.5 px-3 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Set Free
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleTrackedCustomerUpdate(
+                          selectedCustomer.id,
+                          {
+                            isSuspended: !selectedCustomer.isSuspended,
+                            suspendedReason: !selectedCustomer.isSuspended ? 'Suspended by Admin' : '',
+                          },
+                          !selectedCustomer.isSuspended
+                            ? `Suspended customer account ${selectedCustomer.email}.`
+                            : `Reactivated customer account ${selectedCustomer.email}.`
+                        )
+                      }
+                      className="py-1.5 px-3 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      {selectedCustomer.isSuspended ? 'Reactivate Account' : 'Suspend Account'}
+                    </button>
+                  </div>
+
+                  <div>
+                    {confirmDeleteTrackedId === selectedCustomer.id ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+                          Confirm delete?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleTrackedCustomerDelete(selectedCustomer.id)}
+                          className="py-1.5 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+                        >
+                          Yes, Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTrackedId(null)}
+                          className="py-1.5 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteTrackedId(selectedCustomer.id)}
+                        className="py-1.5 px-3 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Account</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* TAB 2: MY COMIC & EPISODE / UPLOAD NEW COMIC */}
       {(activeTab === "my-comics-episodes-upload" || activeTab === "publish-direct") && (
@@ -5336,11 +5845,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   onClick={handleSecretExportTap}
                   className="text-xs text-slate-500 select-none"
                 >
-                  {activityLogs.length} {activityLogs.length === 1 ? 'entry' : 'entries'} recorded today (IST)
+                  {isLoadingActivityLogs && !activityLogsLoaded
+                    ? 'Loading today’s activity logs...'
+                    : `${activityLogs.length} ${activityLogs.length === 1 ? 'entry' : 'entries'} recorded today (IST)`}
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+                <button
+                  type="button"
+                  disabled={isLoadingActivityLogs}
+                  aria-busy={isLoadingActivityLogs}
+                  data-loading={isLoadingActivityLogs ? 'true' : 'false'}
+                  onClick={() => fetchActivityLogs()}
+                  className={processingClass(
+                    isLoadingActivityLogs,
+                    'py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer'
+                  )}
+                  title="Reload today's activity logs on demand"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>{isLoadingActivityLogs ? 'Loading...' : 'Refresh'}</span>
+                </button>
                 <button
                   type="button"
                   disabled={isDownloadingMonthLogs !== null || monthBufferCount === 0}
@@ -5503,7 +6029,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             )}
 
-            {activityLogs.length === 0 ? (
+            {isLoadingActivityLogs && !activityLogsLoaded ? (
+              <div className="space-y-2">
+                {[0, 1, 2, 3].map((idx) => (
+                  <div
+                    key={idx}
+                    className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 animate-pulse"
+                  >
+                    <div className="space-y-2 flex-1">
+                      <div className="h-3.5 w-48 rounded bg-slate-200 dark:bg-slate-800" />
+                      <div className="h-3 w-3/4 rounded bg-slate-100 dark:bg-slate-800/70" />
+                    </div>
+                    <div className="h-3 w-24 rounded bg-slate-200 dark:bg-slate-800 shrink-0" />
+                  </div>
+                ))}
+              </div>
+            ) : activityLogs.length === 0 ? (
               <div className="p-8 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-1.5">
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   No Admin Panel or ₹49 / ₹249 payment logs recorded today (IST).
