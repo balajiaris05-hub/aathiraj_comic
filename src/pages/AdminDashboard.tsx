@@ -923,35 +923,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return comic.attachedPages;
     }
     const epPages = comic.chapters.flatMap(ch => ch.episodes.flatMap(ep => ep.pages || []));
-    const fileCountMatch = String(comic.attachedFileSize || '').match(/(\d+)\s*(?:files?|photos?|pages?)/i);
-    const expectedCount = fileCountMatch ? Math.max(1, parseInt(fileCountMatch[1], 10)) : 0;
-
-    if (epPages.length >= Math.max(1, expectedCount)) {
+    if (epPages.length > 0) {
       return epPages;
     }
 
-    const totalNeeded = Math.max(expectedCount, epPages.length, 1);
-    const fallbackImgs = [
-      comic.coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-      '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
-      '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
-      '/src/assets/images/comic_cover_chronicles_1794269872270.jpg',
-      '/src/assets/images/comic_cover_romance_1794269872268.jpg',
-      '/src/assets/images/hero_banner_manga_1794269871419.jpg',
-    ];
+    const cover =
+      comic.coverImage && !/^\/src\/assets\/images\/comic_cover_/i.test(comic.coverImage)
+        ? comic.coverImage
+        : '';
 
-    return Array.from({ length: totalNeeded }, (_, idx) => {
-      if (epPages[idx]) return epPages[idx];
-      return {
-        id: `p_${comic.id}_${idx + 1}`,
-        pageNumber: idx + 1,
-        imageUrl: fallbackImgs[idx % fallbackImgs.length],
-        caption:
-          idx === 0 && comic.attachedFileName
-            ? `Page 1 — ${comic.attachedFileName} (Cover / Opening Panel)`
-            : `Page ${idx + 1} — Attached Comic Artwork ${idx + 1}`,
-      };
-    });
+    if (!cover) {
+      return [];
+    }
+
+    return [
+      {
+        id: `p_${comic.id}_1`,
+        pageNumber: 1,
+        imageUrl: cover,
+        caption: comic.attachedFileName
+          ? `Page 1 — ${comic.attachedFileName} (Cover / Opening Panel)`
+          : 'Page 1 — Cover Artwork',
+      },
+    ];
   };
 
   // Admin approves or rejects author's submitted comic
@@ -4938,13 +4932,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="space-y-4">
             {applications.map((app) => {
               const samplePages =
-                Array.isArray(app.sampleImages) && app.sampleImages.length > 0
-                  ? app.sampleImages
-                  : [
-                      '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
-                      '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-                      '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
-                    ];
+                Array.isArray(app.sampleImages)
+                  ? app.sampleImages.filter(
+                      (img) => typeof img === 'string' && img.trim() !== '' && !/^\/src\/assets\/images\/comic_cover_/i.test(img)
+                    )
+                  : [];
               const avatarUrl =
                 app.authorAvatar ||
                 `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(app.authorName)}`;

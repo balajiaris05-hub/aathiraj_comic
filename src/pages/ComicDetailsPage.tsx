@@ -209,12 +209,25 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
         {/* Cover Art (Left column) */}
         <div className="md:col-span-4 lg:col-span-3">
           <div className="relative aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl bg-slate-950 border border-slate-200 dark:border-slate-800">
-            <img
-              src={comic.coverImage}
-              alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
-              referrerPolicy="no-referrer"
-              className="w-full h-full object-cover"
-            />
+            {comic.coverImage && !/^\/src\/assets\/images\/comic_cover_/i.test(comic.coverImage.trim()) ? (
+              <img
+                src={comic.coverImage}
+                alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex flex-col justify-between p-5 bg-gradient-to-br from-slate-900 via-slate-950 to-rose-950/70 text-white">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-rose-400">
+                  {comic.genre?.[0] || 'Aathirai Comic'}
+                </span>
+                <div className="my-auto">
+                  <p className="text-xl font-extrabold leading-tight font-heading">{comic.title}</p>
+                  <p className="text-xs text-slate-300 mt-2">{comic.authorName}</p>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">Original Series</span>
+              </div>
+            )}
             {comic.accessType === 'premium' ? (
               <div className="absolute top-3 right-3 px-2.5 py-1 rounded-lg text-xs font-black bg-amber-500 text-slate-950 shadow-md">
                 {isUnlockedForReader ? '✓ GMAIL UNLOCKED' : '1M ₹49 / 6M ₹249'}
@@ -505,11 +518,21 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                             onClick={() => handleReadClick(episode.id)}
                             className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer group"
                           >
-                            <img
-                              src={episode.coverImage || episode.pages?.[0]?.imageUrl || comic.coverImage}
-                              alt={`${comic.title} - ${episode.title} Tamil comic preview - Aathirai Comic`}
-                              className="w-10 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
-                            />
+                            {(() => {
+                              const thumb = episode.coverImage || episode.pages?.[0]?.imageUrl || comic.coverImage || '';
+                              const validThumb = thumb && !/^\/src\/assets\/images\/comic_cover_/i.test(thumb.trim());
+                              return validThumb ? (
+                                <img
+                                  src={thumb}
+                                  alt={`${comic.title} - ${episode.title} Tamil comic preview - Aathirai Comic`}
+                                  className="w-10 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
+                                />
+                              ) : (
+                                <div className="w-10 h-14 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-900 text-rose-400 flex items-center justify-center shrink-0 text-[11px] font-extrabold font-mono">
+                                  E{episode.episodeNumber}
+                                </div>
+                              );
+                            })()}
 
                             <div className="min-w-0">
                               <div className="flex items-center gap-2">
@@ -534,9 +557,29 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                                {episode.synopsis || 'Read online in high quality manga viewer.'} · {episode.pages?.length || 1} Pages
-                              </p>
+                              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500 mt-0.5">
+                                <span className="truncate">
+                                  {episode.synopsis || 'Read online in high quality manga viewer.'} · {episode.pages?.length || 1} Pages
+                                </span>
+                                <span
+                                  className={`inline-flex items-center gap-1 font-bold shrink-0 tabular-nums ${
+                                    Number(episode.totalRatings || 0) > 0
+                                      ? 'text-amber-500 dark:text-amber-400'
+                                      : 'text-slate-400'
+                                  }`}
+                                >
+                                  <Star
+                                    className={`w-3 h-3 ${
+                                      Number(episode.totalRatings || 0) > 0
+                                        ? 'fill-amber-400 text-amber-400'
+                                        : 'text-slate-400'
+                                    }`}
+                                  />
+                                  {Number(episode.totalRatings || 0) > 0
+                                    ? `${Number(episode.averageRating || 0).toFixed(1)} (${episode.totalRatings})`
+                                    : 'No ratings'}
+                                </span>
+                              </div>
                             </div>
                           </div>
 

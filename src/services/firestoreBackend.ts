@@ -352,6 +352,21 @@ export async function upsertCommentInFirestore(comment: Comment, comicIdRaw: str
   }
 }
 
+export async function deleteCommentInFirestore(commentIdRaw: string) {
+  const currentUser = ensureVerifiedUser();
+  if (!currentUser) return null;
+
+  const commentId = sanitizeFirestoreId(commentIdRaw);
+  const path = `comments/${commentId}`;
+  const ref = doc(db, 'comments', commentId);
+  try {
+    await deleteDoc(ref);
+    return commentId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
 export async function upsertRatingInFirestore(rating: Rating, comicIdRaw: string) {
   const currentUser = ensureVerifiedUser();
   if (!currentUser) return null;
@@ -387,6 +402,78 @@ export async function upsertRatingInFirestore(rating: Rating, comicIdRaw: string
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
+}
+
+export async function fetchEpisodeEngagementFromFirestore(episodeIdRaw: string): Promise<{
+  comments: Comment[];
+  ratings: Rating[];
+}> {
+  const episodeId = sanitizeFirestoreId(episodeIdRaw);
+  const commentsPath = 'comments';
+  const ratingsPath = 'ratings';
+
+  let comments: Comment[] = [];
+  let ratings: Rating[] = [];
+
+  try {
+    const cQuery = query(
+      collection(db, commentsPath),
+      where('likesCount', '>=', 0)
+    );
+    const cSnap = await getDocs(cQuery);
+    comments = cSnap.docs
+      .map((d) => {
+        const raw = d.data() as Record<string, any>;
+        const userName = String(raw.userName || 'Comic Reader').trim() || 'Comic Reader';
+        const createdAt = raw.createdAt?.toDate ? raw.createdAt.toDate().toISOString() : new Date().toISOString();
+        const updatedAt = raw.updatedAt?.toDate ? raw.updatedAt.toDate().toISOString() : createdAt;
+        return {
+          id: String(raw.commentId || d.id),
+          episodeId: String(raw.episodeId || ''),
+          userId: String(raw.userId || 'usr_guest'),
+          userName,
+          userAvatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userName)}`,
+          userRole: 'reader' as const,
+          content: String(raw.content || ''),
+          createdAt,
+          updatedAt,
+          likesCount: Math.max(0, Number(raw.likesCount) || 0),
+          likedBy: [],
+        } as Comment;
+      })
+      .filter((c) => c.episodeId === episodeId && Boolean(c.content.trim()))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, commentsPath);
+  }
+
+  try {
+    const rQuery = query(
+      collection(db, ratingsPath),
+      where('stars', '>=', 1)
+    );
+    const rSnap = await getDocs(rQuery);
+    ratings = rSnap.docs
+      .map((d) => {
+        const raw = d.data() as Record<string, any>;
+        const stars = Math.min(5, Math.max(1, Math.round(Number(raw.stars) || 0)));
+        const createdAt = raw.createdAt?.toDate ? raw.createdAt.toDate().toISOString() : new Date().toISOString();
+        const updatedAt = raw.updatedAt?.toDate ? raw.updatedAt.toDate().toISOString() : createdAt;
+        return {
+          id: String(raw.ratingId || d.id),
+          episodeId: String(raw.episodeId || ''),
+          userId: String(raw.userId || ''),
+          stars,
+          createdAt,
+          updatedAt,
+        } as Rating;
+      })
+      .filter((r) => r.episodeId === episodeId && Boolean(r.userId && r.stars >= 1));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, ratingsPath);
+  }
+
+  return { comments, ratings };
 }
 
 export async function upsertVoteInFirestore(vote: Vote, comicIdRaw: string) {

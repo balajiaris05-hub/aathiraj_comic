@@ -467,6 +467,9 @@ function MainAppContent() {
           onClose={() => setActiveReaderEpisodeId(null)}
           onSelectEpisode={handleOpenEpisode}
           onRedirectToPremium={(customMsg) => redirectToPremiumTab(customMsg)}
+          onInteractionUpdated={() => {
+            fetchComics();
+          }}
           openAuthModal={() => setAuthModalOpen(true)}
         />
       )}

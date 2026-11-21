@@ -293,11 +293,20 @@ export const BooksPage: React.FC<BooksPageProps> = ({
                   }}
                   className="flex flex-col sm:flex-row items-start sm:items-center gap-5 cursor-pointer"
                 >
-                  <img
-                    src={comic.coverImage}
-                    alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
-                    className="w-24 h-32 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-800"
-                  />
+                  {comic.coverImage && !/^\/src\/assets\/images\/comic_cover_/i.test(comic.coverImage.trim()) ? (
+                    <img
+                      src={comic.coverImage}
+                      alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
+                      className="w-24 h-32 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-800"
+                    />
+                  ) : (
+                    <div className="w-24 h-32 rounded-xl shrink-0 border border-slate-200 dark:border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-rose-950/70 p-2.5 flex flex-col justify-between text-white">
+                      <BookOpen className="w-4 h-4 text-rose-400" />
+                      <span className="text-[11px] font-extrabold leading-tight line-clamp-3 font-heading">
+                        {comic.title}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0 space-y-2">
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       <span className="font-bold text-rose-600 dark:text-rose-400">

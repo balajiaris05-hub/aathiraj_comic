@@ -236,7 +236,7 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
     setIsSubmittingComic(true);
 
     const coverPage = newComicAttachedPages.find(p => p.id === selectedCoverPageId) || newComicAttachedPages[0];
-    const coverImageUrl = coverPage?.dataUrl || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+    const coverImageUrl = coverPage?.dataUrl || '';
 
     try {
       const headers = await getAuthHeaders();

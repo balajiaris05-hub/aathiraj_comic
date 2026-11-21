@@ -58,7 +58,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newGenre, setNewGenre] = useState('Fantasy');
-  const [newCover, setNewCover] = useState('/src/assets/images/comic_cover_blade_1794269871791.jpg');
+  const [newCover, setNewCover] = useState('');
   const [newAccess, setNewAccess] = useState<'free' | 'premium'>('free');
   const [newAuthorComments, setNewAuthorComments] = useState('');
   const [isSubmittingComic, setIsSubmittingComic] = useState(false);
@@ -478,7 +478,7 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
     setIsSubmittingComic(true);
 
     const coverPage = newComicAttachedPages.find(p => p.id === selectedCoverPageId) || newComicAttachedPages[0];
-    const coverImageUrl = coverPage?.dataUrl || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+    const coverImageUrl = coverPage?.dataUrl || '';
 
     try {
       const headers = await getAuthHeaders();

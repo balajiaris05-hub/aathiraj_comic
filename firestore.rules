@@ -552,14 +552,14 @@ service cloud.firestore {
     // 5. /comments/{commentId}
     // =========================================================================
     match /comments/{commentId} {
-      allow get: if isValidId(commentId) && isSignedIn();
-      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || resource.data.likesCount >= 0);
+      allow get: if isValidId(commentId) && existing().likesCount >= 0;
+      allow list: if resource.data.likesCount >= 0;
 
       allow create: if isVerifiedUser() &&
         isValidId(commentId) &&
         isValidCommentRecord(incoming()) &&
         incoming().commentId == commentId &&
-        incoming().userId == request.auth.uid &&
+        (incoming().userId == request.auth.uid || isAdmin()) &&
         incoming().likesCount == 0 &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
@@ -588,14 +588,14 @@ service cloud.firestore {
     // 6. /ratings/{ratingId}
     // =========================================================================
     match /ratings/{ratingId} {
-      allow get: if isVerifiedUser() && isValidId(ratingId) && (isOwner(existing().userId) || isAdmin());
-      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow get: if isValidId(ratingId) && existing().stars >= 1 && existing().stars <= 5;
+      allow list: if resource.data.stars >= 1;
 
       allow create: if isVerifiedUser() &&
         isValidId(ratingId) &&
         isValidRatingRecord(incoming()) &&
         incoming().ratingId == ratingId &&
-        incoming().userId == request.auth.uid &&
+        (incoming().userId == request.auth.uid || isAdmin()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         exists(/databases/$(database)/documents/comics/$(incoming().comicId)) &&

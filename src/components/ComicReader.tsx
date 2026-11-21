@@ -29,12 +29,20 @@ import {
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from './RazorpayCheckoutModal';
 import { processingClass } from '../utils/buttonLoading';
+import { auth, sanitizeFirestoreId } from '../firebase';
+import {
+  upsertCommentInFirestore,
+  upsertRatingInFirestore,
+  deleteCommentInFirestore,
+  fetchEpisodeEngagementFromFirestore,
+} from '../services/firestoreBackend';
 
 interface ComicReaderProps {
   episodeId: string;
   onClose: () => void;
   onSelectEpisode: (epId: string) => void;
   onRedirectToPremium?: (message?: string) => void;
+  onInteractionUpdated?: () => void;
   openAuthModal: () => void;
 }
 
@@ -43,6 +51,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   onClose,
   onSelectEpisode,
   onRedirectToPremium,
+  onInteractionUpdated,
   openAuthModal,
 }) => {
   const {
@@ -70,7 +79,14 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     chapter: { id: string; title: string; chapterNumber: number };
     prevEpisodeId?: string | null;
     nextEpisodeId?: string | null;
-    allEpisodes?: { id: string; episodeNumber: number; title: string; chapterNumber: number }[];
+    allEpisodes?: {
+      id: string;
+      episodeNumber: number;
+      title: string;
+      chapterNumber: number;
+      averageRating?: number;
+      totalRatings?: number;
+    }[];
     hasAccess: boolean;
     isPaywalled?: boolean;
     accessReason?: string;
@@ -109,12 +125,15 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   const [userVote, setUserVote] = useState<'like' | 'dislike' | null>(null);
   const [userRating, setUserRating] = useState<number>(0);
   const [hoverRating, setHoverRating] = useState<number>(0);
-  const [avgRating, setAvgRating] = useState<number>(5.0);
+  const [avgRating, setAvgRating] = useState<number>(0);
   const [totalRatings, setTotalRatings] = useState<number>(0);
+  const [savingRating, setSavingRating] = useState<boolean>(false);
+  const [ratingFeedback, setRatingFeedback] = useState<string | null>(null);
 
   // Comments
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState('');
+  const [commentFeedback, setCommentFeedback] = useState<string | null>(null);
   const [replyParentId, setReplyParentId] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
@@ -150,10 +169,43 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         setLikesCount(json.episode.likesCount || 0);
         setDislikesCount(json.episode.dislikesCount || 0);
         setUserVote(json.userVote || null);
-        setUserRating(json.userRating || 0);
-        setAvgRating(json.episode.averageRating || 5.0);
-        setTotalRatings(json.episode.totalRatings || 0);
-        setComments(json.comments || []);
+
+        let resolvedUserRating = Number(json.userRating || 0);
+        let resolvedAvgRating = Number(json.episode.totalRatings || 0) > 0 ? Number(json.episode.averageRating || 0) : 0;
+        let resolvedTotalRatings = Number(json.episode.totalRatings || 0);
+        let resolvedComments: Comment[] = Array.isArray(json.comments) ? json.comments : [];
+
+        // Hydrate live comments & ratings directly from Firestore so cross-device updates are always reflected
+        try {
+          const fsEngagement = await fetchEpisodeEngagementFromFirestore(episodeId);
+          if (fsEngagement.comments.length > 0) {
+            const mergedMap = new Map<string, Comment>();
+            for (const c of resolvedComments) mergedMap.set(c.id, c);
+            for (const fc of fsEngagement.comments) {
+              if (!mergedMap.has(fc.id)) mergedMap.set(fc.id, fc);
+            }
+            resolvedComments = Array.from(mergedMap.values()).sort(
+              (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+            );
+          }
+          if (fsEngagement.ratings.length > resolvedTotalRatings) {
+            const sum = fsEngagement.ratings.reduce((acc, r) => acc + r.stars, 0);
+            resolvedTotalRatings = fsEngagement.ratings.length;
+            resolvedAvgRating = Number((sum / resolvedTotalRatings).toFixed(1));
+            const fbUid = auth.currentUser?.uid;
+            const myFsRating = fsEngagement.ratings.find(
+              (r) => (fbUid && r.userId === fbUid) || (user?.id && r.userId === user.id)
+            );
+            if (myFsRating) resolvedUserRating = myFsRating.stars;
+          }
+        } catch {
+          // Backend snapshot remains authoritative if direct Firestore client query is unavailable
+        }
+
+        setUserRating(resolvedUserRating);
+        setAvgRating(resolvedAvgRating);
+        setTotalRatings(resolvedTotalRatings);
+        setComments(resolvedComments);
 
         // Restore saved reading progress if available
         const savedProgress = user?.readingHistory?.find((h) => h.episodeId === episodeId);
@@ -301,27 +353,82 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
     }
   };
 
-  // Star Rating
+  // Star Rating (stores to backend + Firestore /ratings)
   const handleRate = async (stars: number) => {
     if (!user) {
       openAuthModal();
       return;
     }
+    if (savingRating) return;
+    setSavingRating(true);
+    setRatingFeedback(null);
+
+    const effectiveUid = auth.currentUser?.uid || user.id;
+    const deterministicRatingId = sanitizeFirestoreId(`r_${episodeId}_${effectiveUid}`);
+
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(`/api/episodes/${episodeId}/rate`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ userId: user.id, stars }),
+        body: JSON.stringify({
+          userId: user.id,
+          stars,
+          ratingId: deterministicRatingId,
+        }),
       });
       const resData = await res.json();
       if (res.ok) {
-        setUserRating(resData.userRating);
-        setAvgRating(resData.averageRating);
-        setTotalRatings(resData.totalRatings);
+        const nextAvg = Number(resData.averageRating || stars);
+        const nextTotal = Number(resData.totalRatings || 1);
+        setUserRating(resData.userRating ?? stars);
+        setAvgRating(nextAvg);
+        setTotalRatings(nextTotal);
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                episode: {
+                  ...prev.episode,
+                  averageRating: nextAvg,
+                  totalRatings: nextTotal,
+                },
+                allEpisodes: prev.allEpisodes?.map((ep) =>
+                  ep.id === episodeId
+                    ? { ...ep, averageRating: nextAvg, totalRatings: nextTotal }
+                    : ep
+                ),
+              }
+            : prev
+        );
+
+        // Mirror directly to Firestore via client SDK when Firebase Auth session is active
+        if (data?.comic?.id) {
+          const nowIso = new Date().toISOString();
+          upsertRatingInFirestore(
+            {
+              id: resData.rating?.id || deterministicRatingId,
+              episodeId,
+              userId: effectiveUid,
+              stars,
+              createdAt: resData.rating?.createdAt || nowIso,
+              updatedAt: nowIso,
+            },
+            data.comic.id
+          ).catch(() => {});
+        }
+
+        setRatingFeedback(`Saved ${stars}★ rating`);
+        setTimeout(() => setRatingFeedback(null), 3000);
+        onInteractionUpdated?.();
+      } else {
+        setRatingFeedback(resData.error || 'Could not save rating. Please try again.');
       }
     } catch (err) {
       console.error(err);
+      setRatingFeedback('Network error saving rating. Please try again.');
+    } finally {
+      setSavingRating(false);
     }
   };
 
@@ -329,7 +436,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
   const [postingReply, setPostingReply] = useState(false);
   const [savingEditComment, setSavingEditComment] = useState(false);
 
-  // Add Comment
+  // Add Comment (stores to backend + Firestore /comments)
   const handlePostComment = async (e: React.FormEvent, parentId?: string) => {
     e.preventDefault();
     if (!user) {
@@ -337,15 +444,20 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
       return;
     }
 
-    const contentToPost = parentId ? replyContent : newComment;
-    if (!contentToPost.trim()) return;
+    const contentToPost = (parentId ? replyContent : newComment).trim();
+    if (!contentToPost) return;
     if (parentId ? postingReply : postingComment) return;
 
+    setCommentFeedback(null);
     if (parentId) {
       setPostingReply(true);
     } else {
       setPostingComment(true);
     }
+
+    const clientCommentId = sanitizeFirestoreId(
+      `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    );
 
     try {
       const headers = await getAuthHeaders();
@@ -353,11 +465,12 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         method: 'POST',
         headers,
         body: JSON.stringify({
+          id: clientCommentId,
           userId: user.id,
           userName: user.name,
           userAvatar: user.avatar,
           userRole: user.role,
-          content: contentToPost,
+          content: contentToPost.slice(0, 1000),
           parentId,
         }),
       });
@@ -379,9 +492,20 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
           setComments((prev) => [resData.comment, ...prev]);
           setNewComment('');
         }
+
+        // Mirror directly to Firestore /comments via client SDK when Firebase Auth session is active
+        if (data?.comic?.id) {
+          upsertCommentInFirestore(resData.comment, data.comic.id).catch(() => {});
+        }
+
+        setCommentFeedback('Comment posted.');
+        setTimeout(() => setCommentFeedback(null), 3000);
+      } else {
+        setCommentFeedback(resData.error || 'Could not post comment. Please try again.');
       }
     } catch (err) {
       console.error(err);
+      setCommentFeedback('Network error posting comment. Please try again.');
     } finally {
       if (parentId) {
         setPostingReply(false);
@@ -402,26 +526,31 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         headers,
         body: JSON.stringify({
           userId: user.id,
-          content: editingContent.trim(),
+          content: editingContent.trim().slice(0, 1000),
         }),
       });
+      const resData = await res.json();
       if (res.ok) {
+        const trimmed = editingContent.trim().slice(0, 1000);
         setComments((prev) =>
           prev.map((c) => {
             if (c.id === commentId) {
-              return { ...c, content: editingContent.trim(), isEdited: true };
+              return { ...c, content: trimmed, isEdited: true };
             }
             if (c.replies) {
               return {
                 ...c,
                 replies: c.replies.map((r) =>
-                  r.id === commentId ? { ...r, content: editingContent.trim(), isEdited: true } : r
+                  r.id === commentId ? { ...r, content: trimmed, isEdited: true } : r
                 ),
               };
             }
             return c;
           })
         );
+        if (data?.comic?.id && resData.comment) {
+          upsertCommentInFirestore(resData.comment, data.comic.id).catch(() => {});
+        }
         setEditingCommentId(null);
         setEditingContent('');
       }
@@ -446,9 +575,36 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
         body: JSON.stringify({ userId: user.id }),
       });
       const resData = await res.json();
-      if (res.ok && resData.comment) {
+      if (res.ok) {
+        const nextLikesCount = resData.comment?.likesCount ?? resData.likesCount;
+        const nextLikedBy = resData.comment?.likedBy ?? resData.likedBy;
         setComments((prev) =>
-          prev.map((c) => (c.id === commentId ? { ...c, ...resData.comment } : c))
+          prev.map((c) => {
+            if (c.id === commentId) {
+              return {
+                ...c,
+                ...(resData.comment || {}),
+                likesCount: nextLikesCount,
+                likedBy: nextLikedBy,
+              };
+            }
+            if (c.replies) {
+              return {
+                ...c,
+                replies: c.replies.map((r) =>
+                  r.id === commentId
+                    ? {
+                        ...r,
+                        ...(resData.comment || {}),
+                        likesCount: nextLikesCount,
+                        likedBy: nextLikedBy,
+                      }
+                    : r
+                ),
+              };
+            }
+            return c;
+          })
         );
       }
     } catch (err) {
@@ -504,6 +660,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               replies: c.replies ? c.replies.filter((r) => r.id !== commentId) : [],
             }))
         );
+        deleteCommentInFirestore(commentId).catch(() => {});
       }
     } catch (err) {
       console.error(err);
@@ -557,6 +714,11 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               <span className="font-semibold text-rose-400 truncate">
                 Ep {episode.episodeNumber}: {episode.title}
               </span>
+              <span aria-hidden="true">·</span>
+              <span className="inline-flex items-center gap-0.5 font-bold text-amber-400 shrink-0 tabular-nums">
+                <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                {totalRatings > 0 ? `${avgRating.toFixed(1)} (${totalRatings})` : 'New'}
+              </span>
             </div>
           </div>
 
@@ -569,6 +731,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               {allEpisodes.map((ep) => (
                 <option key={ep.id} value={ep.id}>
                   Ch.{ep.chapterNumber} Ep.{ep.episodeNumber} — {ep.title}
+                  {ep.totalRatings && ep.totalRatings > 0 ? ` (★ ${Number(ep.averageRating || 0).toFixed(1)})` : ''}
                 </option>
               ))}
             </select>
@@ -1077,8 +1240,18 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs font-bold text-slate-300">Rate this Episode:</span>
-                    <span className="text-xs font-bold text-amber-400 tabular-nums">★ {avgRating}</span>
-                    <span className="text-[11px] text-slate-500">({totalRatings} ratings)</span>
+                    {totalRatings > 0 ? (
+                      <>
+                        <span className="text-xs font-bold text-amber-400 tabular-nums">
+                          ★ {avgRating.toFixed(1)}
+                        </span>
+                        <span className="text-[11px] text-slate-400">
+                          ({totalRatings} {totalRatings === 1 ? 'rating' : 'ratings'})
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-[11px] text-slate-400">No ratings yet</span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1">
@@ -1086,11 +1259,12 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                       <button
                         key={star}
                         type="button"
+                        disabled={savingRating}
                         onMouseEnter={() => setHoverRating(star)}
                         onMouseLeave={() => setHoverRating(0)}
                         onClick={() => handleRate(star)}
-                        className="p-1 transition-transform hover:scale-125 focus:outline-none cursor-pointer"
-                        title={`Rate ${star} star`}
+                        className="p-1 transition-transform hover:scale-125 disabled:opacity-50 focus:outline-none cursor-pointer"
+                        title={`Rate ${star} ${star === 1 ? 'star' : 'stars'}`}
                       >
                         <Star
                           className={`w-5 h-5 transition-colors ${
@@ -1101,11 +1275,19 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                         />
                       </button>
                     ))}
-                    {userRating > 0 && (
+                    {savingRating ? (
+                      <span className="text-[10px] text-amber-400 font-semibold ml-2">
+                        Saving...
+                      </span>
+                    ) : ratingFeedback ? (
+                      <span className="text-[10px] text-emerald-400 font-semibold ml-2">
+                        {ratingFeedback}
+                      </span>
+                    ) : userRating > 0 ? (
                       <span className="text-[10px] text-emerald-400 font-semibold ml-2">
                         Your Rating: {userRating}★
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
@@ -1125,7 +1307,7 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
 
                   <button
                     onClick={() => handleVote('dislike')}
-                    className={`flex items-center gap-1.5 py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    className={`flex items-center gap-1.5 py-2 px-3.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                       userVote === 'dislike'
                         ? 'bg-slate-800 border-slate-600 text-slate-300'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
@@ -1153,10 +1335,17 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                   </div>
                 )}
 
+                {commentFeedback && (
+                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                    {commentFeedback}
+                  </div>
+                )}
+
                 {/* Comment Input */}
                 <form onSubmit={(e) => handlePostComment(e)} className="space-y-2">
                   <textarea
                     rows={3}
+                    maxLength={1000}
                     placeholder={
                       user ? 'Write your comment about this episode...' : 'Log in to post a comment'
                     }

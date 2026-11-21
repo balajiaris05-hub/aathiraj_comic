@@ -9,9 +9,14 @@ interface ComicCardProps {
 }
 
 export const ComicCard: React.FC<ComicCardProps> = ({ comic, onClick }) => {
+  const [imgFailed, setImgFailed] = React.useState(false);
   const totalEpisodes = comic.chapters.reduce((sum, ch) => sum + ch.episodes.length, 0);
   const latestEpisode = comic.chapters[comic.chapters.length - 1]?.episodes?.slice(-1)[0];
   const comicHref = getComicPath(comic);
+  const hasRealCover =
+    !imgFailed &&
+    Boolean(comic.coverImage) &&
+    !/^\/src\/assets\/images\/comic_cover_/i.test(String(comic.coverImage).trim());
 
   return (
     <article className="group flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden hover:border-slate-400 dark:hover:border-slate-700 transition-all duration-200 shadow-sm hover:shadow-lg">
@@ -26,13 +31,32 @@ export const ComicCard: React.FC<ComicCardProps> = ({ comic, onClick }) => {
         className="flex flex-col flex-1 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
       >
         {/* Cover Image Container (3:4 ratio) */}
-        <div className="relative aspect-[3/4] w-full overflow-hidden bg-slate-100 dark:bg-slate-800">
-          <img
-            src={comic.coverImage}
-            alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
-            referrerPolicy="no-referrer"
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-          />
+        <div className="relative aspect-[3/4] w-full overflow-hidden bg-slate-900 dark:bg-slate-950">
+          {hasRealCover ? (
+            <img
+              src={comic.coverImage}
+              alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
+              referrerPolicy="no-referrer"
+              onError={() => setImgFailed(true)}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            />
+          ) : (
+            <div className="w-full h-full flex flex-col justify-between p-4 bg-gradient-to-br from-slate-900 via-slate-950 to-rose-950/70 text-white">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-rose-400">
+                <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{comic.genre?.[0] || 'Original Series'}</span>
+              </div>
+              <div className="my-auto py-2">
+                <p className="text-base sm:text-lg font-extrabold leading-tight line-clamp-3 font-heading text-white">
+                  {comic.title}
+                </p>
+                <p className="text-[11px] text-slate-300 mt-1.5 truncate">
+                  {comic.authorName}
+                </p>
+              </div>
+              <div className="h-6" />
+            </div>
+          )}
 
           {/* Access Price / Free Overlay */}
           <div className="absolute top-2.5 right-2.5">

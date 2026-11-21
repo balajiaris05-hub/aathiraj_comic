@@ -597,6 +597,24 @@ export class StorageEngine {
     if (!parsed.otps) parsed.otps = {};
     if (!Array.isArray(parsed.authorApplications)) parsed.authorApplications = def.authorApplications;
     if (!Array.isArray(parsed.comics)) parsed.comics = def.comics;
+    // Strip legacy sample comic cover placeholder paths without ever removing real comic records or uploaded artwork
+    const stripSampleImg = (u?: string): string =>
+      typeof u === 'string' && /^\/src\/assets\/images\/comic_cover_/i.test(u.trim()) ? '' : u || '';
+    parsed.comics = parsed.comics.map((c: Comic) => ({
+      ...c,
+      coverImage: stripSampleImg(c.coverImage),
+      attachedPages: Array.isArray(c.attachedPages)
+        ? c.attachedPages.map((p) => ({ ...p, imageUrl: stripSampleImg(p.imageUrl) }))
+        : c.attachedPages,
+      chapters: (c.chapters || []).map((ch) => ({
+        ...ch,
+        episodes: (ch.episodes || []).map((ep) => ({
+          ...ep,
+          coverImage: stripSampleImg(ep.coverImage),
+          pages: (ep.pages || []).map((pg) => ({ ...pg, imageUrl: stripSampleImg(pg.imageUrl) })),
+        })),
+      })),
+    }));
     if (!Array.isArray(parsed.comments)) parsed.comments = def.comments;
     if (!Array.isArray(parsed.ratings)) parsed.ratings = def.ratings;
     if (!Array.isArray(parsed.votes)) parsed.votes = def.votes;
@@ -866,13 +884,13 @@ export class StorageEngine {
 
   private saveData(data: DatabaseSchema) {
     try {
-      const payload = JSON.stringify(data, null, 2);
+      const payload = JSON.stringify(data);
       const tmpFile = `${DB_FILE}.tmp.${process.pid}`;
       fs.writeFileSync(tmpFile, payload, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmpFile, DB_FILE);
     } catch (err) {
       try {
-        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
+        fs.writeFileSync(DB_FILE, JSON.stringify(data), { encoding: 'utf-8', mode: 0o600 });
       } catch (fallbackErr) {
         console.error('Error writing DB_FILE:', fallbackErr || err);
       }
@@ -887,7 +905,6 @@ export class StorageEngine {
     const res = fn(this.data);
     enforceImmutableAdminRecord(this.data.users);
     this.saveData(this.data);
-    this.writeFirestoreCollectionSnapshots(this.data);
     return res;
   }
 
@@ -996,20 +1013,22 @@ export class StorageEngine {
         if (res.hydrated) {
           enforceImmutableAdminRecord(res.data.users);
           this.data = res.data;
-          this.cloudRevision = res.revision || 1;
+          this.cloudRevision = res.revision || (res.mode === 'public_api_key' ? 0 : 1);
           this.lastRevisionCheckMs = Date.now();
           this.saveData(this.data);
-          this.writeFirestoreCollectionSnapshots(this.data);
           console.log(
             `[StorageEngine] Cloud vault ${res.seeded ? 'seeded' : 'hydrated'} (${res.mode}, rev=${this.cloudRevision}, users=${this.data.users.length}, comics=${this.data.comics.length}).`
           );
         } else if (res.error && res.mode !== 'public_api_key') {
           console.warn(`[StorageEngine] Cloud hydration warning (${res.mode}):`, res.error);
+          // Allow future ensureFreshFromCloud() calls to retry full hydration
+          this.initPromise = null;
         }
         return { hydrated: res.hydrated, mode: res.mode, error: res.error };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn('[StorageEngine] Cloud hydration skipped:', message);
+        this.initPromise = null;
         return { hydrated: false, mode: 'public_api_key', error: message };
       }
     })();
@@ -1028,17 +1047,30 @@ export class StorageEngine {
       try {
         this.lastRevisionCheckMs = Date.now();
         const revCheck = await fetchCloudSyncRevision();
-        if (!revCheck.ok || !revCheck.exists) return;
-        if (revCheck.revision > this.cloudRevision) {
+        if (revCheck.ok && revCheck.exists) {
+          if (revCheck.revision > this.cloudRevision) {
+            const res = await hydrateDatabaseFromFirestore(this.data);
+            if (res.hydrated) {
+              enforceImmutableAdminRecord(res.data.users);
+              this.data = res.data;
+              this.cloudRevision = res.revision;
+              this.saveData(this.data);
+              console.log(
+                `[StorageEngine] Synced newer cloud revision rev=${this.cloudRevision} (users=${this.data.users.length}, comics=${this.data.comics.length}).`
+              );
+            }
+          }
+          return;
+        }
+        // If running in public_api_key mode or cloud revision was never loaded and comics are empty,
+        // recover published comics from public Firestore catalog without wiping local state
+        if (this.data.comics.length === 0 || (force && this.cloudRevision === 0)) {
           const res = await hydrateDatabaseFromFirestore(this.data);
-          if (res.hydrated) {
+          if (res.hydrated && res.data.comics.length >= this.data.comics.length) {
             enforceImmutableAdminRecord(res.data.users);
             this.data = res.data;
-            this.cloudRevision = res.revision;
+            if (res.revision > 0) this.cloudRevision = res.revision;
             this.saveData(this.data);
-            console.log(
-              `[StorageEngine] Synced newer cloud revision rev=${this.cloudRevision} (users=${this.data.users.length}, comics=${this.data.comics.length}).`
-            );
           }
         }
       } catch {
@@ -1053,8 +1085,12 @@ export class StorageEngine {
   public persistChanges(opts: {
     users?: User[];
     comics?: Comic[];
+    changedComments?: Comment[];
+    changedRatings?: Rating[];
     deletedComicIds?: string[];
     deletedUserIds?: string[];
+    deletedCommentIds?: string[];
+    deletedRatingIds?: string[];
     collections?: VaultCollectionKey[];
     fullVaultSync?: boolean;
     userFirebaseIdToken?: string;
@@ -1065,8 +1101,12 @@ export class StorageEngine {
         snapshot: this.data,
         users: opts.users,
         comics: opts.comics,
+        changedComments: opts.changedComments,
+        changedRatings: opts.changedRatings,
         deletedComicIds: opts.deletedComicIds,
         deletedUserIds: opts.deletedUserIds,
+        deletedCommentIds: opts.deletedCommentIds,
+        deletedRatingIds: opts.deletedRatingIds,
         collections: opts.collections,
         fullVaultSync: opts.fullVaultSync,
         revision: nextRevision,
@@ -1075,6 +1115,19 @@ export class StorageEngine {
       if (res.persisted) {
         this.cloudRevision = res.revision;
         this.lastRevisionCheckMs = Date.now();
+        // Save compacted comic asset URLs back to local disk cache
+        if ((opts.comics && opts.comics.length > 0) || opts.fullVaultSync) {
+          this.saveData(this.data);
+        }
+      } else if (opts.comics && opts.comics.length > 0 && res.mode !== 'public_api_key') {
+        // Schedule one automatic background retry if a comic cloud write failed transiently
+        setTimeout(() => {
+          this.persistChanges({
+            comics: opts.comics,
+            collections: opts.collections,
+            userFirebaseIdToken: opts.userFirebaseIdToken,
+          }).catch(() => undefined);
+        }, 2500);
       }
       return res;
     };

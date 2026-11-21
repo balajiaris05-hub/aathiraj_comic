@@ -84,14 +84,22 @@ import {
   buildNotificationWriteItem,
   syncDatabaseSnapshotToFirestore,
   getFirestoreLiveStatus,
+  fetchComicAssetByKey,
+  parseComicAssetHttpUrl,
+  applyRatingsToComics,
+  sanitizeFirestoreId,
 } from './src/server/firestoreAdmin.ts';
 
 dotenv.config({ override: true });
 
 async function startServer() {
-  await db.initFromCloud().catch((err) => {
-    console.warn('[Aathirai_Comic] Cloud initialization warning:', err instanceof Error ? err.message : err);
-  });
+  // Wait up to 6s for initial cloud hydration so first request has data without delaying Cloud Run startup probes
+  await Promise.race([
+    db.initFromCloud().catch((err) => {
+      console.warn('[Aathirai_Comic] Cloud initialization warning:', err instanceof Error ? err.message : err);
+    }),
+    new Promise((resolve) => setTimeout(resolve, 6000)),
+  ]);
 
   const app = express();
   const port = process.env.PORT || 3000;
@@ -686,6 +694,7 @@ async function startServer() {
   });
 
   app.get('/api/admin/smtp-status', async (req, res) => {
+    await db.ensureFreshFromCloud().catch(() => {});
     const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
     if (!authCtx.user || authCtx.authMethod !== 'token') {
       return res.status(401).json({ error: 'Authentication required.' });
@@ -738,6 +747,7 @@ async function startServer() {
   });
 
   app.get('/api/admin/sms-status', async (req, res) => {
+    await db.ensureFreshFromCloud().catch(() => {});
     const authCtx = await resolveAuthenticatedUser(req, db.getSnapshot().users);
     if (!authCtx.user || authCtx.authMethod !== 'token') {
       return res.status(401).json({ error: 'Authentication required.' });
@@ -3357,14 +3367,7 @@ async function startServer() {
   const normalizeSubmittedComics = (d: any) => {
     if (!Array.isArray(d.comics)) return;
 
-    const fallbackArtworkPool = [
-      '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-      '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
-      '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
-      '/src/assets/images/comic_cover_chronicles_1794269872270.jpg',
-      '/src/assets/images/comic_cover_romance_1794269872268.jpg',
-      '/src/assets/images/hero_banner_manga_1794269871419.jpg',
-    ];
+    const fallbackArtworkPool: string[] = [];
 
     d.comics.forEach((c: Comic) => {
       const fileCountMatch = String(c.attachedFileSize || '').match(/(\d+)\s*(?:files?|photos?|pages?)/i);
@@ -3431,9 +3434,9 @@ async function startServer() {
         c.moderationStatus === 'pending' || c.attachedFileName ? 1 : 0
       );
 
-      if (targetCount > 0 && attachedList.length < targetCount) {
+      if (targetCount > 0 && attachedList.length < targetCount && candidateImages.length > 0) {
         for (let idx = attachedList.length; idx < targetCount; idx++) {
-          const imgUrl = candidateImages[idx % candidateImages.length] || c.coverImage || fallbackArtworkPool[0];
+          const imgUrl = candidateImages[idx % candidateImages.length] || c.coverImage || '';
           attachedList.push({
             id: `page_${c.id}_${idx + 1}`,
             pageNumber: idx + 1,
@@ -3489,9 +3492,10 @@ async function startServer() {
 
   app.get('/api/comics', async (req, res) => {
     await db.ensureFreshFromCloud();
-    db.mutate(d => normalizeSubmittedComics(d));
     const { search, genre, access, sort, authorId, includePending, role } = req.query;
-    let comics = [...db.getSnapshot().comics];
+    const snap = db.getSnapshot();
+    let comics = [...snap.comics];
+    applyRatingsToComics(comics, snap.ratings || []);
 
     // Filter by moderation status: admin can view all, author sees their own, readers see approved and delete_requested (until admin actually deletes)
     if (includePending === 'true' || role === 'admin') {
@@ -3561,20 +3565,22 @@ async function startServer() {
 
   app.get('/api/comics/:id', async (req, res) => {
     await db.ensureFreshFromCloud();
-    db.mutate(d => normalizeSubmittedComics(d));
-    let comic = db.getSnapshot().comics.find(c => c.id === req.params.id || c.slug === req.params.id);
+    let snap = db.getSnapshot();
+    let comic = snap.comics.find(c => c.id === req.params.id || c.slug === req.params.id);
     if (!comic) {
       await db.ensureFreshFromCloud(true);
-      db.mutate(d => normalizeSubmittedComics(d));
-      comic = db.getSnapshot().comics.find(c => c.id === req.params.id || c.slug === req.params.id);
+      snap = db.getSnapshot();
+      comic = snap.comics.find(c => c.id === req.params.id || c.slug === req.params.id);
     }
     if (!comic) return res.status(404).json({ error: 'Comic not found' });
+    applyRatingsToComics([comic], snap.ratings || []);
     return res.json({ comic });
   });
 
   // Direct Comic Publishing by Admin (instantly live on website: title, description, attached file alone)
   // Direct Comic & Episode Publishing by Admin
   app.post('/api/admin/comics/publish-direct', async (req, res) => {
+    await db.ensureFreshFromCloud(true).catch(() => {});
     const {
       mode = 'new_series', // 'new_series' | 'add_episode'
       comicId,
@@ -3649,7 +3655,7 @@ async function startServer() {
         if (!targetChapter) return;
 
         const epNum = targetChapter.episodes.length + 1;
-        const fallbackImg = c.coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+        const fallbackImg = c.coverImage || '';
         const constructedPages = buildPages(pages, fallbackImg);
 
         newEpisode = {
@@ -3735,7 +3741,7 @@ async function startServer() {
 
     // Default first page photo or provided cover
     const firstPageUrl = Array.isArray(pages) && pages[0] ? (pages[0].imageUrl || pages[0].dataUrl) : null;
-    const finalCover = coverImage || firstPageUrl || attachedFileData || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+    const finalCover = coverImage || firstPageUrl || attachedFileData || '';
     const constructedPages = buildPages(pages, finalCover);
 
     const parsedGenre = Array.isArray(genre) && genre.length > 0
@@ -4217,7 +4223,7 @@ async function startServer() {
         }
       } else {
         const newId = 'comic_' + Date.now();
-        const fallbackImg = coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+        const fallbackImg = coverImage || '';
         const constructedPages: ComicPage[] =
           Array.isArray(pages) && pages.length > 0
             ? pages.map((p: any, idx: number) => ({
@@ -4603,6 +4609,7 @@ async function startServer() {
   });
 
   app.post('/api/comics', async (req, res) => {
+    await db.ensureFreshFromCloud(true).catch(() => {});
     const {
       title,
       authorId,
@@ -4626,7 +4633,8 @@ async function startServer() {
 
     const comicId = 'comic_' + Date.now();
     const chapId = 'chap_' + Date.now();
-    const fallbackCover = coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+    const firstPageImg = Array.isArray(pages) && pages[0] ? (pages[0].imageUrl || pages[0].dataUrl || '') : '';
+    const fallbackCover = coverImage || firstPageImg || '';
 
     const constructedPages: ComicPage[] =
       Array.isArray(pages) && pages.length > 0
@@ -4736,6 +4744,7 @@ async function startServer() {
   }
 
   app.put('/api/comics/:id', async (req, res) => {
+    await db.ensureFreshFromCloud(true).catch(() => {});
     const { authorId, authorName } = req.body;
     let updated: Comic | null = null;
     let isForbidden = false;
@@ -4804,6 +4813,7 @@ async function startServer() {
 
   // Chapter & Episode Management with Strict Author Ownership Protection
   app.post('/api/comics/:id/chapters', async (req, res) => {
+    await db.ensureFreshFromCloud(true).catch(() => {});
     const { title, synopsis, authorId, authorName } = req.body;
     let addedChapter: any = null;
     let targetComic: Comic | null = null;
@@ -4911,6 +4921,7 @@ async function startServer() {
 
   // Add Episode (Strictly for Own Books)
   app.post('/api/comics/:comicId/chapters/:chapId/episodes', async (req, res) => {
+    await db.ensureFreshFromCloud(true).catch(() => {});
     const { title, synopsis, isPremium, priceInr, pages, coverImage, authorId, authorName } = req.body;
     let addedEpisode: any = null;
     let isForbidden = false;
@@ -4931,7 +4942,7 @@ async function startServer() {
         const chapter = comic.chapters.find(ch => ch.id === req.params.chapId);
         if (chapter) {
           const epNum = chapter.episodes.length + 1;
-          const fallbackCover = comic.coverImage || '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+          const fallbackCover = comic.coverImage || '';
 
           const constructedPages: ComicPage[] = Array.isArray(pages) && pages.length > 0
             ? pages.map((p: any, idx: number) => ({
@@ -5003,6 +5014,7 @@ async function startServer() {
 
   // Edit Episode
   app.put('/api/comics/:comicId/chapters/:chapId/episodes/:epId', async (req, res) => {
+    await db.ensureFreshFromCloud(true).catch(() => {});
     const { title, synopsis, isPremium, priceInr, pages, coverImage, authorId, authorName } = req.body;
     let updatedEpisode: any = null;
     let isForbidden = false;
@@ -5175,15 +5187,40 @@ async function startServer() {
       }
     }
 
-    // Get user's existing vote and rating
-    const userVote = userId ? snapshot.votes.find(v => v.episodeId === foundEpisode.id && v.userId === userId) : null;
-    const userRating = userId ? snapshot.ratings.find(r => r.episodeId === foundEpisode.id && r.userId === userId) : null;
+    // Recompute live ratings for this comic's episodes directly from persisted ratings
+    applyRatingsToComics([foundComic], snapshot.ratings || []);
 
-    // Get comments for this episode
-    const comments = snapshot.comments.filter(c => c.episodeId === foundEpisode.id);
+    // Match user's existing vote and rating across userId / matchedUser.id / firebaseUid
+    const candidateUserIds = new Set<string>(
+      [
+        userId ? String(userId) : '',
+        subStatus.matchedUser?.id || '',
+        subStatus.matchedUser?.firebaseUid || '',
+      ].filter(Boolean)
+    );
+    const userVote =
+      candidateUserIds.size > 0
+        ? snapshot.votes.find(v => v.episodeId === foundEpisode.id && candidateUserIds.has(v.userId))
+        : null;
+    const userRating =
+      candidateUserIds.size > 0
+        ? snapshot.ratings.find(r => r.episodeId === foundEpisode.id && candidateUserIds.has(r.userId))
+        : null;
+
+    // Get comments for this episode (sorted newest first)
+    const comments = snapshot.comments
+      .filter(c => c.episodeId === foundEpisode.id)
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
     // Build flat ordered list of episodes in this comic for Prev/Next episode navigation
-    const allEpisodes: Array<{ id: string; title: string; episodeNumber: number; chapterNumber: number }> = [];
+    const allEpisodes: Array<{
+      id: string;
+      title: string;
+      episodeNumber: number;
+      chapterNumber: number;
+      averageRating: number;
+      totalRatings: number;
+    }> = [];
     foundComic.chapters.forEach((ch: Chapter) => {
       ch.episodes.forEach((ep: Episode) => {
         allEpisodes.push({
@@ -5191,6 +5228,8 @@ async function startServer() {
           title: ep.title,
           episodeNumber: ep.episodeNumber,
           chapterNumber: ch.chapterNumber,
+          averageRating: ep.averageRating || 0,
+          totalRatings: ep.totalRatings || 0,
         });
       });
     });
@@ -5411,20 +5450,27 @@ async function startServer() {
 
   // Comments: Post, Edit, Like, Delete & Report
   app.post('/api/episodes/:id/comments', async (req, res) => {
-    const { userId, userName, userAvatar, userRole = 'reader', content, parentId } = req.body;
-    if (!content || !content.trim()) {
+    const { id: clientCommentId, userId, userName, userAvatar, userRole = 'reader', content, parentId } = req.body;
+    if (!content || !String(content).trim()) {
       return res.status(400).json({ error: 'Comment content cannot be empty' });
     }
 
+    const cleanCommentId =
+      typeof clientCommentId === 'string' && clientCommentId.trim()
+        ? sanitizeFirestoreId(clientCommentId.trim())
+        : `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const nowIso = new Date().toISOString();
+
     const newComment = {
-      id: 'c_' + Date.now(),
+      id: cleanCommentId,
       episodeId: req.params.id,
       userId: userId || 'usr_guest',
-      userName: userName || 'Comic Reader',
-      userAvatar: userAvatar || 'https://api.dicebear.com/7.x/bottts/svg?seed=Reader',
+      userName: String(userName || 'Comic Reader').trim().slice(0, 80) || 'Comic Reader',
+      userAvatar: userAvatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userName || 'Reader')}`,
       userRole,
-      content: content.trim(),
-      createdAt: new Date().toISOString(),
+      content: String(content).trim().slice(0, 1000),
+      createdAt: nowIso,
+      updatedAt: nowIso,
       likesCount: 0,
       likedBy: [] as string[],
       parentId: parentId || undefined,
@@ -5444,25 +5490,30 @@ async function startServer() {
       }
     });
 
-    db.logActivity('COMMENT_POSTED', userName || 'Reader', userRole, `Commented on episode ${req.params.id}`, 'comment', newComment.id);
-    await db.persistChanges({
+    db.logActivity('COMMENT_POSTED', newComment.userName, userRole, `Commented on episode ${req.params.id}`, 'comment', newComment.id);
+    const persistRes = await db.persistChanges({
+      changedComments: [newComment],
       collections: ['comments', 'activityLogs'],
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
 
-    return res.json({ success: true, comment: newComment });
+    return res.json({
+      success: true,
+      comment: newComment,
+      persistedToFirestore: persistRes.persisted,
+    });
   });
 
   app.put('/api/episodes/:id/comments/:commentId', async (req, res) => {
     const { userId, content } = req.body;
-    if (!content || !content.trim()) {
+    if (!content || !String(content).trim()) {
       return res.status(400).json({ error: 'Updated comment cannot be empty' });
     }
     let updatedComment: any = null;
     db.mutate(d => {
       for (const c of d.comments) {
         if (c.id === req.params.commentId && (!userId || c.userId === userId)) {
-          c.content = content.trim();
+          c.content = String(content).trim().slice(0, 1000);
           c.updatedAt = new Date().toISOString();
           c.isEdited = true;
           updatedComment = c;
@@ -5471,7 +5522,7 @@ async function startServer() {
         if (c.replies) {
           const r = c.replies.find(rep => rep.id === req.params.commentId && (!userId || rep.userId === userId));
           if (r) {
-            r.content = content.trim();
+            r.content = String(content).trim().slice(0, 1000);
             r.updatedAt = new Date().toISOString();
             r.isEdited = true;
             updatedComment = r;
@@ -5481,11 +5532,16 @@ async function startServer() {
       }
     });
     if (!updatedComment) return res.status(404).json({ error: 'Comment not found or unauthorized' });
-    await db.persistChanges({
+    const persistRes = await db.persistChanges({
+      changedComments: [updatedComment],
       collections: ['comments'],
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
-    return res.json({ success: true, comment: updatedComment });
+    return res.json({
+      success: true,
+      comment: updatedComment,
+      persistedToFirestore: persistRes.persisted,
+    });
   });
 
   app.post('/api/episodes/:id/comments/:commentId/like', async (req, res) => {
@@ -5514,14 +5570,22 @@ async function startServer() {
           targetComment.likedBy.push(userId);
         }
         targetComment.likesCount = targetComment.likedBy.length;
+        targetComment.updatedAt = new Date().toISOString();
       }
     });
     if (!targetComment) return res.status(404).json({ error: 'Comment not found' });
-    await db.persistChanges({
+    const persistRes = await db.persistChanges({
+      changedComments: [targetComment],
       collections: ['comments'],
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
-    return res.json({ success: true, likesCount: targetComment.likesCount, likedBy: targetComment.likedBy });
+    return res.json({
+      success: true,
+      comment: targetComment,
+      likesCount: targetComment.likesCount,
+      likedBy: targetComment.likedBy,
+      persistedToFirestore: persistRes.persisted,
+    });
   });
 
   app.delete('/api/episodes/:id/comments/:commentId', async (req, res) => {
@@ -5536,11 +5600,16 @@ async function startServer() {
         return true;
       });
     });
-    await db.persistChanges({
+    const persistRes = await db.persistChanges({
+      deletedCommentIds: [req.params.commentId],
       collections: ['comments'],
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
-    return res.json({ success: true, message: 'Comment removed' });
+    return res.json({
+      success: true,
+      message: 'Comment removed',
+      persistedToFirestore: persistRes.persisted,
+    });
   });
 
   // Content & Comment Reporting
@@ -6030,63 +6099,82 @@ async function startServer() {
 
   // Star Rating (1 to 5 Stars)
   app.post('/api/episodes/:id/rate', async (req, res) => {
-    const { userId, stars } = req.body;
-    const numStars = Number(stars);
+    const { userId, stars, ratingId: clientRatingId } = req.body;
+    const numStars = Math.round(Number(stars));
     if (!userId || isNaN(numStars) || numStars < 1 || numStars > 5) {
       return res.status(400).json({ error: 'Rating must be between 1 and 5 stars' });
     }
 
-    let result = { averageRating: 5.0, totalRatings: 0, userRating: numStars };
+    let result = { averageRating: 0, totalRatings: 0, userRating: numStars, comicAverageRating: 0 };
     let targetComicForPersist: Comic | null = null;
+    let savedRating: any = null;
 
     db.mutate(d => {
-      // Find existing rating
-      const existingIdx = d.ratings.findIndex(r => r.episodeId === req.params.id && r.userId === userId);
+      const matchedUser = d.users.find(u => u.id === userId || u.firebaseUid === userId);
+      const candidateUserIds = new Set<string>(
+        [String(userId), matchedUser?.id || '', matchedUser?.firebaseUid || ''].filter(Boolean)
+      );
+
+      // Find existing rating by this user on this episode
+      const existingIdx = d.ratings.findIndex(
+        r => r.episodeId === req.params.id && candidateUserIds.has(r.userId)
+      );
       const now = new Date().toISOString();
 
       if (existingIdx !== -1) {
         d.ratings[existingIdx].stars = numStars;
         d.ratings[existingIdx].updatedAt = now;
+        if (typeof clientRatingId === 'string' && clientRatingId.trim()) {
+          d.ratings[existingIdx].id = sanitizeFirestoreId(clientRatingId.trim());
+        }
+        savedRating = d.ratings[existingIdx];
       } else {
-        d.ratings.push({
-          id: 'r_' + Date.now(),
+        const deterministicId =
+          typeof clientRatingId === 'string' && clientRatingId.trim()
+            ? sanitizeFirestoreId(clientRatingId.trim())
+            : sanitizeFirestoreId(`r_${req.params.id}_${userId}`);
+        savedRating = {
+          id: deterministicId,
           episodeId: req.params.id,
-          userId,
+          userId: String(userId),
           stars: numStars,
           createdAt: now,
           updatedAt: now,
-        });
+        };
+        d.ratings.push(savedRating);
       }
 
-      // Recompute stats
-      const allEpisodeRatings = d.ratings.filter(r => r.episodeId === req.params.id);
-      const total = allEpisodeRatings.length;
-      const sum = allEpisodeRatings.reduce((acc, curr) => acc + curr.stars, 0);
-      const avg = Number((sum / total).toFixed(1));
+      // Recompute episode and parent comic rating stats
+      applyRatingsToComics(d.comics, d.ratings);
 
-      // Update episode
       for (const c of d.comics) {
         for (const ch of c.chapters) {
           const ep = ch.episodes.find(e => e.id === req.params.id);
           if (ep) {
-            ep.totalRatings = total;
-            ep.averageRating = avg;
-            result.averageRating = avg;
-            result.totalRatings = total;
+            result.averageRating = ep.averageRating;
+            result.totalRatings = ep.totalRatings;
+            result.comicAverageRating = c.averageRating;
             targetComicForPersist = c;
             break;
           }
         }
+        if (targetComicForPersist) break;
       }
     });
 
-    await db.persistChanges({
+    const persistRes = await db.persistChanges({
       comics: targetComicForPersist ? [targetComicForPersist] : [],
+      changedRatings: savedRating ? [savedRating] : [],
       collections: ['ratings'],
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
 
-    return res.json({ success: true, ...result });
+    return res.json({
+      success: true,
+      ...result,
+      rating: savedRating,
+      persistedToFirestore: persistRes.persisted,
+    });
   });
 
   // -------------------------------------------------------------
@@ -6164,11 +6252,7 @@ async function startServer() {
           ? validSampleImages
           : existingAppIdx >= 0 && Array.isArray(d.authorApplications[existingAppIdx].sampleImages) && d.authorApplications[existingAppIdx].sampleImages!.length > 0
             ? d.authorApplications[existingAppIdx].sampleImages!
-            : d.comics[0]?.chapters?.[0]?.episodes?.[0]?.pages?.map(p => p.imageUrl) || [
-                '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-                '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
-                '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
-              ];
+            : d.comics[0]?.chapters?.[0]?.episodes?.[0]?.pages?.map(p => p.imageUrl).filter(Boolean) || [];
 
       const application: AuthorApplication & { adminExplicitlyReviewed?: boolean } = {
         id: existingAppIdx >= 0 ? d.authorApplications[existingAppIdx].id : 'app_' + Date.now(),
@@ -6247,10 +6331,7 @@ async function startServer() {
         updatedApp = app;
       } else if (u || cleanEmail || authorName) {
         const defaultPages =
-          d.comics[0]?.chapters?.[0]?.episodes?.[0]?.pages?.map(p => p.imageUrl) || [
-            '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-            '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
-          ];
+          d.comics[0]?.chapters?.[0]?.episodes?.[0]?.pages?.map(p => p.imageUrl).filter(Boolean) || [];
         const newApp: AuthorApplication & { adminExplicitlyReviewed?: boolean } = {
           id: 'app_' + Date.now(),
           userId: u?.id || userId || 'usr_' + Date.now(),
@@ -7651,14 +7732,6 @@ async function startServer() {
             });
           });
         }
-        if (comicPages.length === 0) {
-          comicPages.push(
-            '/src/assets/images/comic_cover_mystic_1794269871981.jpg',
-            '/src/assets/images/comic_cover_blade_1794269871791.jpg',
-            '/src/assets/images/comic_cover_cyber_1794269871978.jpg',
-            '/src/assets/images/comic_cover_chronicles_1794269872270.jpg'
-          );
-        }
         app.sampleImages = comicPages.slice(0, 6);
         if (!app.samplePagesCount) {
           app.samplePagesCount = app.sampleImages.length;
@@ -8488,9 +8561,11 @@ async function startServer() {
   app.delete('/api/admin/ratings/:id', async (req, res) => {
     db.mutate(d => {
       d.ratings = d.ratings.filter(r => r.id !== req.params.id);
+      applyRatingsToComics(d.comics, d.ratings);
     });
     db.logActivity('RATING_REMOVED_AUDIT', 'admin@aathirai.com', 'admin', `Admin removed rating ID: ${req.params.id}`, 'rating', req.params.id);
     await db.persistChanges({
+      deletedRatingIds: [req.params.id],
       collections: ['ratings', 'activityLogs'],
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
@@ -9102,7 +9177,53 @@ async function startServer() {
     return `${raw.slice(0, 152).replace(/\s+\S*$/, '')}...`;
   };
 
-  // Serve data-URI comic covers as clean HTTP images for Open Graph / Twitter cards
+  // On-demand streaming endpoint for externalized comic covers, pages & avatars stored in Firestore server_comic_assets
+  app.get('/api/comic-assets/:assetKey', async (req, res) => {
+    const rawKey = String(req.params.assetKey || '').trim();
+    if (!rawKey || !/^[a-zA-Z0-9_-]{3,128}$/.test(rawKey)) {
+      return res.status(400).end();
+    }
+    const parsedChunks = Number(req.query.chunks);
+    const expectedChunks =
+      Number.isFinite(parsedChunks) && parsedChunks >= 1 && parsedChunks <= 100
+        ? Math.floor(parsedChunks)
+        : undefined;
+
+    try {
+      const asset = await fetchComicAssetByKey(
+        rawKey,
+        expectedChunks,
+        extractFirebaseIdToken(req.headers.authorization)
+      );
+      if (asset) {
+        res.setHeader('Content-Type', asset.contentType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+        return res.send(asset.buffer);
+      }
+    } catch {
+      // Fall through to clean fallback image below
+    }
+
+    return res.status(404).end();
+  });
+
+  // Always serve /favicon.ico cleanly so browsers & CDN probes never receive 404 warnings
+  app.get('/favicon.ico', (_req, res) => {
+    const candidates = [
+      path.resolve(process.cwd(), 'dist', 'favicon.ico'),
+      path.resolve(process.cwd(), 'public', 'favicon.ico'),
+    ];
+    for (const filePath of candidates) {
+      if (fs.existsSync(filePath)) {
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.sendFile(filePath);
+      }
+    }
+    return res.status(204).end();
+  });
+
+  // Serve data-URI or externalized comic covers as clean HTTP images for Open Graph / Twitter cards
   app.get('/api/comics/:slugOrId/og-image', async (req, res) => {
     await db.ensureFreshFromCloud().catch(() => {});
     const slugOrId = decodeURIComponent(req.params.slugOrId || '').trim().toLowerCase();
@@ -9114,6 +9235,15 @@ async function startServer() {
           c.id.toLowerCase() === slugOrId
       );
     const imgSrc = matched?.bannerImage || matched?.coverImage || '';
+    const parsedAsset = parseComicAssetHttpUrl(imgSrc);
+    if (parsedAsset) {
+      const asset = await fetchComicAssetByKey(parsedAsset.assetKey, parsedAsset.totalChunks).catch(() => null);
+      if (asset) {
+        res.setHeader('Content-Type', asset.contentType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.send(asset.buffer);
+      }
+    }
     const dataMatch = imgSrc.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
     if (dataMatch) {
       try {
@@ -9126,7 +9256,7 @@ async function startServer() {
         // Fallback below
       }
     }
-    const fallbackBanner = path.resolve('public', 'assets', 'og-hero-banner.jpg');
+    const fallbackBanner = path.resolve(process.cwd(), 'public', 'assets', 'og-hero-banner.jpg');
     if (fs.existsSync(fallbackBanner)) {
       return res.sendFile(fallbackBanner);
     }
@@ -9498,15 +9628,26 @@ async function startServer() {
   // -------------------------------------------------------------
 
   if (process.env.NODE_ENV === 'production') {
-    app.use(express.static('dist', { index: false }));
+    const distDir = path.resolve(process.cwd(), 'dist');
+    const publicDir = path.resolve(process.cwd(), 'public');
+    app.use(express.static(distDir, { index: false }));
+    if (fs.existsSync(publicDir)) {
+      app.use(express.static(publicDir, { index: false }));
+    }
+    app.all('/api/*', (_req, res) => {
+      return res.status(404).json({ error: 'API endpoint not found.' });
+    });
     app.get('*', async (req, res) => {
-      const distIndexPath = path.resolve('dist', 'index.html');
+      const distIndexPath = path.resolve(distDir, 'index.html');
       try {
         const rawHtml = fs.readFileSync(distIndexPath, 'utf8');
         const html = await injectDynamicSeoHtml(rawHtml, req);
         return res.type('html').send(html);
       } catch {
-        return res.sendFile(distIndexPath);
+        if (fs.existsSync(distIndexPath)) {
+          return res.sendFile(distIndexPath);
+        }
+        return res.status(503).send('Application bundle is initializing. Please refresh shortly.');
       }
     });
   } else {

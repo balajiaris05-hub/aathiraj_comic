@@ -138,7 +138,7 @@ export function fromFirestoreDocument(doc: any): Record<string, unknown> | null 
 // =============================================================================
 
 let cachedServiceToken: { token: string; expiresAtMs: number } | null = null;
-let cachedAdcInfo: { checked: boolean; sameProject: boolean } = { checked: false, sameProject: false };
+let cachedAdcInfo: { sameProject: boolean; retryAfterMs: number } = { sameProject: false, retryAfterMs: 0 };
 let cachedAdcToken: { token: string; expiresAtMs: number } | null = null;
 
 function parseServiceAccountFromEnv(): ServiceAccountCredentials | null {
@@ -219,19 +219,34 @@ async function getNativeProjectAdcToken(): Promise<string | null> {
     return cachedAdcToken.token;
   }
 
-  if (!cachedAdcInfo.checked) {
-    cachedAdcInfo.checked = true;
-    try {
-      const projRes = await fetch('http://metadata.google.internal/computeMetadata/v1/project/project-id', {
-        headers: { 'Metadata-Flavor': 'Google' },
-        signal: AbortSignal.timeout(1200),
-      });
-      if (projRes.ok) {
-        const projId = (await projRes.text()).trim();
-        cachedAdcInfo.sameProject = projId === FIREBASE_APPLET_CONFIG.projectId;
+  // Re-check metadata server if not confirmed or if negative TTL expired (prevents permanent lockout on cold start timeout)
+  if (!cachedAdcInfo.sameProject && nowMs >= cachedAdcInfo.retryAfterMs) {
+    let confirmedDifferentProject = false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const projRes = await fetch('http://metadata.google.internal/computeMetadata/v1/project/project-id', {
+          headers: { 'Metadata-Flavor': 'Google' },
+          signal: AbortSignal.timeout(attempt === 0 ? 2500 : 3500),
+        });
+        if (projRes.ok) {
+          const projId = (await projRes.text()).trim();
+          if (projId === FIREBASE_APPLET_CONFIG.projectId) {
+            cachedAdcInfo = { sameProject: true, retryAfterMs: Number.MAX_SAFE_INTEGER };
+            break;
+          } else {
+            confirmedDifferentProject = true;
+            // Cache confirmed different project (e.g. AI Studio sandbox) for 10 minutes
+            cachedAdcInfo = { sameProject: false, retryAfterMs: nowMs + 10 * 60 * 1000 };
+            break;
+          }
+        }
+      } catch {
+        // Transient cold-start timeout or non-GCP runtime: retry briefly, never lock out permanently
       }
-    } catch {
-      cachedAdcInfo.sameProject = false;
+    }
+    if (!cachedAdcInfo.sameProject && !confirmedDifferentProject) {
+      // Retry after 15 seconds in case metadata server was still warming up on Cloud Run cold start
+      cachedAdcInfo = { sameProject: false, retryAfterMs: nowMs + 15_000 };
     }
   }
 
@@ -239,23 +254,30 @@ async function getNativeProjectAdcToken(): Promise<string | null> {
     return null;
   }
 
-  try {
-    const tokRes = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', {
-      headers: { 'Metadata-Flavor': 'Google' },
-      signal: AbortSignal.timeout(1500),
-    });
-    if (tokRes.ok) {
-      const data = (await tokRes.json()) as { access_token?: string; expires_in?: number };
-      if (data.access_token) {
-        cachedAdcToken = {
-          token: data.access_token,
-          expiresAtMs: nowMs + (data.expires_in || 3000) * 1000,
-        };
-        return data.access_token;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const tokRes = await fetch(
+        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+        {
+          headers: { 'Metadata-Flavor': 'Google' },
+          signal: AbortSignal.timeout(attempt === 0 ? 2500 : 4000),
+        }
+      );
+      if (tokRes.ok) {
+        const data = (await tokRes.json()) as { access_token?: string; expires_in?: number };
+        if (data.access_token) {
+          cachedAdcToken = {
+            token: data.access_token,
+            expiresAtMs: Date.now() + (data.expires_in || 3000) * 1000,
+          };
+          return data.access_token;
+        }
+      }
+    } catch {
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 250));
       }
     }
-  } catch {
-    // ignore
   }
   return null;
 }
@@ -312,14 +334,35 @@ export interface CommitWriteItem {
   serverTimeFields?: string[]; // default ['updatedAt'] or ['createdAt', 'updatedAt']
 }
 
-async function fetchFirestoreDocument(docPath: string, bearerToken?: string): Promise<Record<string, unknown> | null> {
+async function fetchFirestoreDocument(
+  docPath: string,
+  bearerToken?: string,
+  timeoutMs = 10_000
+): Promise<Record<string, unknown> | null> {
   const url = `${FIRESTORE_REST_BASE_URL}/${docPath}?key=${encodeURIComponent(FIREBASE_APPLET_CONFIG.apiKey)}`;
   const headers: Record<string, string> = {};
   if (bearerToken) headers['Authorization'] = `Bearer ${bearerToken}`;
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return null;
-  const json = await res.json();
-  return fromFirestoreDocument(json);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+      if (res.status === 404) return null;
+      if (res.ok) {
+        const json = await res.json();
+        return fromFirestoreDocument(json);
+      }
+      if (res.status >= 500 || res.status === 429) {
+        await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+        continue;
+      }
+      return null;
+    } catch {
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+  }
+  return null;
 }
 
 export async function commitFirestoreWrites(
@@ -340,8 +383,9 @@ export async function commitFirestoreWrites(
     };
   }
 
-  const MAX_WRITES_PER_COMMIT = 80;
-  const MAX_BYTES_PER_COMMIT = 3_200_000;
+  // Keep commit payloads safely compact (~1.2 MB max, 20 writes max) to prevent REST commit size/timeout failures
+  const MAX_WRITES_PER_COMMIT = 20;
+  const MAX_BYTES_PER_COMMIT = 1_200_000;
 
   let totalWritten = 0;
   let index = 0;
@@ -351,7 +395,7 @@ export async function commitFirestoreWrites(
 
     while (index < items.length && chunk.length < MAX_WRITES_PER_COMMIT) {
       const candidate = items[index];
-      const approxLen = JSON.stringify(candidate.fields).length + 256;
+      const approxLen = JSON.stringify(candidate.fields).length + 512;
       if (chunk.length > 0 && estimatedBytes + approxLen > MAX_BYTES_PER_COMMIT) {
         break;
       }
@@ -389,26 +433,52 @@ export async function commitFirestoreWrites(
       })
     );
 
-    const commitRes = await fetch(
-      `${FIRESTORE_REST_BASE_URL}:commit?key=${encodeURIComponent(FIREBASE_APPLET_CONFIG.apiKey)}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${bearerToken}`,
-        },
-        body: JSON.stringify({ writes }),
-        signal: AbortSignal.timeout(20000),
-      }
-    );
+    const requestBody = JSON.stringify({ writes });
+    let batchSucceeded = false;
+    let lastErr = '';
 
-    if (!commitRes.ok) {
-      const errBody = await commitRes.text().catch(() => '');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const commitRes = await fetch(
+          `${FIRESTORE_REST_BASE_URL}:commit?key=${encodeURIComponent(FIREBASE_APPLET_CONFIG.apiKey)}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${bearerToken}`,
+            },
+            body: requestBody,
+            signal: AbortSignal.timeout(30_000),
+          }
+        );
+
+        if (commitRes.ok) {
+          batchSucceeded = true;
+          break;
+        }
+
+        const errBody = await commitRes.text().catch(() => '');
+        lastErr = `Firestore commit HTTP ${commitRes.status}: ${errBody.slice(0, 300)}`;
+        // Retry only on transient status codes (429 / 5xx)
+        if ((commitRes.status === 429 || commitRes.status >= 500) && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          continue;
+        }
+        break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : 'Commit request failed';
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+    }
+
+    if (!batchSucceeded) {
       return {
         success: false,
         mode,
         written: totalWritten,
-        error: `Firestore commit HTTP ${commitRes.status}: ${errBody.slice(0, 300)}`,
+        error: lastErr || 'Firestore commit batch failed',
       };
     }
 
@@ -420,7 +490,8 @@ export async function commitFirestoreWrites(
 
 export async function listFirestoreCollection(
   collectionId: string,
-  userFirebaseIdToken?: string
+  userFirebaseIdToken?: string,
+  options?: { pageSize?: number; timeoutMs?: number }
 ): Promise<{
   ok: boolean;
   status: number;
@@ -439,42 +510,69 @@ export async function listFirestoreCollection(
     };
   }
 
+  const pageSize = Math.min(200, Math.max(5, options?.pageSize || 100));
+  const timeoutMs = options?.timeoutMs || 20_000;
   const docs: Array<{ id: string; fields: Record<string, unknown> }> = [];
   let pageToken = '';
 
   try {
     do {
       const params = new URLSearchParams({
-        pageSize: '200',
+        pageSize: String(pageSize),
         key: FIREBASE_APPLET_CONFIG.apiKey,
       });
       if (pageToken) params.set('pageToken', pageToken);
 
-      const res = await fetch(`${FIRESTORE_REST_BASE_URL}/${collectionId}?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${bearerToken}` },
-        signal: AbortSignal.timeout(10000),
-      });
+      let pageJson: {
+        documents?: Array<{ name?: string; fields?: Record<string, FirestoreValue> }>;
+        nextPageToken?: string;
+      } | null = null;
+      let lastStatus = 500;
+      let lastErr = '';
 
-      if (!res.ok) {
-        if (res.status === 404) {
-          return { ok: true, status: 200, mode, docs };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const res = await fetch(`${FIRESTORE_REST_BASE_URL}/${collectionId}?${params.toString()}`, {
+            headers: { Authorization: `Bearer ${bearerToken}` },
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          lastStatus = res.status;
+          if (res.status === 404) {
+            return { ok: true, status: 200, mode, docs };
+          }
+          if (res.ok) {
+            pageJson = (await res.json()) as {
+              documents?: Array<{ name?: string; fields?: Record<string, FirestoreValue> }>;
+              nextPageToken?: string;
+            };
+            break;
+          }
+          const errBody = await res.text().catch(() => '');
+          lastErr = `Firestore list ${collectionId} HTTP ${res.status}: ${errBody.slice(0, 250)}`;
+          if ((res.status === 429 || res.status >= 500) && attempt === 0) {
+            await new Promise((r) => setTimeout(r, 400));
+            continue;
+          }
+          break;
+        } catch (err) {
+          lastErr = err instanceof Error ? err.message : 'List collection failed';
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 400));
+          }
         }
-        const errBody = await res.text().catch(() => '');
+      }
+
+      if (!pageJson) {
         return {
           ok: false,
-          status: res.status,
+          status: lastStatus,
           mode,
           docs,
-          error: `Firestore list ${collectionId} HTTP ${res.status}: ${errBody.slice(0, 250)}`,
+          error: lastErr || `Firestore list ${collectionId} failed`,
         };
       }
 
-      const json = (await res.json()) as {
-        documents?: Array<{ name?: string; fields?: Record<string, FirestoreValue> }>;
-        nextPageToken?: string;
-      };
-
-      for (const rawDoc of json.documents || []) {
+      for (const rawDoc of pageJson.documents || []) {
         const parsed = fromFirestoreDocument(rawDoc);
         const docName = String(rawDoc.name || '');
         const docId = docName.split('/').pop() || '';
@@ -483,7 +581,7 @@ export async function listFirestoreCollection(
         }
       }
 
-      pageToken = json.nextPageToken || '';
+      pageToken = pageJson.nextPageToken || '';
     } while (pageToken);
 
     return { ok: true, status: 200, mode, docs };
@@ -1240,8 +1338,181 @@ export async function getFirestoreLiveStatus(userFirebaseIdToken?: string) {
 // =============================================================================
 
 const ASSET_PTR_PREFIX = 'asset://';
+const COMIC_ASSET_HTTP_PREFIX = '/api/comic-assets/';
 const ASSET_INLINE_LIMIT = 16_000;
 const ASSET_CHUNK_SIZE = 380_000;
+
+// Bounded in-memory LRU cache for decoded comic covers & pages (max 64 MB)
+const MAX_ASSET_CACHE_BYTES = 64 * 1024 * 1024;
+interface CachedComicAsset {
+  contentType: string;
+  buffer: Buffer;
+  sizeBytes: number;
+  cachedAt: number;
+}
+const comicAssetLruCache = new Map<string, CachedComicAsset>();
+let comicAssetCacheTotalBytes = 0;
+
+function decodeDataUriToAsset(rawDataUri: string): CachedComicAsset | null {
+  const match = rawDataUri.match(/^data:([^;]+);base64,(.+)$/s);
+  if (!match) return null;
+  try {
+    const contentType = match[1].trim() || 'image/jpeg';
+    const buffer = Buffer.from(match[2], 'base64');
+    if (buffer.length === 0) return null;
+    return {
+      contentType,
+      buffer,
+      sizeBytes: buffer.length,
+      cachedAt: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function cacheComicAssetFromDataUri(assetKey: string, rawDataUri: string): void {
+  const safeKey = sanitizeFirestoreId(assetKey);
+  const decoded = decodeDataUriToAsset(rawDataUri);
+  if (!decoded || decoded.sizeBytes > MAX_ASSET_CACHE_BYTES / 2) return;
+
+  const existing = comicAssetLruCache.get(safeKey);
+  if (existing) {
+    comicAssetCacheTotalBytes -= existing.sizeBytes;
+    comicAssetLruCache.delete(safeKey);
+  }
+  comicAssetLruCache.set(safeKey, decoded);
+  comicAssetCacheTotalBytes += decoded.sizeBytes;
+
+  while (comicAssetCacheTotalBytes > MAX_ASSET_CACHE_BYTES && comicAssetLruCache.size > 1) {
+    const oldestKey = comicAssetLruCache.keys().next().value;
+    if (!oldestKey) break;
+    const oldest = comicAssetLruCache.get(oldestKey);
+    if (oldest) {
+      comicAssetCacheTotalBytes -= oldest.sizeBytes;
+    }
+    comicAssetLruCache.delete(oldestKey);
+  }
+}
+
+export function getCachedComicAsset(assetKey: string): CachedComicAsset | null {
+  const safeKey = sanitizeFirestoreId(assetKey);
+  const entry = comicAssetLruCache.get(safeKey);
+  if (!entry) return null;
+  // Refresh LRU order
+  comicAssetLruCache.delete(safeKey);
+  comicAssetLruCache.set(safeKey, entry);
+  return entry;
+}
+
+export function parseComicAssetHttpUrl(rawValue: unknown): { assetKey: string; totalChunks: number } | null {
+  if (typeof rawValue !== 'string' || !rawValue.startsWith(COMIC_ASSET_HTTP_PREFIX)) return null;
+  const rest = rawValue.slice(COMIC_ASSET_HTTP_PREFIX.length);
+  const [rawKey, query] = rest.split('?');
+  const assetKey = sanitizeFirestoreId(decodeURIComponent(rawKey || ''));
+  if (!assetKey || assetKey === 'doc_default') return null;
+  let totalChunks = 1;
+  if (query) {
+    const params = new URLSearchParams(query);
+    const parsed = Number(params.get('chunks'));
+    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 100) {
+      totalChunks = Math.floor(parsed);
+    }
+  }
+  return { assetKey, totalChunks };
+}
+
+export function assetPointerToHttpUrl(rawValue: unknown): string | undefined {
+  if (typeof rawValue !== 'string') return undefined;
+  if (!rawValue.startsWith(ASSET_PTR_PREFIX)) return rawValue;
+  const spec = rawValue.slice(ASSET_PTR_PREFIX.length);
+  const colonIdx = spec.lastIndexOf(':');
+  if (colonIdx <= 0) return rawValue;
+  const assetKey = sanitizeFirestoreId(spec.slice(0, colonIdx));
+  const totalChunks = Math.max(1, Number(spec.slice(colonIdx + 1)) || 1);
+  return `${COMIC_ASSET_HTTP_PREFIX}${encodeURIComponent(assetKey)}?chunks=${totalChunks}`;
+}
+
+function httpUrlToAssetPointer(rawValue: string): string {
+  const parsed = parseComicAssetHttpUrl(rawValue);
+  if (!parsed) return rawValue;
+  return `${ASSET_PTR_PREFIX}${parsed.assetKey}:${parsed.totalChunks}`;
+}
+
+export async function fetchComicAssetByKey(
+  rawAssetKey: string,
+  expectedChunks?: number,
+  userFirebaseIdToken?: string
+): Promise<{ contentType: string; buffer: Buffer } | null> {
+  const safeKey = sanitizeFirestoreId(rawAssetKey);
+  if (!safeKey || safeKey === 'doc_default') return null;
+
+  const cached = getCachedComicAsset(safeKey);
+  if (cached) {
+    return { contentType: cached.contentType, buffer: cached.buffer };
+  }
+
+  const authCtx = await resolveAuthContext(userFirebaseIdToken);
+  if (authCtx.mode === 'public_api_key' || !authCtx.bearerToken) {
+    return null;
+  }
+
+  // Fetch chunk 0 first to confirm totalChunks accurately (or all chunks in parallel if expectedChunks is known)
+  let totalChunks =
+    typeof expectedChunks === 'number' && Number.isFinite(expectedChunks) && expectedChunks >= 1
+      ? Math.min(100, Math.floor(expectedChunks))
+      : 0;
+
+  const chunkDocs: Array<Record<string, unknown> | null> = [];
+  if (totalChunks > 0 && totalChunks <= 8) {
+    const fetched = await Promise.all(
+      Array.from({ length: totalChunks }, (_, idx) =>
+        fetchFirestoreDocument(`server_comic_assets/${safeKey}__${idx}`, authCtx.bearerToken, 12_000)
+      )
+    );
+    chunkDocs.push(...fetched);
+    const metaTotal = Number(fetched[0]?.totalChunks);
+    if (Number.isFinite(metaTotal) && metaTotal > totalChunks && metaTotal <= 100) {
+      const remaining = await Promise.all(
+        Array.from({ length: metaTotal - totalChunks }, (_, offset) =>
+          fetchFirestoreDocument(`server_comic_assets/${safeKey}__${totalChunks + offset}`, authCtx.bearerToken, 12_000)
+        )
+      );
+      chunkDocs.push(...remaining);
+      totalChunks = metaTotal;
+    }
+  } else {
+    const firstDoc = await fetchFirestoreDocument(`server_comic_assets/${safeKey}__0`, authCtx.bearerToken, 12_000);
+    if (!firstDoc) return null;
+    chunkDocs.push(firstDoc);
+    const metaTotal = Math.min(100, Math.max(1, Number(firstDoc.totalChunks) || totalChunks || 1));
+    totalChunks = metaTotal;
+    if (totalChunks > 1) {
+      const remaining = await Promise.all(
+        Array.from({ length: totalChunks - 1 }, (_, offset) =>
+          fetchFirestoreDocument(`server_comic_assets/${safeKey}__${offset + 1}`, authCtx.bearerToken, 12_000)
+        )
+      );
+      chunkDocs.push(...remaining);
+    }
+  }
+
+  const parts: string[] = [];
+  for (let idx = 0; idx < totalChunks; idx += 1) {
+    const doc = chunkDocs[idx];
+    if (!doc || typeof doc.data !== 'string') {
+      return null;
+    }
+    parts.push(doc.data);
+  }
+
+  const rawDataUri = parts.join('');
+  const decoded = decodeDataUriToAsset(rawDataUri);
+  if (!decoded) return null;
+
+  cacheComicAssetFromDataUri(safeKey, rawDataUri);
+  return { contentType: decoded.contentType, buffer: decoded.buffer };
+}
 
 export interface CloudSyncStatusSnapshot {
   ok: boolean;
@@ -1267,10 +1538,18 @@ function externalizeLargeString(
   rawValue: string | undefined,
   ownerComicId: string,
   assetWrites: CommitWriteItem[]
-): string | undefined {
-  if (!rawValue || typeof rawValue !== 'string') return rawValue;
-  if (rawValue.startsWith(ASSET_PTR_PREFIX) || rawValue.length <= ASSET_INLINE_LIMIT) {
-    return rawValue;
+): { storedValue: string | undefined; httpUrl?: string } {
+  if (!rawValue || typeof rawValue !== 'string') return { storedValue: rawValue };
+
+  // Preserve already-externalized HTTP asset URLs cleanly as asset:// pointers without re-uploading chunks
+  if (rawValue.startsWith(COMIC_ASSET_HTTP_PREFIX)) {
+    return { storedValue: httpUrlToAssetPointer(rawValue), httpUrl: rawValue };
+  }
+  if (rawValue.startsWith(ASSET_PTR_PREFIX)) {
+    return { storedValue: rawValue, httpUrl: assetPointerToHttpUrl(rawValue) };
+  }
+  if (rawValue.length <= ASSET_INLINE_LIMIT) {
+    return { storedValue: rawValue };
   }
 
   const safeKey = sanitizeFirestoreId(assetKey);
@@ -1290,34 +1569,23 @@ function externalizeLargeString(
     });
   }
 
-  return `${ASSET_PTR_PREFIX}${safeKey}:${totalChunks}`;
+  // Keep decoded image warm in LRU cache so reads are instantaneous
+  cacheComicAssetFromDataUri(safeKey, rawValue);
+
+  const ptr = `${ASSET_PTR_PREFIX}${safeKey}:${totalChunks}`;
+  return {
+    storedValue: ptr,
+    httpUrl: `${COMIC_ASSET_HTTP_PREFIX}${encodeURIComponent(safeKey)}?chunks=${totalChunks}`,
+  };
 }
 
-function restoreAssetString(
-  rawValue: unknown,
-  assetChunksMap: Map<string, Map<number, string>>
-): string | undefined {
-  if (typeof rawValue !== 'string') return undefined;
-  if (!rawValue.startsWith(ASSET_PTR_PREFIX)) return rawValue;
-  const spec = rawValue.slice(ASSET_PTR_PREFIX.length);
-  const colonIdx = spec.lastIndexOf(':');
-  if (colonIdx <= 0) return rawValue;
-  const assetKey = spec.slice(0, colonIdx);
-  const totalChunks = Math.max(1, Number(spec.slice(colonIdx + 1)) || 1);
-  const chunks = assetChunksMap.get(assetKey);
-  if (!chunks) return rawValue;
-  const parts: string[] = [];
-  for (let i = 0; i < totalChunks; i += 1) {
-    const part = chunks.get(i);
-    if (part === undefined) return rawValue;
-    parts.push(part);
-  }
-  return parts.join('');
-}
-
-function buildFullUserVaultWriteItems(user: User): CommitWriteItem[] {
+function buildFullUserVaultWriteItems(user: User): {
+  assetWrites: CommitWriteItem[];
+  docWrites: CommitWriteItem[];
+} {
   const safeUserId = sanitizeFirestoreId(user.id);
-  const writes: CommitWriteItem[] = [];
+  const assetWrites: CommitWriteItem[] = [];
+  const docWrites: CommitWriteItem[] = [];
   const clone: Record<string, unknown> = {
     ...user,
     id: user.id,
@@ -1329,78 +1597,135 @@ function buildFullUserVaultWriteItems(user: User): CommitWriteItem[] {
       : [],
   };
   delete clone.password;
-  if (typeof clone.avatar === 'string' && clone.avatar.length > ASSET_INLINE_LIMIT) {
-    clone.avatar = externalizeLargeString(`usr_avatar_${safeUserId}`, clone.avatar, `user_${safeUserId}`, writes);
+  if (typeof clone.avatar === 'string') {
+    const ext = externalizeLargeString(`usr_avatar_${safeUserId}`, clone.avatar, `user_${safeUserId}`, assetWrites);
+    if (ext.storedValue !== undefined) {
+      clone.avatar = ext.storedValue;
+    }
   }
-  writes.push({
+  docWrites.push({
     docPath: `server_users/${safeUserId}`,
     fields: {
       payload: clone,
       updatedAt: new Date().toISOString(),
     },
   });
-  return writes;
+  return { assetWrites, docWrites };
 }
 
-function buildFullComicVaultWriteItems(comic: Comic): CommitWriteItem[] {
+function buildFullComicVaultWriteItems(comic: Comic): {
+  assetWrites: CommitWriteItem[];
+  docWrites: CommitWriteItem[];
+  compactComicInPlace: () => void;
+} {
   const safeComicId = sanitizeFirestoreId(comic.id);
-  const writes: CommitWriteItem[] = [];
+  const assetWrites: CommitWriteItem[] = [];
+  const docWrites: CommitWriteItem[] = [];
+  const pendingCompactions: Array<() => void> = [];
 
   const serializedCover = externalizeLargeString(
     `comic_${safeComicId}_cover`,
     comic.coverImage,
     safeComicId,
-    writes
+    assetWrites
   );
+  if (serializedCover.httpUrl && comic.coverImage !== serializedCover.httpUrl) {
+    const nextUrl = serializedCover.httpUrl;
+    pendingCompactions.push(() => {
+      comic.coverImage = nextUrl;
+    });
+  }
+
+  const serializedBanner = comic.bannerImage
+    ? externalizeLargeString(`comic_${safeComicId}_banner`, comic.bannerImage, safeComicId, assetWrites)
+    : { storedValue: undefined, httpUrl: undefined };
+  if (serializedBanner.httpUrl && comic.bannerImage !== serializedBanner.httpUrl) {
+    const nextUrl = serializedBanner.httpUrl;
+    pendingCompactions.push(() => {
+      comic.bannerImage = nextUrl;
+    });
+  }
 
   const serializedAttachedPages = Array.isArray(comic.attachedPages)
-    ? comic.attachedPages.map((p, idx) => ({
-        ...p,
-        imageUrl:
-          externalizeLargeString(
-            `comic_${safeComicId}_att_${idx}_${sanitizeFirestoreId(p.id)}`,
-            p.imageUrl,
-            safeComicId,
-            writes
-          ) || '',
-      }))
+    ? comic.attachedPages.map((p, idx) => {
+        const ext = externalizeLargeString(
+          `comic_${safeComicId}_att_${idx}_${sanitizeFirestoreId(p.id)}`,
+          p.imageUrl,
+          safeComicId,
+          assetWrites
+        );
+        if (ext.httpUrl && p.imageUrl !== ext.httpUrl) {
+          const nextUrl = ext.httpUrl;
+          pendingCompactions.push(() => {
+            p.imageUrl = nextUrl;
+          });
+        }
+        return {
+          ...p,
+          imageUrl: ext.storedValue || '',
+        };
+      })
     : undefined;
 
   const serializedChapters = (comic.chapters || []).map((ch, chIdx) => ({
     ...ch,
-    episodes: (ch.episodes || []).map((ep, epIdx) => ({
-      ...ep,
-      coverImage: externalizeLargeString(
+    episodes: (ch.episodes || []).map((ep, epIdx) => {
+      const epCov = externalizeLargeString(
         `comic_${safeComicId}_ch${chIdx}_ep${epIdx}_cov`,
         ep.coverImage,
         safeComicId,
-        writes
-      ),
-      pages: (ep.pages || []).map((pg, pgIdx) => ({
-        ...pg,
-        imageUrl:
-          externalizeLargeString(
+        assetWrites
+      );
+      if (epCov.httpUrl && ep.coverImage !== epCov.httpUrl) {
+        const nextUrl = epCov.httpUrl;
+        pendingCompactions.push(() => {
+          ep.coverImage = nextUrl;
+        });
+      }
+      return {
+        ...ep,
+        coverImage: epCov.storedValue,
+        pages: (ep.pages || []).map((pg, pgIdx) => {
+          const pgExt = externalizeLargeString(
             `comic_${safeComicId}_ch${chIdx}_ep${epIdx}_pg${pgIdx}`,
             pg.imageUrl,
             safeComicId,
-            writes
-          ) || '',
-      })),
-    })),
+            assetWrites
+          );
+          if (pgExt.httpUrl && pg.imageUrl !== pgExt.httpUrl) {
+            const nextUrl = pgExt.httpUrl;
+            pendingCompactions.push(() => {
+              pg.imageUrl = nextUrl;
+            });
+          }
+          return {
+            ...pg,
+            imageUrl: pgExt.storedValue || '',
+          };
+        }),
+      };
+    }),
   }));
 
   const comicPayload: Record<string, unknown> = {
     ...comic,
-    coverImage: serializedCover || comic.coverImage,
+    coverImage: serializedCover.storedValue || comic.coverImage,
     chapters: serializedChapters,
   };
+  if (serializedBanner.storedValue) {
+    comicPayload.bannerImage = serializedBanner.storedValue;
+  } else {
+    delete comicPayload.bannerImage;
+  }
   if (serializedAttachedPages) {
     comicPayload.attachedPages = serializedAttachedPages;
   } else {
     delete comicPayload.attachedPages;
   }
+  // Never leave raw unchunked attachedFileData inside server_comics (prevents 1 MiB Firestore document overflow)
+  delete (comicPayload as any).attachedFileData;
 
-  writes.push({
+  docWrites.push({
     docPath: `server_comics/${safeComicId}`,
     fields: {
       comicId: comic.id,
@@ -1409,7 +1734,13 @@ function buildFullComicVaultWriteItems(comic: Comic): CommitWriteItem[] {
     },
   });
 
-  return writes;
+  return {
+    assetWrites,
+    docWrites,
+    compactComicInPlace: () => {
+      for (const fn of pendingCompactions) fn();
+    },
+  };
 }
 
 export type VaultCollectionKey =
@@ -1506,12 +1837,408 @@ export async function fetchCloudSyncRevision(
   };
 }
 
+/**
+ * Public-safe Firestore catalog recovery: queries published /comics and their /episodes subcollections.
+ * Works across ALL credential modes (service_account, native_adc, firebase_id_token, AND public_api_key)
+ * so published comics in Firestore are never silently lost or hidden.
+ */
+export async function fetchPublishedComicsCatalogFromFirestore(
+  userFirebaseIdToken?: string
+): Promise<Comic[]> {
+  const queryRes = await runFirestoreQuery(
+    {
+      from: [{ collectionId: 'comics' }],
+      where: {
+        fieldFilter: {
+          field: { fieldPath: 'status' },
+          op: 'EQUAL',
+          value: { stringValue: 'published' },
+        },
+      },
+      limit: 100,
+    },
+    userFirebaseIdToken
+  );
+
+  if (!queryRes.ok || queryRes.docs.length === 0) {
+    return [];
+  }
+
+  const authCtx = await resolveAuthContext(userFirebaseIdToken);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (authCtx.bearerToken) {
+    headers['Authorization'] = `Bearer ${authCtx.bearerToken}`;
+  }
+
+  const recovered: Comic[] = await Promise.all(
+    queryRes.docs.map(async (rawComic) => {
+      const comicId = String(rawComic.comicId || '').trim();
+      const title = String(rawComic.title || 'Untitled Comic').trim();
+      const slug = title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '') || comicId;
+      const authorId = String(rawComic.authorId || 'usr_admin').trim();
+      const authorName = String(rawComic.authorName || 'Aathirai Creator').trim();
+      const rawGenre = String(rawComic.genre || 'Action');
+      const genreList = rawGenre
+        .split(',')
+        .map((g) => g.trim())
+        .filter(Boolean);
+      const accessType: 'free' | 'premium' = rawComic.accessType === 'premium' ? 'premium' : 'free';
+      const fullPriceInr = Math.max(0, Number(rawComic.fullUnlockPriceInr) || 0);
+      const createdAt = String(rawComic.createdAt || new Date().toISOString());
+      const updatedAt = String(rawComic.updatedAt || createdAt);
+
+      // Query published episodes subcollection for this comic
+      let episodeDocs: Record<string, unknown>[] = [];
+      try {
+        const epRes = await fetch(
+          `${FIRESTORE_REST_BASE_URL}/comics/${encodeURIComponent(comicId)}:runQuery?key=${encodeURIComponent(FIREBASE_APPLET_CONFIG.apiKey)}`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              structuredQuery: {
+                from: [{ collectionId: 'episodes' }],
+                where: {
+                  fieldFilter: {
+                    field: { fieldPath: 'status' },
+                    op: 'EQUAL',
+                    value: { stringValue: 'published' },
+                  },
+                },
+                limit: 200,
+              },
+            }),
+            signal: AbortSignal.timeout(8000),
+          }
+        );
+        if (epRes.ok) {
+          const rows = (await epRes.json()) as Array<{ document?: any }>;
+          episodeDocs = rows
+            .map((r) => (r.document ? fromFirestoreDocument(r.document) : null))
+            .filter((d): d is Record<string, unknown> => Boolean(d));
+        }
+      } catch {
+        // Keep comic even if episodes subcollection query fails transiently
+      }
+
+      // Never stamp fake sample comic artwork onto real Firestore comics
+      const defaultCover = '';
+      const chapterMap = new Map<
+        string,
+        {
+          id: string;
+          comicId: string;
+          chapterNumber: number;
+          title: string;
+          synopsis: string;
+          isPremium: boolean;
+          priceInr: number;
+          episodes: Episode[];
+        }
+      >();
+
+      episodeDocs.sort((a, b) => {
+        const chDiff = (Number(a.chapterNumber) || 1) - (Number(b.chapterNumber) || 1);
+        if (chDiff !== 0) return chDiff;
+        return (Number(a.episodeNumber) || 1) - (Number(b.episodeNumber) || 1);
+      });
+
+      for (const epDoc of episodeDocs) {
+        const epId = String(epDoc.episodeId || `ep_${comicId}`);
+        const chId = String(epDoc.chapterId || `chap_${comicId}_1`);
+        const chNum = Math.max(1, Number(epDoc.chapterNumber) || 1);
+        const chTitle = String(epDoc.chapterTitle || `Chapter ${chNum}`);
+        const epNum = Math.max(1, Number(epDoc.episodeNumber) || 1);
+        const epTitle = String(epDoc.title || `Episode ${epNum}`);
+        const isPremium = Boolean(epDoc.isPremium);
+        const priceInr = Math.max(0, Number(epDoc.priceInr) || 0);
+        const pagesCount = Math.min(200, Math.max(1, Number(epDoc.pagesCount) || 1));
+        const epCreatedAt = String(epDoc.createdAt || createdAt);
+
+        let chapter = chapterMap.get(chId);
+        if (!chapter) {
+          chapter = {
+            id: chId,
+            comicId,
+            chapterNumber: chNum,
+            title: chTitle,
+            synopsis: `${chTitle} of ${title}`,
+            isPremium,
+            priceInr: isPremium ? Math.max(priceInr, 30) : 0,
+            episodes: [],
+          };
+          chapterMap.set(chId, chapter);
+        }
+
+        const pages = Array.from({ length: pagesCount }, (_, idx) => ({
+          id: `pg_${epId}_${idx + 1}`,
+          pageNumber: idx + 1,
+          imageUrl: defaultCover,
+          caption: `Page ${idx + 1}`,
+        }));
+
+        chapter.episodes.push({
+          id: epId,
+          chapterId: chId,
+          comicId,
+          episodeNumber: epNum,
+          title: epTitle,
+          synopsis: `${epTitle} — ${title}`,
+          releaseDate: epCreatedAt.split('T')[0],
+          isPremium,
+          priceInr,
+          coverImage: defaultCover,
+          pages,
+          likesCount: 0,
+          dislikesCount: 0,
+          averageRating: 5.0,
+          totalRatings: 0,
+          isPublished: true,
+        });
+      }
+
+      const chapters = Array.from(chapterMap.values()).sort((a, b) => a.chapterNumber - b.chapterNumber);
+      if (chapters.length === 0) {
+        const fallbackChapId = `chap_${comicId}_1`;
+        chapters.push({
+          id: fallbackChapId,
+          comicId,
+          chapterNumber: 1,
+          title: 'Chapter 1',
+          synopsis: `Chapter 1 of ${title}`,
+          isPremium: accessType === 'premium',
+          priceInr: accessType === 'premium' ? 30 : 0,
+          episodes: [],
+        });
+      }
+
+      return {
+        id: comicId,
+        title,
+        slug,
+        authorId,
+        authorName,
+        genre: genreList.length > 0 ? genreList : ['Action'],
+        coverImage: defaultCover,
+        description: `Original comic series "${title}" by ${authorName} on Aathirai Comic.`,
+        status: 'Ongoing',
+        accessType,
+        fullPriceInr,
+        chapterPriceInr: accessType === 'premium' ? 30 : 0,
+        episodePriceInr: accessType === 'premium' ? 10 : 0,
+        featured: true,
+        trending: true,
+        popular: false,
+        recommended: true,
+        chapters,
+        totalViews: 0,
+        averageRating: 5.0,
+        createdAt,
+        updatedAt,
+        moderationStatus: 'approved',
+        isPublishedDirectlyByAdmin: authorId === 'usr_admin',
+      } as Comic;
+    })
+  );
+
+  recovered.sort(
+    (a, b) =>
+      new Date(b.createdAt || b.updatedAt || 0).getTime() -
+      new Date(a.createdAt || a.updatedAt || 0).getTime()
+  );
+
+  return recovered;
+}
+
+/**
+ * Public-safe Firestore loader for episode comments (/comments) and star ratings (/ratings).
+ * Works across ALL credential modes (service_account, native_adc, firebase_id_token, AND public_api_key).
+ */
+export async function fetchPublicCommentsAndRatingsFromFirestore(
+  userFirebaseIdToken?: string
+): Promise<{ comments: Comment[]; ratings: Rating[] }> {
+  const [commentsRes, ratingsRes] = await Promise.all([
+    runFirestoreQuery(
+      {
+        from: [{ collectionId: 'comments' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'likesCount' },
+            op: 'GREATER_THAN_OR_EQUAL',
+            value: { integerValue: '0' },
+          },
+        },
+        limit: 500,
+      },
+      userFirebaseIdToken
+    ).catch(() => ({ ok: false, docs: [] as Record<string, unknown>[] })),
+    runFirestoreQuery(
+      {
+        from: [{ collectionId: 'ratings' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'stars' },
+            op: 'GREATER_THAN_OR_EQUAL',
+            value: { integerValue: '1' },
+          },
+        },
+        limit: 1000,
+      },
+      userFirebaseIdToken
+    ).catch(() => ({ ok: false, docs: [] as Record<string, unknown>[] })),
+  ]);
+
+  const comments: Comment[] = commentsRes.ok
+    ? commentsRes.docs
+        .map((raw) => {
+          const id = String(raw.commentId || '').trim();
+          const episodeId = String(raw.episodeId || '').trim();
+          const content = String(raw.content || '').trim();
+          if (!id || !episodeId || !content) return null;
+          const userName = String(raw.userName || 'Comic Reader').trim() || 'Comic Reader';
+          const createdAt = String(raw.createdAt || new Date().toISOString());
+          const updatedAt = String(raw.updatedAt || createdAt);
+          return {
+            id,
+            episodeId,
+            userId: String(raw.userId || 'usr_guest').trim(),
+            userName,
+            userAvatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(userName)}`,
+            userRole: 'reader' as const,
+            content,
+            createdAt,
+            updatedAt,
+            likesCount: Math.max(0, Number(raw.likesCount) || 0),
+            likedBy: [],
+          } as Comment;
+        })
+        .filter((c): c is Comment => Boolean(c))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    : [];
+
+  const ratings: Rating[] = ratingsRes.ok
+    ? ratingsRes.docs
+        .map((raw) => {
+          const id = String(raw.ratingId || '').trim();
+          const episodeId = String(raw.episodeId || '').trim();
+          const userId = String(raw.userId || '').trim();
+          const stars = Math.min(5, Math.max(1, Math.round(Number(raw.stars) || 0)));
+          if (!id || !episodeId || !userId || stars < 1) return null;
+          const createdAt = String(raw.createdAt || new Date().toISOString());
+          const updatedAt = String(raw.updatedAt || createdAt);
+          return {
+            id,
+            episodeId,
+            userId,
+            stars,
+            createdAt,
+            updatedAt,
+          } as Rating;
+        })
+        .filter((r): r is Rating => Boolean(r))
+    : [];
+
+  return { comments, ratings };
+}
+
+function mergeCommentsById(primary: Comment[], incoming: Comment[]): Comment[] {
+  const map = new Map<string, Comment>();
+  for (const c of primary || []) {
+    if (c && c.id) map.set(c.id, c);
+  }
+  for (const inc of incoming || []) {
+    if (!inc || !inc.id) continue;
+    const existing = map.get(inc.id);
+    if (!existing) {
+      map.set(inc.id, inc);
+    } else {
+      // Keep richer local/vault fields (userAvatar, userRole, replies, likedBy) while syncing latest content/likesCount
+      const incUpdated = new Date(inc.updatedAt || inc.createdAt || 0).getTime();
+      const exUpdated = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+      if (incUpdated > exUpdated) {
+        map.set(inc.id, {
+          ...existing,
+          content: inc.content || existing.content,
+          likesCount: Math.max(existing.likesCount || 0, inc.likesCount || 0),
+          updatedAt: inc.updatedAt || existing.updatedAt,
+        });
+      }
+    }
+  }
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+  );
+}
+
+function mergeRatingsById(primary: Rating[], incoming: Rating[]): Rating[] {
+  const byEpisodeUser = new Map<string, Rating>();
+  const addRating = (r: Rating) => {
+    if (!r || !r.episodeId || !r.userId) return;
+    const key = `${r.episodeId}::${r.userId}`;
+    const existing = byEpisodeUser.get(key);
+    if (!existing) {
+      byEpisodeUser.set(key, r);
+      return;
+    }
+    const nextTs = new Date(r.updatedAt || r.createdAt || 0).getTime();
+    const prevTs = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+    if (nextTs >= prevTs) {
+      byEpisodeUser.set(key, r);
+    }
+  };
+  for (const r of primary || []) addRating(r);
+  for (const r of incoming || []) addRating(r);
+  return Array.from(byEpisodeUser.values());
+}
+
+export function applyRatingsToComics(comics: Comic[], ratings: Rating[]): void {
+  const statsByEp = new Map<string, { sum: number; count: number }>();
+  for (const r of ratings || []) {
+    if (!r || !r.episodeId) continue;
+    const stars = Number(r.stars);
+    if (!Number.isFinite(stars) || stars < 1 || stars > 5) continue;
+    const cur = statsByEp.get(r.episodeId) || { sum: 0, count: 0 };
+    cur.sum += stars;
+    cur.count += 1;
+    statsByEp.set(r.episodeId, cur);
+  }
+
+  for (const comic of comics || []) {
+    let comicSum = 0;
+    let comicCount = 0;
+    for (const ch of comic.chapters || []) {
+      for (const ep of ch.episodes || []) {
+        const st = statsByEp.get(ep.id);
+        if (st && st.count > 0) {
+          ep.totalRatings = st.count;
+          ep.averageRating = Number((st.sum / st.count).toFixed(1));
+          comicSum += st.sum;
+          comicCount += st.count;
+        } else {
+          ep.totalRatings = 0;
+          ep.averageRating = 0;
+        }
+      }
+    }
+    if (comicCount > 0) {
+      comic.averageRating = Number((comicSum / comicCount).toFixed(1));
+    }
+  }
+}
+
 export async function persistSnapshotChangesToFirestore(params: {
   snapshot: DatabaseSchema;
   users?: User[];
   comics?: Comic[];
+  changedComments?: Comment[];
+  changedRatings?: Rating[];
   deletedComicIds?: string[];
   deletedUserIds?: string[];
+  deletedCommentIds?: string[];
+  deletedRatingIds?: string[];
   collections?: VaultCollectionKey[];
   fullVaultSync?: boolean;
   revision?: number;
@@ -1533,7 +2260,35 @@ export async function persistSnapshotChangesToFirestore(params: {
     };
   }
 
-  const writes: CommitWriteItem[] = [];
+  const assetWrites: CommitWriteItem[] = [];
+  const docWrites: CommitWriteItem[] = [];
+  const publicMirrorWrites: CommitWriteItem[] = [];
+  const compactCallbacks: Array<() => void> = [];
+
+  const targetUsers = params.fullVaultSync ? params.snapshot.users || [] : params.users || [];
+  const targetComics = params.fullVaultSync ? params.snapshot.comics || [] : params.comics || [];
+  const targetCollections = params.fullVaultSync ? ALL_VAULT_COLLECTION_KEYS : params.collections || [];
+
+  for (const u of targetUsers) {
+    const built = buildFullUserVaultWriteItems(u);
+    assetWrites.push(...built.assetWrites);
+    docWrites.push(...built.docWrites);
+    const pubUserWrites = buildUserWriteItems(u);
+    docWrites.push(...pubUserWrites);
+    publicMirrorWrites.push(...pubUserWrites);
+  }
+
+  for (const c of targetComics) {
+    const built = buildFullComicVaultWriteItems(c);
+    assetWrites.push(...built.assetWrites);
+    docWrites.push(...built.docWrites);
+    const pubComicWrites = buildComicAndEpisodeWriteItems(c);
+    docWrites.push(...pubComicWrites);
+    publicMirrorWrites.push(...pubComicWrites);
+    compactCallbacks.push(built.compactComicInPlace);
+  }
+
+  // Build episodeId -> comicId map for normalized /comments and /ratings writes
   const comicEpisodeLookup = new Map<string, string>();
   for (const c of params.snapshot.comics || []) {
     for (const ch of c.chapters || []) {
@@ -1543,25 +2298,46 @@ export async function persistSnapshotChangesToFirestore(params: {
     }
   }
 
-  const targetUsers = params.fullVaultSync ? params.snapshot.users || [] : params.users || [];
-  const targetComics = params.fullVaultSync ? params.snapshot.comics || [] : params.comics || [];
-  const targetCollections = params.fullVaultSync ? ALL_VAULT_COLLECTION_KEYS : params.collections || [];
-
-  for (const u of targetUsers) {
-    writes.push(...buildFullUserVaultWriteItems(u));
-    writes.push(...buildUserWriteItems(u));
-  }
-
-  for (const c of targetComics) {
-    writes.push(...buildFullComicVaultWriteItems(c));
-    writes.push(...buildComicAndEpisodeWriteItems(c));
-  }
-
   if (targetCollections.length > 0) {
-    writes.push(...buildVaultCollectionWrites(params.snapshot, targetCollections));
+    docWrites.push(...buildVaultCollectionWrites(params.snapshot, targetCollections));
   }
 
-  // Delete removed comics / users in vault & public mirror
+  // Always mirror normalized /comments/{commentId} documents to Firestore
+  const commentsToMirror: Comment[] = [];
+  if (Array.isArray(params.changedComments) && params.changedComments.length > 0) {
+    commentsToMirror.push(...params.changedComments);
+  } else if (targetCollections.includes('comments')) {
+    for (const c of params.snapshot.comments || []) {
+      commentsToMirror.push(c);
+      if (Array.isArray(c.replies)) {
+        for (const rep of c.replies) {
+          commentsToMirror.push(rep);
+        }
+      }
+    }
+  }
+  for (const comment of commentsToMirror) {
+    const comicId = comicEpisodeLookup.get(comment.episodeId) || params.snapshot.comics[0]?.id || 'platform_comic';
+    const commentWrite = buildCommentWriteItem(comment, comicId);
+    docWrites.push(commentWrite);
+    publicMirrorWrites.push(commentWrite);
+  }
+
+  // Always mirror normalized /ratings/{ratingId} documents to Firestore
+  const ratingsToMirror: Rating[] =
+    Array.isArray(params.changedRatings) && params.changedRatings.length > 0
+      ? params.changedRatings
+      : targetCollections.includes('ratings')
+        ? params.snapshot.ratings || []
+        : [];
+  for (const rating of ratingsToMirror) {
+    const comicId = comicEpisodeLookup.get(rating.episodeId) || params.snapshot.comics[0]?.id || 'platform_comic';
+    const ratingWrite = buildRatingWriteItem(rating, comicId);
+    docWrites.push(ratingWrite);
+    publicMirrorWrites.push(ratingWrite);
+  }
+
+  // Delete removed comics / users / comments / ratings in vault & public mirror
   for (const delComicId of params.deletedComicIds || []) {
     const safeCid = sanitizeFirestoreId(delComicId);
     await deleteFirestoreDoc(`server_comics/${safeCid}`, params.userFirebaseIdToken).catch(() => false);
@@ -1573,13 +2349,65 @@ export async function persistSnapshotChangesToFirestore(params: {
     await deleteFirestoreDoc(`users/${safeUid}/private/info`, params.userFirebaseIdToken).catch(() => false);
     await deleteFirestoreDoc(`users/${safeUid}`, params.userFirebaseIdToken).catch(() => false);
   }
+  for (const delCommentId of params.deletedCommentIds || []) {
+    const safeCommentId = sanitizeFirestoreId(delCommentId);
+    await deleteFirestoreDoc(`comments/${safeCommentId}`, params.userFirebaseIdToken).catch(() => false);
+  }
+  for (const delRatingId of params.deletedRatingIds || []) {
+    const safeRatingId = sanitizeFirestoreId(delRatingId);
+    await deleteFirestoreDoc(`ratings/${safeRatingId}`, params.userFirebaseIdToken).catch(() => false);
+  }
+
+  // When authenticated via end-user Firebase ID token (without server IAM ADC),
+  // write directly to schema-validated public /comics, /episodes, /users, /comments & /ratings collections allowed by firestore.rules.
+  if (authCtx.mode === 'firebase_id_token') {
+    const pubRes = await commitFirestoreWrites(publicMirrorWrites, params.userFirebaseIdToken);
+    lastCloudSyncStatus = {
+      ok: pubRes.success,
+      mode: pubRes.mode,
+      revision: lastCloudSyncStatus.revision,
+      lastHydratedAt: lastCloudSyncStatus.lastHydratedAt,
+      lastSyncedAt: pubRes.success ? new Date().toISOString() : lastCloudSyncStatus.lastSyncedAt,
+      error: pubRes.error,
+    };
+    return {
+      persisted: pubRes.success,
+      mode: pubRes.mode,
+      written: pubRes.written,
+      revision: lastCloudSyncStatus.revision,
+      error: pubRes.error,
+    };
+  }
+
+  // Step 1: Commit large image asset chunks FIRST so server_comics never references missing chunks
+  let totalWritten = 0;
+  if (assetWrites.length > 0) {
+    const assetCommit = await commitFirestoreWrites(assetWrites, params.userFirebaseIdToken);
+    totalWritten += assetCommit.written;
+    if (!assetCommit.success) {
+      lastCloudSyncStatus = {
+        ...lastCloudSyncStatus,
+        ok: false,
+        mode: assetCommit.mode,
+        error: assetCommit.error,
+      };
+      console.warn(`[FirestoreVault] Asset chunk commit failed (${assetCommit.mode}):`, assetCommit.error);
+      return {
+        persisted: false,
+        mode: assetCommit.mode,
+        written: totalWritten,
+        revision: lastCloudSyncStatus.revision,
+        error: assetCommit.error,
+      };
+    }
+  }
 
   const nextRevision =
     typeof params.revision === 'number' && params.revision > 0
       ? params.revision
       : Math.max(Date.now(), (lastCloudSyncStatus.revision || 0) + 1);
 
-  writes.push({
+  docWrites.push({
     docPath: 'server_meta/sync_state',
     fields: {
       revision: nextRevision,
@@ -1589,7 +2417,21 @@ export async function persistSnapshotChangesToFirestore(params: {
     },
   });
 
-  const commitRes = await commitFirestoreWrites(writes, params.userFirebaseIdToken);
+  // Step 2: Commit metadata documents (server_comics, comics, episodes, users, collections, sync_state)
+  const commitRes = await commitFirestoreWrites(docWrites, params.userFirebaseIdToken);
+  totalWritten += commitRes.written;
+
+  // Compact in-memory comic base64 strings to lightweight /api/comic-assets/... URLs ONLY after durable cloud commit succeeds
+  if (commitRes.success && compactCallbacks.length > 0) {
+    for (const compactFn of compactCallbacks) {
+      try {
+        compactFn();
+      } catch {
+        // Ignore compaction errors
+      }
+    }
+  }
+
   lastCloudSyncStatus = {
     ok: commitRes.success,
     mode: commitRes.mode,
@@ -1606,7 +2448,7 @@ export async function persistSnapshotChangesToFirestore(params: {
   return {
     persisted: commitRes.success,
     mode: commitRes.mode,
-    written: commitRes.written,
+    written: totalWritten,
     revision: lastCloudSyncStatus.revision,
     error: commitRes.error,
   };
@@ -1624,37 +2466,112 @@ export async function hydrateDatabaseFromFirestore(
   error?: string;
 }> {
   const authCtx = await resolveAuthContext(userFirebaseIdToken);
+
+  // Even in public_api_key mode (e.g. local sandbox without ADC), recover published comics, comments & ratings from Firestore
   if (authCtx.mode === 'public_api_key' || !authCtx.bearerToken) {
+    const [publicComics, publicEngagement] = await Promise.all([
+      fetchPublishedComicsCatalogFromFirestore().catch(() => [] as Comic[]),
+      fetchPublicCommentsAndRatingsFromFirestore().catch(() => ({ comments: [] as Comment[], ratings: [] as Rating[] })),
+    ]);
     lastCloudSyncStatus = {
       ...lastCloudSyncStatus,
       ok: false,
       mode: authCtx.mode,
     };
+    const mergedMap = new Map<string, Comic>();
+    for (const localComic of fallbackData.comics || []) {
+      mergedMap.set(localComic.id, localComic);
+    }
+    for (const pubComic of publicComics) {
+      if (!mergedMap.has(pubComic.id)) {
+        mergedMap.set(pubComic.id, pubComic);
+      }
+    }
+    const mergedComics = Array.from(mergedMap.values()).sort(
+      (a, b) =>
+        new Date(b.createdAt || b.updatedAt || 0).getTime() -
+        new Date(a.createdAt || a.updatedAt || 0).getTime()
+    );
+    const mergedComments = mergeCommentsById(fallbackData.comments || [], publicEngagement.comments);
+    const mergedRatings = mergeRatingsById(fallbackData.ratings || [], publicEngagement.ratings);
+    applyRatingsToComics(mergedComics, mergedRatings);
+
+    if (publicComics.length > 0 || publicEngagement.comments.length > 0 || publicEngagement.ratings.length > 0) {
+      return {
+        hydrated: true,
+        seeded: false,
+        revision: 0,
+        mode: authCtx.mode,
+        data: {
+          ...fallbackData,
+          comics: mergedComics,
+          comments: mergedComments,
+          ratings: mergedRatings,
+        },
+      };
+    }
     return {
       hydrated: false,
       seeded: false,
       revision: 0,
       mode: authCtx.mode,
-      data: fallbackData,
+      data: {
+        ...fallbackData,
+        comics: mergedComics,
+        comments: mergedComments,
+        ratings: mergedRatings,
+      },
     };
   }
 
-  const [syncMetaDoc, usersRes, comicsRes, assetsRes, collectionsRes] = await Promise.all([
-    fetchFirestoreDocument('server_meta/sync_state', authCtx.bearerToken),
-    listFirestoreCollection('server_users', userFirebaseIdToken),
-    listFirestoreCollection('server_comics', userFirebaseIdToken),
-    listFirestoreCollection('server_comic_assets', userFirebaseIdToken),
-    listFirestoreCollection('server_collections', userFirebaseIdToken),
+  // IMPORTANT: Fetch ONLY lightweight metadata collections (NEVER list all of server_comic_assets!).
+  // Comic cover & page image chunks are fetched on-demand via /api/comic-assets/:assetKey with LRU caching.
+  const [syncMetaDoc, usersRes, comicsRes, collectionsRes, publicComics, publicEngagement] = await Promise.all([
+    fetchFirestoreDocument('server_meta/sync_state', authCtx.bearerToken, 12_000),
+    listFirestoreCollection('server_users', userFirebaseIdToken, { pageSize: 100, timeoutMs: 20_000 }),
+    listFirestoreCollection('server_comics', userFirebaseIdToken, { pageSize: 50, timeoutMs: 20_000 }),
+    listFirestoreCollection('server_collections', userFirebaseIdToken, { pageSize: 50, timeoutMs: 20_000 }),
+    fetchPublishedComicsCatalogFromFirestore(userFirebaseIdToken).catch(() => [] as Comic[]),
+    fetchPublicCommentsAndRatingsFromFirestore(userFirebaseIdToken).catch(() => ({
+      comments: [] as Comment[],
+      ratings: [] as Rating[],
+    })),
   ]);
 
-  if (!usersRes.ok || !comicsRes.ok || !assetsRes.ok || !collectionsRes.ok) {
-    const err = usersRes.error || comicsRes.error || assetsRes.error || collectionsRes.error;
+  // If ALL vault collections failed, fall back gracefully while preserving any recovered public comics, comments & ratings
+  if (!usersRes.ok && !comicsRes.ok && !collectionsRes.ok) {
+    const err = usersRes.error || comicsRes.error || collectionsRes.error;
     lastCloudSyncStatus = {
       ...lastCloudSyncStatus,
       ok: false,
       mode: authCtx.mode,
       error: err,
     };
+    const mergedMap = new Map<string, Comic>();
+    for (const c of fallbackData.comics || []) mergedMap.set(c.id, c);
+    for (const c of publicComics) {
+      if (!mergedMap.has(c.id)) mergedMap.set(c.id, c);
+    }
+    const mergedComics = Array.from(mergedMap.values());
+    const mergedComments = mergeCommentsById(fallbackData.comments || [], publicEngagement.comments);
+    const mergedRatings = mergeRatingsById(fallbackData.ratings || [], publicEngagement.ratings);
+    applyRatingsToComics(mergedComics, mergedRatings);
+
+    if (publicComics.length > 0 || publicEngagement.comments.length > 0 || publicEngagement.ratings.length > 0) {
+      return {
+        hydrated: true,
+        seeded: false,
+        revision: 0,
+        mode: authCtx.mode,
+        data: {
+          ...fallbackData,
+          comics: mergedComics,
+          comments: mergedComments,
+          ratings: mergedRatings,
+        },
+        error: err,
+      };
+    }
     return {
       hydrated: false,
       seeded: false,
@@ -1665,14 +2582,16 @@ export async function hydrateDatabaseFromFirestore(
     };
   }
 
+  const allVaultListsOk = usersRes.ok && comicsRes.ok && collectionsRes.ok;
   const hasCloudData =
     Boolean(syncMetaDoc) ||
     usersRes.docs.length > 0 ||
     comicsRes.docs.length > 0 ||
-    collectionsRes.docs.length > 0;
+    collectionsRes.docs.length > 0 ||
+    publicComics.length > 0;
 
-  // First-ever boot on App Hosting with empty cloud vault: seed cloud vault from fallbackData
-  if (!hasCloudData) {
+  // First-ever boot on truly empty Firestore project: seed cloud vault ONLY when ALL lists succeeded AND zero comics exist anywhere
+  if (!hasCloudData && allVaultListsOk) {
     const seedRes = await persistSnapshotChangesToFirestore({
       snapshot: fallbackData,
       fullVaultSync: true,
@@ -1697,35 +2616,19 @@ export async function hydrateDatabaseFromFirestore(
     };
   }
 
-  // Reconstruct asset chunks map
-  const assetChunksMap = new Map<string, Map<number, string>>();
-  for (const assetDoc of assetsRes.docs) {
-    const f = assetDoc.fields;
-    const key = typeof f.assetKey === 'string' ? f.assetKey : '';
-    const idx = Number(f.chunkIndex);
-    const data = typeof f.data === 'string' ? f.data : '';
-    if (!key || !Number.isFinite(idx)) continue;
-    let map = assetChunksMap.get(key);
-    if (!map) {
-      map = new Map<number, string>();
-      assetChunksMap.set(key, map);
-    }
-    map.set(idx, data);
-  }
-
   const nextData: DatabaseSchema = {
     ...fallbackData,
   };
 
-  // Restore users (including passwordHash, lockout counters, bookmarks, etc.)
-  if (usersRes.docs.length > 0) {
+  // 1. Restore users (convert any asset:// avatar pointers to fast on-demand HTTP URLs)
+  if (usersRes.ok && usersRes.docs.length > 0) {
     const restoredUsers: User[] = [];
     for (const docItem of usersRes.docs) {
       const payload = docItem.fields.payload as Record<string, unknown> | undefined;
       if (!payload || typeof payload !== 'object') continue;
       const userObj = { ...(payload as unknown as User) };
       if (typeof userObj.avatar === 'string' && userObj.avatar.startsWith(ASSET_PTR_PREFIX)) {
-        userObj.avatar = restoreAssetString(userObj.avatar, assetChunksMap) || userObj.avatar;
+        userObj.avatar = assetPointerToHttpUrl(userObj.avatar) || userObj.avatar;
       }
       if (!Array.isArray(userObj.bookmarks)) userObj.bookmarks = [];
       if (!Array.isArray(userObj.favorites)) userObj.favorites = [];
@@ -1742,79 +2645,125 @@ export async function hydrateDatabaseFromFirestore(
     nextData.users = restoredUsers;
   }
 
-  // Restore comics (with full coverImage, attachedPages, chapters, episodes, pages)
-  const restoredComics: Comic[] = [];
-  for (const docItem of comicsRes.docs) {
-    const payload = docItem.fields.payload as Record<string, unknown> | undefined;
-    if (!payload || typeof payload !== 'object') continue;
-    const comicObj = { ...(payload as unknown as Comic) };
-    comicObj.coverImage =
-      restoreAssetString(comicObj.coverImage, assetChunksMap) ||
-      comicObj.coverImage ||
-      '/src/assets/images/comic_cover_blade_1794269871791.jpg';
+  // 2. Restore comics from server_comics with fast on-demand /api/comic-assets/... URLs
+  const restoredComicMap = new Map<string, Comic>();
+  if (comicsRes.ok) {
+    for (const docItem of comicsRes.docs) {
+      const payload = docItem.fields.payload as Record<string, unknown> | undefined;
+      if (!payload || typeof payload !== 'object') continue;
+      const cleanSampleCover = (url?: string): string => {
+        if (!url || typeof url !== 'string') return '';
+        return /^\/src\/assets\/images\/comic_cover_/i.test(url.trim()) ? '' : url;
+      };
+      const comicObj = { ...(payload as unknown as Comic) };
+      comicObj.coverImage = cleanSampleCover(
+        assetPointerToHttpUrl(comicObj.coverImage) || comicObj.coverImage || ''
+      );
 
-    if (Array.isArray(comicObj.attachedPages)) {
-      comicObj.attachedPages = comicObj.attachedPages.map((p) => ({
-        ...p,
-        imageUrl: restoreAssetString(p.imageUrl, assetChunksMap) || p.imageUrl,
-      }));
-    }
+      if (typeof comicObj.bannerImage === 'string' && comicObj.bannerImage.startsWith(ASSET_PTR_PREFIX)) {
+        comicObj.bannerImage = assetPointerToHttpUrl(comicObj.bannerImage) || comicObj.bannerImage;
+      }
 
-    comicObj.chapters = (comicObj.chapters || []).map((ch) => ({
-      ...ch,
-      episodes: (ch.episodes || []).map((ep) => ({
-        ...ep,
-        coverImage: restoreAssetString(ep.coverImage, assetChunksMap) || ep.coverImage,
-        pages: (ep.pages || []).map((pg) => ({
-          ...pg,
-          imageUrl: restoreAssetString(pg.imageUrl, assetChunksMap) || pg.imageUrl,
+      if (Array.isArray(comicObj.attachedPages)) {
+        comicObj.attachedPages = comicObj.attachedPages.map((p) => ({
+          ...p,
+          imageUrl: cleanSampleCover(assetPointerToHttpUrl(p.imageUrl) || p.imageUrl),
+        }));
+      }
+
+      comicObj.chapters = (comicObj.chapters || []).map((ch) => ({
+        ...ch,
+        episodes: (ch.episodes || []).map((ep) => ({
+          ...ep,
+          coverImage: cleanSampleCover(assetPointerToHttpUrl(ep.coverImage) || ep.coverImage),
+          pages: (ep.pages || []).map((pg) => ({
+            ...pg,
+            imageUrl: cleanSampleCover(assetPointerToHttpUrl(pg.imageUrl) || pg.imageUrl),
+          })),
         })),
-      })),
-    }));
+      }));
 
-    restoredComics.push(comicObj);
+      restoredComicMap.set(comicObj.id, comicObj);
+    }
+  } else {
+    // If server_comics list transiently failed, preserve existing local comics rather than wiping them
+    for (const localComic of fallbackData.comics || []) {
+      restoredComicMap.set(localComic.id, localComic);
+    }
   }
-  restoredComics.sort(
+
+  // Merge any published comics present in Firestore /comics that were missing from server_comics (zero data loss)
+  for (const pubComic of publicComics) {
+    if (!restoredComicMap.has(pubComic.id)) {
+      restoredComicMap.set(pubComic.id, pubComic);
+    }
+  }
+
+  // Anti-wipe guard: never replace non-empty local comics with [] unless cloud explicitly confirmed comicsCount === 0
+  const cloudExplicitlyZeroComics =
+    comicsRes.ok &&
+    Boolean(syncMetaDoc) &&
+    Number(syncMetaDoc?.comicsCount) === 0 &&
+    publicComics.length === 0;
+  if (restoredComicMap.size === 0 && (fallbackData.comics || []).length > 0 && !cloudExplicitlyZeroComics) {
+    for (const localComic of fallbackData.comics || []) {
+      restoredComicMap.set(localComic.id, localComic);
+    }
+  }
+
+  const restoredComics = Array.from(restoredComicMap.values()).sort(
     (a, b) =>
       new Date(b.createdAt || b.updatedAt || 0).getTime() -
       new Date(a.createdAt || a.updatedAt || 0).getTime()
   );
   nextData.comics = restoredComics;
 
-  // Restore collections
-  for (const colDoc of collectionsRes.docs) {
-    const id = colDoc.id as VaultCollectionKey;
-    if (id === 'settings') {
-      if (colDoc.fields.settings && typeof colDoc.fields.settings === 'object') {
-        nextData.settings = colDoc.fields.settings as unknown as PlatformSettings;
+  // 3. Restore collections and merge normalized Firestore /comments & /ratings
+  if (collectionsRes.ok) {
+    for (const colDoc of collectionsRes.docs) {
+      const id = colDoc.id as VaultCollectionKey;
+      if (id === 'settings') {
+        if (colDoc.fields.settings && typeof colDoc.fields.settings === 'object') {
+          nextData.settings = colDoc.fields.settings as unknown as PlatformSettings;
+        }
+        if (colDoc.fields.gstSettings && typeof colDoc.fields.gstSettings === 'object') {
+          nextData.gstSettings = colDoc.fields.gstSettings as any;
+        }
+        if (Array.isArray(colDoc.fields.creditNotes)) {
+          nextData.creditNotes = colDoc.fields.creditNotes as any[];
+        }
+      } else if (id === 'otps') {
+        if (colDoc.fields.otps && typeof colDoc.fields.otps === 'object') {
+          nextData.otps = colDoc.fields.otps as any;
+        }
+        if (colDoc.fields.adminOtp && typeof colDoc.fields.adminOtp === 'object') {
+          nextData.adminOtp = colDoc.fields.adminOtp as any;
+        } else {
+          delete nextData.adminOtp;
+        }
+      } else if (Array.isArray(colDoc.fields.items)) {
+        (nextData as any)[id] = colDoc.fields.items;
       }
-      if (colDoc.fields.gstSettings && typeof colDoc.fields.gstSettings === 'object') {
-        nextData.gstSettings = colDoc.fields.gstSettings as any;
-      }
-      if (Array.isArray(colDoc.fields.creditNotes)) {
-        nextData.creditNotes = colDoc.fields.creditNotes as any[];
-      }
-    } else if (id === 'otps') {
-      if (colDoc.fields.otps && typeof colDoc.fields.otps === 'object') {
-        nextData.otps = colDoc.fields.otps as any;
-      }
-      if (colDoc.fields.adminOtp && typeof colDoc.fields.adminOtp === 'object') {
-        nextData.adminOtp = colDoc.fields.adminOtp as any;
-      } else {
-        delete nextData.adminOtp;
-      }
-    } else if (Array.isArray(colDoc.fields.items)) {
-      (nextData as any)[id] = colDoc.fields.items;
     }
   }
 
+  // Merge any comments/ratings written directly to normalized Firestore /comments and /ratings collections
+  nextData.comments = mergeCommentsById(nextData.comments || [], publicEngagement.comments);
+  nextData.ratings = mergeRatingsById(nextData.ratings || [], publicEngagement.ratings);
+  applyRatingsToComics(nextData.comics, nextData.ratings);
+
   const revision = Number(syncMetaDoc?.revision) || 1;
+  const partialError = !allVaultListsOk
+    ? usersRes.error || comicsRes.error || collectionsRes.error
+    : undefined;
+
   lastCloudSyncStatus = {
-    ok: true,
+    ok: allVaultListsOk,
     mode: authCtx.mode,
     revision,
     lastHydratedAt: new Date().toISOString(),
     lastSyncedAt: lastCloudSyncStatus.lastSyncedAt,
+    error: partialError,
   };
 
   return {
@@ -1823,6 +2772,7 @@ export async function hydrateDatabaseFromFirestore(
     revision,
     mode: authCtx.mode,
     data: nextData,
+    error: partialError,
   };
 }
 
