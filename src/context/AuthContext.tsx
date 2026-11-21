@@ -58,6 +58,7 @@ interface AuthContextType {
   refreshUser: () => Promise<void>;
   refreshNotifications: () => Promise<void>;
   markNotificationRead: (notificationId?: string) => Promise<void>;
+  dismissNotification: (notificationId: string) => Promise<void>;
   toggleBookmark: (comicId: string) => Promise<boolean>;
   toggleFavorite: (comicId: string) => Promise<boolean>;
   saveReadingProgress: (item: Omit<ReadingProgressItem, 'updatedAt'>) => Promise<void>;
@@ -409,6 +410,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const dismissNotification = async (notificationId: string) => {
+    if (!notificationId) return;
+    setNotifications((prev) => prev.filter((n) => n.id !== notificationId));
+    try {
+      const headers = await getAuthHeaders();
+      await fetch('/api/notifications/dismiss', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          userId: user?.id,
+          email: user?.email,
+          notificationId,
+        }),
+      });
+      import('../services/firestoreBackend')
+        .then(({ deleteNotificationInFirestore }) => deleteNotificationInFirestore(notificationId))
+        .catch(() => {});
+    } catch {
+      // ignore transient errors; item already dismissed in UI
+    }
+  };
+
   const toggleBookmark = async (comicId: string): Promise<boolean> => {
     if (!user) return false;
     try {
@@ -517,6 +540,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         refreshUser,
         refreshNotifications,
         markNotificationRead,
+        dismissNotification,
         toggleBookmark,
         toggleFavorite,
         saveReadingProgress,

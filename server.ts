@@ -5830,6 +5830,10 @@ async function startServer() {
     const cleanUserId = userId ? String(userId).trim() : '';
     const snapshot = db.getSnapshot();
     const rawList = (snapshot.notifications || []).filter(n => {
+      const dismissedBy = Array.isArray(n.dismissedBy) ? n.dismissedBy : [];
+      if (cleanUserId && dismissedBy.includes(cleanUserId)) return false;
+      if (cleanEmail && dismissedBy.includes(cleanEmail)) return false;
+      if (!cleanUserId && !cleanEmail && dismissedBy.includes('guest')) return false;
       if (cleanUserId && n.userId === cleanUserId) return true;
       if (cleanEmail && n.userEmail?.toLowerCase() === cleanEmail) return true;
       if (n.userId === 'all') return true;
@@ -5909,6 +5913,66 @@ async function startServer() {
       userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
     });
     return res.json({ success: true });
+  });
+
+  app.post('/api/notifications/dismiss', async (req, res) => {
+    const { notificationId, userId, email } = req.body;
+    if (!notificationId || !String(notificationId).trim()) {
+      return res.status(400).json({ error: 'notificationId is required' });
+    }
+    const cleanId = String(notificationId).trim();
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanUserId = userId ? String(userId).trim() : '';
+
+    db.mutate(d => {
+      if (!Array.isArray(d.notifications)) return;
+      const targetNotif = d.notifications.find(x => x.id === cleanId);
+      const isMatchingDuplicate = (n: any) =>
+        n.id === cleanId ||
+        Boolean(
+          targetNotif &&
+            n.type === targetNotif.type &&
+            (n.comicId || n.targetId) === (targetNotif.comicId || targetNotif.targetId) &&
+            (n.episodeId || '') === (targetNotif.episodeId || '') &&
+            n.title === targetNotif.title
+        );
+
+      const remaining: typeof d.notifications = [];
+      for (const n of d.notifications) {
+        if (!isMatchingDuplicate(n)) {
+          remaining.push(n);
+          continue;
+        }
+        const belongsOnlyToThisUser =
+          n.userId !== 'all' &&
+          ((cleanUserId && n.userId === cleanUserId) ||
+            (cleanEmail && n.userEmail?.toLowerCase() === cleanEmail));
+
+        if (belongsOnlyToThisUser) {
+          // Permanently remove user-specific notification
+          continue;
+        }
+
+        // For broadcast ('all') notifications, record dismissal for this reader only
+        if (n.userId === 'all') {
+          const nextDismissed = new Set<string>(Array.isArray(n.dismissedBy) ? n.dismissedBy : []);
+          if (cleanUserId) nextDismissed.add(cleanUserId);
+          if (cleanEmail) nextDismissed.add(cleanEmail);
+          if (!cleanUserId && !cleanEmail) nextDismissed.add('guest');
+          n.dismissedBy = Array.from(nextDismissed);
+          n.read = true;
+        }
+        remaining.push(n);
+      }
+      d.notifications = remaining;
+    });
+
+    await db.persistChanges({
+      collections: ['notifications'],
+      userFirebaseIdToken: extractFirebaseIdToken(req.headers.authorization),
+    });
+
+    return res.json({ success: true, dismissedId: cleanId });
   });
 
   app.post('/api/reader/bookmarks/toggle', async (req, res) => {

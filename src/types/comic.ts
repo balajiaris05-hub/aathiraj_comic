@@ -409,6 +409,7 @@ export interface NotificationItem {
   gmailError?: string;
   gmailDeliveredCount?: number;
   gmailTargetCount?: number;
+  dismissedBy?: string[];
   createdAt: string;
 }
 
