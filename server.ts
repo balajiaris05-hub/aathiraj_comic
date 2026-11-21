@@ -46,6 +46,7 @@ import {
   getRazorpayEnvironmentStatus,
   computeRazorpayOrderSignature,
   verifyRazorpayPaymentSignature,
+  verifyRazorpaySubscriptionSignature,
   verifyRazorpayWebhookSignature,
   verifyBearerToken,
   resolveAuthenticatedUser,
@@ -61,6 +62,8 @@ import {
 import {
   hasRealRazorpayApiKeys,
   createGatewayOrderOnRazorpay,
+  resolveConfiguredRazorpayPlanId,
+  createGatewaySubscriptionOnRazorpay,
   fetchRazorpayPaymentById,
   findCapturedRazorpayPaymentForCustomer,
 } from './src/server/razorpayService.ts';
@@ -6563,6 +6566,11 @@ async function startServer() {
       currency: 'INR',
       symbol: '₹',
       testMode: rzpStatus.isTestMode,
+      isLiveMode: rzpStatus.isLiveMode,
+      subscriptionPlans: {
+        oneMonth: resolveConfiguredRazorpayPlanId('1_month', rzpStatus.isLiveMode),
+        sixMonths: resolveConfiguredRazorpayPlanId('6_months', rzpStatus.isLiveMode),
+      },
       warningBanner: rzpStatus.statusMessage,
       statusMessage: rzpStatus.statusMessage,
       merchantUpiId: settings?.merchantUpiId || 'balajiaris05@okaxis',
@@ -6616,6 +6624,7 @@ async function startServer() {
       chapterId,
       episodeId,
       type = 'episode',
+      subscriptionPlan,
       amountInr,
       amount,
       currency = 'INR',
@@ -6726,6 +6735,60 @@ async function startServer() {
     const normalizedCurrency = String(currency || 'INR').trim().toUpperCase() || 'INR';
     const orderReceipt = String(receipt || `rcpt_${Date.now()}`).trim().slice(0, 40);
     const environment: 'test' | 'live' = rzpStatus.isLiveMode ? 'live' : 'test';
+    const resolvedSubPlan: '1_month' | '6_months' =
+      subscriptionPlan === '6_months' || amountInPaise >= 24900 ? '6_months' : '1_month';
+
+    // When purchasing a recurring membership and a Razorpay Plan ID is configured for this mode,
+    // create a fresh per-customer Subscription ID; gracefully fall back to Standard Orders if unavailable.
+    if (type === 'subscription') {
+      const configuredPlanId = resolveConfiguredRazorpayPlanId(resolvedSubPlan, rzpStatus.isLiveMode);
+      if (configuredPlanId) {
+        const subResult = await createGatewaySubscriptionOnRazorpay({
+          planId: configuredPlanId,
+          totalCount: resolvedSubPlan === '6_months' ? 4 : 12,
+          notes: {
+            comicId: String(comicId || 'global_subscription'),
+            type: 'subscription',
+            subscriptionPlan: resolvedSubPlan,
+            userEmail: String(userEmail || ''),
+          },
+        });
+
+        if (subResult.subscriptionId) {
+          return res.json({
+            success: true,
+            checkoutType: 'subscription',
+            mode: rzpStatus.mode.toUpperCase(),
+            modeLower: rzpStatus.mode,
+            environment,
+            createdViaRazorpayApi: subResult.createdViaRazorpayApi,
+            warningBanner: rzpStatus.statusMessage,
+            subscription_id: subResult.subscriptionId,
+            subscriptionId: subResult.subscriptionId,
+            plan_id: subResult.planId,
+            short_url: subResult.shortUrl,
+            amount: amountInPaise,
+            amountInr: parsedAmountInr,
+            gstBreakdown,
+            currency: normalizedCurrency,
+            keyId: rzpStatus.keyId,
+            paymentMethods: [
+              'UPI Autopay (Google Pay, PhonePe, Paytm, BHIM)',
+              'RuPay, Visa, Mastercard Debit & Credit Cards',
+              'Net Banking eMandate',
+            ],
+          });
+        }
+
+        if (subResult.statusCode === 401) {
+          return res.status(401).json({
+            error: subResult.error || 'Razorpay authentication failed.',
+          });
+        }
+        // If plan ID doesn't exist in the current mode (e.g., Test Mode), fall back to Standard Order below.
+      }
+    }
+
     const orderResult = await createGatewayOrderOnRazorpay({
       amountPaise: amountInPaise,
       currency: normalizedCurrency,
@@ -6733,6 +6796,7 @@ async function startServer() {
       notes: {
         comicId: String(comicId || 'global_subscription'),
         type: String(type),
+        ...(type === 'subscription' ? { subscriptionPlan: resolvedSubPlan } : {}),
         userEmail: String(userEmail || ''),
         ...(chapterId ? { chapterId: String(chapterId) } : {}),
         ...(episodeId ? { episodeId: String(episodeId) } : {}),
@@ -6752,6 +6816,7 @@ async function startServer() {
 
     return res.json({
       success: true,
+      checkoutType: 'order',
       mode: rzpStatus.mode.toUpperCase(),
       modeLower: rzpStatus.mode,
       environment,
@@ -6787,8 +6852,12 @@ async function startServer() {
 
     const body = req.body || {};
     const resolvedOrderId = String(body.razorpay_order_id || body.razorpayOrderId || '').trim();
+    const resolvedSubscriptionId = String(
+      body.razorpay_subscription_id || body.razorpaySubscriptionId || ''
+    ).trim();
     const resolvedPaymentId = String(body.razorpay_payment_id || body.razorpayPaymentId || '').trim();
     const resolvedSignature = String(body.razorpay_signature || body.razorpaySignature || '').trim();
+    const resolvedReferenceId = resolvedOrderId || resolvedSubscriptionId;
 
     const {
       userId,
@@ -6810,9 +6879,10 @@ async function startServer() {
       customerGstin,
     } = body;
 
-    if (!resolvedOrderId || !resolvedPaymentId || !resolvedSignature) {
+    if (!resolvedReferenceId || !resolvedPaymentId || !resolvedSignature) {
       return res.status(400).json({
-        error: 'Payment verification failed: Missing razorpay_order_id, razorpay_payment_id, or razorpay_signature.',
+        error:
+          'Payment verification failed: Missing razorpay_order_id (or razorpay_subscription_id), razorpay_payment_id, or razorpay_signature.',
       });
     }
 
@@ -6827,10 +6897,12 @@ async function startServer() {
       validatedCustomerGstin = custCheck.normalizedGstin || undefined;
     }
 
-    // 1. Idempotency check: prevent duplicate fulfillment for the same payment ID or order ID
+    // 1. Idempotency check: prevent duplicate fulfillment for the same payment ID or order/subscription ID
     const snapshot = db.getSnapshot();
     const existingPurchase = snapshot.purchases.find(
-      p => p.razorpayPaymentId === resolvedPaymentId || (p.razorpayOrderId === resolvedOrderId && p.status === 'success')
+      p =>
+        p.razorpayPaymentId === resolvedPaymentId ||
+        (p.razorpayOrderId === resolvedReferenceId && p.status === 'success')
     );
     if (existingPurchase) {
       return res.json({
@@ -6842,21 +6914,36 @@ async function startServer() {
       });
     }
 
-    // 2. Cryptographic HMAC-SHA256 signature verification (order_id + "|" + payment_id, KEY_SECRET)
-    const isSignatureValid = verifyRazorpayPaymentSignature({
-      orderId: resolvedOrderId,
-      paymentId: resolvedPaymentId,
-      signature: resolvedSignature,
-    });
+    // 2. Cryptographic HMAC-SHA256 signature verification
+    // - Subscriptions: HMAC-SHA256(razorpay_payment_id + "|" + razorpay_subscription_id, KEY_SECRET)
+    // - Standard Orders: HMAC-SHA256(razorpay_order_id + "|" + razorpay_payment_id, KEY_SECRET)
+    const isSignatureValid = resolvedSubscriptionId
+      ? verifyRazorpaySubscriptionSignature({
+          paymentId: resolvedPaymentId,
+          subscriptionId: resolvedSubscriptionId,
+          signature: resolvedSignature,
+        }) ||
+        (resolvedOrderId
+          ? verifyRazorpayPaymentSignature({
+              orderId: resolvedOrderId,
+              paymentId: resolvedPaymentId,
+              signature: resolvedSignature,
+            })
+          : false)
+      : verifyRazorpayPaymentSignature({
+          orderId: resolvedOrderId,
+          paymentId: resolvedPaymentId,
+          signature: resolvedSignature,
+        });
 
     if (!isSignatureValid) {
       db.logActivity(
         'PAYMENT_SIGNATURE_INVALID',
         userEmail || 'unknown',
         'reader',
-        `Rejected tampered or invalid Razorpay signature for order ${resolvedOrderId} / payment ${resolvedPaymentId}.`,
+        `Rejected tampered or invalid Razorpay signature for ${resolvedSubscriptionId ? 'subscription' : 'order'} ${resolvedReferenceId} / payment ${resolvedPaymentId}.`,
         'payment',
-        resolvedOrderId
+        resolvedReferenceId
       );
       return res.status(400).json({
         success: false,
@@ -6985,11 +7072,11 @@ async function startServer() {
       amountInr: amountNum,
       currency: 'INR',
       paymentMethod: razorpayMethodLabel || paymentMethod || 'Razorpay Checkout',
-      razorpayOrderId: resolvedOrderId,
+      razorpayOrderId: resolvedReferenceId,
       razorpayPaymentId: resolvedPaymentId,
       signatureVerified: true,
       environment,
-      idempotencyKey: `idem_${resolvedOrderId}_${resolvedPaymentId}`,
+      idempotencyKey: `idem_${resolvedReferenceId}_${resolvedPaymentId}`,
       status: 'success',
       createdAt: nowIso,
       receiptNumber,

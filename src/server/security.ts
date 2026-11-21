@@ -631,6 +631,37 @@ export function verifyRazorpayPaymentSignature(params: {
   return crypto.timingSafeEqual(a, b);
 }
 
+/**
+ * Compute and verify HMAC-SHA256 signature for Razorpay Subscriptions:
+ * HMAC-SHA256(razorpay_payment_id + "|" + razorpay_subscription_id, KEY_SECRET)
+ */
+export function computeRazorpaySubscriptionSignature(
+  paymentId: string,
+  subscriptionId: string,
+  secret?: string
+): string {
+  const keySecret = secret ?? getRazorpaySecret();
+  return crypto
+    .createHmac('sha256', keySecret)
+    .update(`${paymentId}|${subscriptionId}`)
+    .digest('hex');
+}
+
+export function verifyRazorpaySubscriptionSignature(params: {
+  paymentId: string;
+  subscriptionId: string;
+  signature: string;
+  secret?: string;
+}): boolean {
+  const { paymentId, subscriptionId, signature, secret } = params;
+  if (!paymentId || !subscriptionId || !signature) return false;
+  const expected = computeRazorpaySubscriptionSignature(paymentId, subscriptionId, secret);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 export function verifyRazorpayWebhookSignature(rawBody: string, signature?: string, webhookSecret?: string): boolean {
   const secret = webhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET || getRazorpaySecret();
   if (!rawBody || !signature || !secret) return false;

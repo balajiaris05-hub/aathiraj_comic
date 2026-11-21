@@ -11,6 +11,15 @@ export interface RazorpayGatewayOrderResult {
   error?: string;
 }
 
+export interface RazorpayGatewaySubscriptionResult {
+  subscriptionId: string;
+  planId: string;
+  shortUrl?: string;
+  createdViaRazorpayApi: boolean;
+  statusCode?: number;
+  error?: string;
+}
+
 export interface RazorpayVerifiedPayment {
   paymentId: string;
   orderId?: string;
@@ -197,6 +206,98 @@ export async function createGatewayOrderOnRazorpay(params: {
       orderId: '',
       createdViaRazorpayApi: false,
       statusCode: isAuthFailure ? 401 : 500,
+      error: String(apiDesc),
+    };
+  }
+}
+
+const DEFAULT_LIVE_PLAN_IDS: Record<'1_month' | '6_months', string> = {
+  '1_month': 'plan_U0CwrDGonjUDN2',
+  '6_months': 'plan_U0DDDaA2ru0PLQ',
+};
+
+/**
+ * Resolve configured Razorpay Plan ID for recurring subscriptions.
+ * Uses RAZORPAY_PLAN_1_MONTH_ID / RAZORPAY_PLAN_6_MONTHS_ID when set;
+ * defaults to the Live Dashboard plan IDs in Live Mode, and returns null in
+ * Test Mode unless explicit Test Mode plan IDs are configured.
+ */
+export function resolveConfiguredRazorpayPlanId(
+  subscriptionPlan?: '1_month' | '6_months',
+  isLiveMode?: boolean
+): string | null {
+  const planKey: '1_month' | '6_months' = subscriptionPlan === '6_months' ? '6_months' : '1_month';
+  const envPlanId = (
+    planKey === '6_months'
+      ? process.env.RAZORPAY_PLAN_6_MONTHS_ID || ''
+      : process.env.RAZORPAY_PLAN_1_MONTH_ID || ''
+  ).trim();
+  if (envPlanId) return envPlanId;
+  if (isLiveMode) return DEFAULT_LIVE_PLAN_IDS[planKey];
+  return null;
+}
+
+/**
+ * Create a per-customer Razorpay Subscription via official Subscriptions API.
+ */
+export async function createGatewaySubscriptionOnRazorpay(params: {
+  planId: string;
+  totalCount: number;
+  notes?: Record<string, string>;
+}): Promise<RazorpayGatewaySubscriptionResult> {
+  const rzp = createRazorpaySdkClient();
+  const cleanPlanId = params.planId.trim();
+
+  if (!rzp) {
+    return {
+      subscriptionId: '',
+      planId: cleanPlanId,
+      createdViaRazorpayApi: false,
+      statusCode: 401,
+      error: 'Razorpay credentials (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET) are missing or invalid.',
+    };
+  }
+
+  try {
+    const subscription = (await rzp.subscriptions.create({
+      plan_id: cleanPlanId,
+      total_count: Math.max(1, Math.round(params.totalCount)),
+      customer_notify: 1,
+      notes: params.notes || {},
+    })) as any;
+
+    if (subscription && subscription.id) {
+      return {
+        subscriptionId: String(subscription.id),
+        planId: String(subscription.plan_id || cleanPlanId),
+        shortUrl: subscription.short_url ? String(subscription.short_url) : undefined,
+        createdViaRazorpayApi: true,
+      };
+    }
+
+    return {
+      subscriptionId: '',
+      planId: cleanPlanId,
+      createdViaRazorpayApi: false,
+      statusCode: 500,
+      error: 'Razorpay Subscriptions API did not return a subscription ID.',
+    };
+  } catch (err: any) {
+    const httpStatus = Number(err?.statusCode || err?.response?.status || 500);
+    const apiDesc =
+      err?.error?.description ||
+      err?.description ||
+      err?.message ||
+      'Razorpay Subscriptions API request failed.';
+    const isAuthFailure =
+      httpStatus === 401 ||
+      /authentication failed|invalid key|unauthorized/i.test(String(apiDesc));
+
+    return {
+      subscriptionId: '',
+      planId: cleanPlanId,
+      createdViaRazorpayApi: false,
+      statusCode: isAuthFailure ? 401 : httpStatus >= 400 && httpStatus < 500 ? httpStatus : 500,
       error: String(apiDesc),
     };
   }

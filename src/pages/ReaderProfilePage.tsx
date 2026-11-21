@@ -8,6 +8,7 @@ import {
   verifyFirebaseSmsOtp,
   clearRecaptchaVerifier,
   listenForDeviceSmsOtp,
+  formatFirebaseAuthError,
   ConfirmationResult,
 } from '../firebase';
 import {
@@ -39,6 +40,7 @@ import {
   AlertTriangle,
   Download,
   Camera,
+  X,
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import { processingClass } from '../utils/buttonLoading';
@@ -1551,6 +1553,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         setAuthError('Could not retrieve Gmail address from Google Sign-In.');
         return;
       }
+      const firebaseIdToken = await fbUser.getIdToken().catch(() => undefined);
       const selectedCountryObj = GLOBAL_COUNTRIES.find((c) => c.code === activeCountryCode);
       const loginRes = await login(fbUser.email, {
         name: fbUser.displayName || regName.trim() || undefined,
@@ -1563,6 +1566,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
         notifyMobile,
         isGoogleAuth: true,
         firebaseUid: fbUser.uid,
+        firebaseIdToken,
         avatar: fbUser.photoURL || undefined,
       });
       setAuthLoading(false);
@@ -1579,7 +1583,7 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
       }, 900);
     } catch (err: any) {
       setAuthLoading(false);
-      setAuthError(err.message || 'Google Sign-In failed');
+      setAuthError(formatFirebaseAuthError(err, 'Google Sign-In failed. Please try again.'));
     }
   };
 
@@ -1800,7 +1804,15 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
               {authError && (
                 <div className="mb-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{authError}</span>
+                  <span className="flex-1 min-w-0 break-words leading-relaxed">{authError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAuthError(null)}
+                    aria-label="Dismiss error message"
+                    className="p-0.5 rounded-md text-rose-500/70 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-500/15 transition-colors shrink-0 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
 

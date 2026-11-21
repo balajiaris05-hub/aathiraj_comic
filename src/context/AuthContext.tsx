@@ -18,6 +18,7 @@ export interface LoginExtraOptions {
   transactionId?: string;
   isGoogleAuth?: boolean;
   firebaseUid?: string;
+  firebaseIdToken?: string;
   avatar?: string;
 }
 
@@ -207,6 +208,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const headers = await getAuthHeaders();
+      if (opts.firebaseIdToken) {
+        headers['Authorization'] = `Bearer ${opts.firebaseIdToken}`;
+      } else if (opts.isGoogleAuth) {
+        const freshFbToken = await getCurrentFirebaseIdToken();
+        if (freshFbToken) {
+          headers['Authorization'] = `Bearer ${freshFbToken}`;
+        }
+      }
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers,

@@ -158,6 +158,64 @@ export async function getCurrentFirebaseIdToken(): Promise<string | null> {
 }
 
 /**
+ * Format Firebase Auth or Firestore error objects into clean, user-friendly text
+ * so raw JSON payloads or internal Firebase error codes never leak into the UI.
+ */
+export function formatFirebaseAuthError(err: unknown, fallback = 'Sign-in could not be completed. Please try again.'): string {
+  const code = typeof (err as any)?.code === 'string' ? (err as any).code : '';
+  const rawMsg =
+    typeof (err as any)?.message === 'string'
+      ? (err as any).message.trim()
+      : typeof err === 'string'
+        ? err.trim()
+        : '';
+
+  switch (code) {
+    case 'auth/popup-closed-by-user':
+      return 'Google Sign-In pop-up was closed before completing sign-in. Please click "Connect Gmail Account" to try again.';
+    case 'auth/cancelled-popup-request':
+      return 'Another sign-in pop-up was already open. Please try clicking "Connect Gmail Account" again.';
+    case 'auth/popup-blocked':
+      return 'Your browser blocked the Google Sign-In pop-up. Please allow pop-ups for this site or sign in below using your Gmail and password.';
+    case 'auth/unauthorized-domain': {
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+      return `Google Sign-In pop-up is not yet authorized for "${host}". Sign in below with your Gmail & password, or add "${host}" in Firebase Console → Authentication → Settings → Authorized domains.`;
+    }
+    case 'auth/network-request-failed':
+      return 'Network error while contacting Google Sign-In. Please check your internet connection and try again.';
+    case 'auth/account-exists-with-different-credential':
+      return 'An account already exists with this Gmail using a different sign-in method. Please sign in below with your Gmail and password.';
+    default:
+      break;
+  }
+
+  // Unwrap serialized JSON from handleFirestoreError if encountered
+  if (rawMsg.startsWith('{') && rawMsg.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(rawMsg);
+      if (typeof parsed?.error === 'string' && parsed.error.trim()) {
+        return parsed.error.trim();
+      }
+    } catch {
+      // ignore invalid JSON
+    }
+  }
+
+  if (rawMsg.includes('auth/unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+    return `Google Sign-In pop-up is not yet authorized for "${host}". Sign in below with your Gmail & password, or add "${host}" in Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
+  if (rawMsg.includes('auth/popup-blocked')) {
+    return 'Your browser blocked the Google Sign-In pop-up. Please allow pop-ups for this site or sign in below using your Gmail and password.';
+  }
+  if (rawMsg.includes('auth/popup-closed-by-user')) {
+    return 'Google Sign-In pop-up was closed before completing sign-in. Please try again.';
+  }
+
+  return rawMsg || fallback;
+}
+
+/**
  * Sign in with Google Popup via Firebase Auth and sync the reader's public & isolated private
  * records (Gmail, Age, Mobile, UPI ID, Paid Detail of Premium) into Firestore (`aathiraicomic`).
  */
@@ -171,7 +229,8 @@ export async function signInWithGoogleAndSyncToFirestore(options: {
 }) {
   const cred = await signInWithPopup(auth, googleProvider);
   const fbUser = cred.user;
-  await syncReaderAccountToFirestore({
+  // Non-blocking Firestore profile sync so offline/permission edge cases never block Google Sign-In
+  void syncReaderAccountToFirestore({
     uid: fbUser.uid,
     name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Reader'),
     email: fbUser.email || '',
@@ -181,6 +240,8 @@ export async function signInWithGoogleAndSyncToFirestore(options: {
     paidPlan: options.paidPlan || 'free',
     paymentMethod: options.paymentMethod || 'UPI (Google Pay / PhonePe)',
     transactionId: options.transactionId || 'UPI-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+  }).catch((syncErr) => {
+    console.warn('Non-blocking Firestore reader sync warning:', syncErr);
   });
   return fbUser;
 }
