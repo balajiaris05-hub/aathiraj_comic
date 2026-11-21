@@ -3083,13 +3083,23 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
               <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl space-y-6">
                 <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
                   <div className="flex items-center gap-3">
-                    <img
-                      src={user.avatar}
-                      alt={user.name}
-                      onClick={() => profileAvatarInputRef.current?.click()}
-                      title="Click to upload a new profile image"
-                      className="w-14 h-14 rounded-2xl object-cover border-2 border-rose-500/40 shadow-md cursor-pointer hover:opacity-85 transition-opacity"
-                    />
+                    {user.avatar?.trim() ? (
+                      <img
+                        src={user.avatar.trim()}
+                        alt={user.name}
+                        onClick={() => profileAvatarInputRef.current?.click()}
+                        title="Click to upload a new profile image"
+                        className="w-14 h-14 rounded-2xl object-cover border-2 border-rose-500/40 shadow-md cursor-pointer hover:opacity-85 transition-opacity"
+                      />
+                    ) : (
+                      <div
+                        onClick={() => profileAvatarInputRef.current?.click()}
+                        title="Click to upload a new profile image"
+                        className="w-14 h-14 rounded-2xl bg-rose-600/15 text-rose-500 border-2 border-rose-500/40 shadow-md cursor-pointer flex items-center justify-center font-extrabold text-lg shrink-0"
+                      >
+                        {(user.name || user.email || 'R').charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     <input
                       ref={profileAvatarInputRef}
                       type="file"
@@ -3216,11 +3226,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                   <form onSubmit={handleSaveProfile} className="space-y-3 text-xs">
                     <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2.5">
-                        <img
-                          src={editAvatar || user.avatar}
-                          alt={user.name}
-                          className="w-10 h-10 rounded-xl object-cover border border-rose-500/40"
-                        />
+                        {(editAvatar || user.avatar)?.trim() ? (
+                          <img
+                            src={(editAvatar || user.avatar || '').trim()}
+                            alt={user.name}
+                            className="w-10 h-10 rounded-xl object-cover border border-rose-500/40"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-xl bg-rose-600/15 text-rose-500 border border-rose-500/40 flex items-center justify-center font-extrabold text-sm shrink-0">
+                            {(user.name || user.email || 'R').charAt(0).toUpperCase()}
+                          </div>
+                        )}
                         <div>
                           <div className="font-bold text-slate-800 dark:text-slate-200">Account Holder Image</div>
                           <div className="text-[10px] text-slate-500">Upload JPG, PNG, or WEBP</div>
@@ -3686,11 +3702,17 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                       onClick={() => onSelectComic(comic)}
                       className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-rose-500/50 transition-all flex items-center gap-4 cursor-pointer group"
                     >
-                      <img
-                        src={comic.coverImage}
-                        alt={comic.title}
-                        className="w-14 h-20 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-800"
-                      />
+                      {comic.coverImage?.trim() ? (
+                        <img
+                          src={comic.coverImage.trim()}
+                          alt={comic.title}
+                          className="w-14 h-20 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-800"
+                        />
+                      ) : (
+                        <div className="w-14 h-20 rounded-xl shrink-0 border border-slate-200 dark:border-slate-800 bg-slate-900 text-rose-400 flex items-center justify-center font-extrabold text-xs">
+                          {(comic.title || 'C').charAt(0).toUpperCase()}
+                        </div>
+                      )}
                       <div className="min-w-0 flex-1 space-y-1">
                         <h4 className="font-bold text-sm text-slate-900 dark:text-white truncate group-hover:text-rose-600 dark:group-hover:text-rose-400">
                           {comic.title}
@@ -3832,7 +3854,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               onClick={() => onSelectComic(c)}
                               className="flex items-center gap-2.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-amber-500 transition-colors"
                             >
-                              <img src={c.coverImage} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-8 h-11 rounded object-cover shrink-0" />
+                              {c.coverImage?.trim() ? (
+                                <img src={c.coverImage.trim()} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-8 h-11 rounded object-cover shrink-0" />
+                              ) : (
+                                <div className="w-8 h-11 rounded bg-slate-900 text-rose-400 flex items-center justify-center text-[10px] font-bold shrink-0">
+                                  {(c.title || 'C').charAt(0).toUpperCase()}
+                                </div>
+                              )}
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</div>
                                 <div className="text-[10px] text-slate-500 truncate">{c.authorName}</div>
@@ -3860,7 +3888,13 @@ export const ReaderProfilePage: React.FC<ReaderProfilePageProps> = ({
                               onClick={() => onSelectComic(c)}
                               className="flex items-center gap-2.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-rose-500 transition-colors"
                             >
-                              <img src={c.coverImage} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-8 h-11 rounded object-cover shrink-0" />
+                              {c.coverImage?.trim() ? (
+                                <img src={c.coverImage.trim()} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-8 h-11 rounded object-cover shrink-0" />
+                              ) : (
+                                <div className="w-8 h-11 rounded bg-slate-900 text-rose-400 flex items-center justify-center text-[10px] font-bold shrink-0">
+                                  {(c.title || 'C').charAt(0).toUpperCase()}
+                                </div>
+                              )}
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</div>
                                 <div className="text-[10px] text-slate-500 truncate">{c.authorName}</div>

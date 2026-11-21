@@ -92,9 +92,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                     : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 border-slate-300 dark:border-slate-700'
                 }`}
               >
-                {user ? (
+                {user && user.avatar?.trim() ? (
                   <img
-                    src={user.avatar}
+                    src={user.avatar.trim()}
                     alt={user.name}
                     className="w-4 h-4 sm:w-5 sm:h-5 rounded-full object-cover border border-white/40 shrink-0"
                   />
@@ -116,11 +116,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onNot
                   <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
                     {user ? (
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <img
-                          src={user.avatar}
-                          alt={user.name}
-                          className="w-10 h-10 rounded-xl object-cover border border-rose-500/30 shrink-0"
-                        />
+                        {user.avatar?.trim() ? (
+                          <img
+                            src={user.avatar.trim()}
+                            alt={user.name}
+                            className="w-10 h-10 rounded-xl object-cover border border-rose-500/30 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-xl bg-rose-600/15 text-rose-500 border border-rose-500/30 flex items-center justify-center font-extrabold text-sm shrink-0">
+                            {(user.name || user.email || 'U').charAt(0).toUpperCase()}
+                          </div>
+                        )}
                         <div className="min-w-0">
                           <div className="font-extrabold text-sm text-slate-900 dark:text-white truncate">
                             {user.name}

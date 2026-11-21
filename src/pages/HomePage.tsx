@@ -301,9 +301,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                 onClick={() => onOpenEpisode(item.episodeId)}
                 className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-rose-500 transition-colors cursor-pointer group"
               >
-                {item.coverImage && (
+                {item.coverImage?.trim() && (
                   <img
-                    src={item.coverImage}
+                    src={item.coverImage.trim()}
                     alt={`${item.comicTitle} Tamil comic cover - Aathirai Comic`}
                     className="w-12 h-16 rounded-lg object-cover shrink-0"
                   />
@@ -434,11 +434,17 @@ export const HomePage: React.FC<HomePageProps> = ({
                   onClick={() => onOpenEpisode(latest.id)}
                   className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-rose-500 transition-colors cursor-pointer group"
                 >
-                  <img
-                    src={comic.coverImage}
-                    alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
-                    className="w-12 h-16 rounded-lg object-cover shrink-0"
-                  />
+                  {comic.coverImage?.trim() ? (
+                    <img
+                      src={comic.coverImage.trim()}
+                      alt={`${comic.title} Tamil comic cover - Aathirai Comic`}
+                      className="w-12 h-16 rounded-lg object-cover shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-16 rounded-lg bg-slate-900 border border-slate-800 text-rose-400 flex items-center justify-center shrink-0 text-xs font-extrabold font-mono">
+                      E{latest.episodeNumber}
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-rose-600 dark:text-rose-400">
                       Ep {latest.episodeNumber} · {latest.releaseDate}
@@ -551,9 +557,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                   onClick={() => setCurrentTab('authors')}
                   className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-emerald-500 transition-colors cursor-pointer"
                 >
-                  {creator.coverImage ? (
+                  {creator.coverImage?.trim() ? (
                     <img
-                      src={creator.coverImage}
+                      src={creator.coverImage.trim()}
                       alt={`${creator.name} - Tamil & Indian comic creator on Aathirai Comic`}
                       className="w-12 h-12 rounded-xl object-cover border border-emerald-500/30"
                     />

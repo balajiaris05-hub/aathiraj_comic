@@ -971,8 +971,7 @@ async function startServer() {
     const matchedUser = findCustomerAccount(snapshot.users || [], params);
     const isProtectedOwner = isProtectedVaultUser(matchedUser);
     const isComplimentaryAdminAccess = Boolean(
-      matchedUser &&
-        (matchedUser.hasComplimentaryAdminAccess || isProtectedOwnerReaderUser(matchedUser))
+      matchedUser && matchedUser.hasComplimentaryAdminAccess
     );
 
     if (isComplimentaryAdminAccess && matchedUser) {

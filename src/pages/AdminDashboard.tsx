@@ -2015,11 +2015,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
 
             <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center gap-3">
-              <img
-                src={comicToDelete.coverImage}
-                alt={comicToDelete.title}
-                className="w-12 h-16 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
-              />
+              {comicToDelete.coverImage?.trim() ? (
+                <img
+                  src={comicToDelete.coverImage.trim()}
+                  alt={comicToDelete.title}
+                  className="w-12 h-16 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                />
+              ) : (
+                <div className="w-12 h-16 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-xs font-extrabold shrink-0 border border-slate-200 dark:border-slate-700">
+                  {(comicToDelete.title || 'C').charAt(0).toUpperCase()}
+                </div>
+              )}
               <div className="text-xs">
                 <span className="font-bold text-slate-900 dark:text-white block">{comicToDelete.title}</span>
                 <span className="text-slate-500">By {comicToDelete.authorName}</span>
@@ -3043,16 +3049,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   >
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
                       <div className="flex items-center gap-4">
-                        <img
-                          src={comic.coverImage}
-                          alt={comic.title}
-                          onClick={() => {
-                            setPreviewQueueComic(comic);
-                            setPreviewQueuePageIdx(0);
-                          }}
-                          className="w-14 h-20 rounded-xl object-cover shrink-0 border border-slate-300 dark:border-slate-700 cursor-pointer hover:ring-2 hover:ring-amber-500 transition-all"
-                          title="Click to inspect attached comic pages"
-                        />
+                        {comic.coverImage?.trim() ? (
+                          <img
+                            src={comic.coverImage.trim()}
+                            alt={comic.title}
+                            onClick={() => {
+                              setPreviewQueueComic(comic);
+                              setPreviewQueuePageIdx(0);
+                            }}
+                            className="w-14 h-20 rounded-xl object-cover shrink-0 border border-slate-300 dark:border-slate-700 cursor-pointer hover:ring-2 hover:ring-amber-500 transition-all"
+                            title="Click to inspect attached comic pages"
+                          />
+                        ) : (
+                          <div
+                            onClick={() => {
+                              setPreviewQueueComic(comic);
+                              setPreviewQueuePageIdx(0);
+                            }}
+                            className="w-14 h-20 rounded-xl bg-slate-900 text-amber-400 flex items-center justify-center text-xs font-extrabold shrink-0 border border-slate-300 dark:border-slate-700 cursor-pointer hover:ring-2 hover:ring-amber-500 transition-all"
+                            title="Click to inspect attached comic pages"
+                          >
+                            {(comic.title || 'C').charAt(0).toUpperCase()}
+                          </div>
+                        )}
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <h4 className="text-base font-bold text-slate-900 dark:text-white font-heading">
@@ -3208,11 +3227,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               className="group rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-amber-500 transition-all cursor-pointer shadow-xs flex flex-col"
                             >
                               <div className="relative aspect-[3/4] overflow-hidden bg-slate-950">
-                                <img
-                                  src={page.imageUrl}
-                                  alt={page.caption || `Page ${idx + 1}`}
-                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                />
+                                {page.imageUrl?.trim() ? (
+                                  <img
+                                    src={page.imageUrl.trim()}
+                                    alt={page.caption || `Page ${idx + 1}`}
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
+                                    No Image
+                                  </div>
+                                )}
                                 <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/80 text-amber-400 font-mono font-bold text-[9px]">
                                   File #{idx + 1}
                                 </span>
@@ -3339,11 +3364,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                       >
                         <div className="flex items-center gap-3">
-                          <img
-                            src={c.coverImage}
-                            alt={c.title}
-                            className="w-10 h-14 rounded-lg object-cover border border-slate-300 dark:border-slate-700 shrink-0"
-                          />
+                          {c.coverImage?.trim() ? (
+                            <img
+                              src={c.coverImage.trim()}
+                              alt={c.title}
+                              className="w-10 h-14 rounded-lg object-cover border border-slate-300 dark:border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-10 h-14 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-xs font-extrabold border border-slate-300 dark:border-slate-700 shrink-0">
+                              {(c.title || 'C').charAt(0).toUpperCase()}
+                            </div>
+                          )}
                           <div>
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-bold text-slate-900 dark:text-white">{c.title}</span>
@@ -3409,11 +3440,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   {/* Modal Header */}
                   <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-slate-50 dark:bg-slate-950">
                     <div className="flex items-center gap-3">
-                      <img
-                        src={previewQueueComic.coverImage}
-                        alt={previewQueueComic.title}
-                        className="w-11 h-14 rounded-xl object-cover border border-amber-500/40 shrink-0"
-                      />
+                      {previewQueueComic.coverImage?.trim() ? (
+                        <img
+                          src={previewQueueComic.coverImage.trim()}
+                          alt={previewQueueComic.title}
+                          className="w-11 h-14 rounded-xl object-cover border border-amber-500/40 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-11 h-14 rounded-xl bg-slate-900 text-amber-400 flex items-center justify-center text-xs font-extrabold border border-amber-500/40 shrink-0">
+                          {(previewQueueComic.title || 'C').charAt(0).toUpperCase()}
+                        </div>
+                      )}
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="font-extrabold text-sm sm:text-base text-slate-900 dark:text-white">
@@ -3488,11 +3525,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <>
                         {modalPages[previewQueuePageIdx] && (
                           <div className="flex flex-col items-center space-y-2 max-w-full">
-                            <img
-                              src={modalPages[previewQueuePageIdx].imageUrl}
-                              alt={`Attached File ${previewQueuePageIdx + 1}`}
-                              className="max-h-[52vh] w-auto rounded-2xl border border-slate-800 shadow-2xl object-contain"
-                            />
+                            {modalPages[previewQueuePageIdx].imageUrl?.trim() ? (
+                              <img
+                                src={modalPages[previewQueuePageIdx].imageUrl.trim()}
+                                alt={`Attached File ${previewQueuePageIdx + 1}`}
+                                className="max-h-[52vh] w-auto rounded-2xl border border-slate-800 shadow-2xl object-contain"
+                              />
+                            ) : (
+                              <div className="px-6 py-12 rounded-2xl border border-slate-800 bg-slate-900 text-xs text-slate-400">
+                                Image unavailable
+                              </div>
+                            )}
                             <span className="text-xs font-mono font-semibold text-slate-300 bg-slate-900 px-3 py-1 rounded-lg border border-slate-800">
                               File #{previewQueuePageIdx + 1}: {modalPages[previewQueuePageIdx].caption || `Page ${previewQueuePageIdx + 1}`}
                             </span>
@@ -3534,7 +3577,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   : 'border-slate-800 opacity-60 hover:opacity-100'
                               }`}
                             >
-                              <img src={p.imageUrl} alt={`Thumb ${idx + 1}`} className="w-12 h-16 object-cover" />
+                              {p.imageUrl?.trim() ? (
+                                <img src={p.imageUrl.trim()} alt={`Thumb ${idx + 1}`} className="w-12 h-16 object-cover" />
+                              ) : (
+                                <div className="w-12 h-16 bg-slate-900 text-slate-400 flex items-center justify-center text-[10px]">
+                                  #{idx + 1}
+                                </div>
+                              )}
                             </button>
                           ))}
                         </div>
@@ -3550,11 +3599,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <span>Attached Photo #{idx + 1} of {modalPages.length}</span>
                               <span>{p.caption || `Page ${idx + 1}`}</span>
                             </div>
-                            <img
-                              src={p.imageUrl}
-                              alt={`Photo ${idx + 1}`}
-                              className="w-full h-auto rounded-xl object-contain"
-                            />
+                            {p.imageUrl?.trim() ? (
+                              <img
+                                src={p.imageUrl.trim()}
+                                alt={`Photo ${idx + 1}`}
+                                className="w-full h-auto rounded-xl object-contain"
+                              />
+                            ) : (
+                              <div className="py-10 text-center text-xs text-slate-400">
+                                Image unavailable
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -3794,11 +3849,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
-                      <img
-                        src={comic.coverImage}
-                        alt={comic.title}
-                        className="w-12 h-16 rounded-lg object-cover shrink-0"
-                      />
+                      {comic.coverImage?.trim() ? (
+                        <img
+                          src={comic.coverImage.trim()}
+                          alt={comic.title}
+                          className="w-12 h-16 rounded-lg object-cover shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-16 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-xs font-extrabold shrink-0">
+                          {(comic.title || 'C').charAt(0).toUpperCase()}
+                        </div>
+                      )}
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="font-bold text-sm text-slate-900 dark:text-white">{comic.title}</h4>
@@ -5137,11 +5198,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               }}
                               className="group relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 cursor-pointer hover:border-amber-500 transition-all shadow-xs"
                             >
-                              <img
-                                src={imgUrl}
-                                alt={`${app.sampleComicTitle} Page ${idx + 1}`}
-                                className="w-full h-28 object-cover group-hover:scale-105 transition-transform"
-                              />
+                              {imgUrl?.trim() ? (
+                                <img
+                                  src={imgUrl.trim()}
+                                  alt={`${app.sampleComicTitle} Page ${idx + 1}`}
+                                  className="w-full h-28 object-cover group-hover:scale-105 transition-transform"
+                                />
+                              ) : (
+                                <div className="w-full h-28 bg-slate-900 flex items-center justify-center text-[10px] text-slate-400">
+                                  No Image
+                                </div>
+                              )}
                               <div className="p-1.5 text-[10px] font-mono font-bold text-center bg-slate-900/80 text-white">
                                 Sample Page {idx + 1}
                               </div>

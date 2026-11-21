@@ -1060,12 +1060,18 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                     key={p.id || idx}
                     className="w-full rounded-lg overflow-hidden shadow-2xl border border-slate-800/60 bg-slate-900"
                   >
-                    <img
-                      src={p.imageUrl}
-                      alt={`${data.comic.title} - ${data.episode.title} page ${p.pageNumber || idx + 1} Tamil comic - Aathirai Comic`}
-                      loading="lazy"
-                      className="w-full h-auto block select-none pointer-events-none"
-                    />
+                    {p.imageUrl?.trim() ? (
+                      <img
+                        src={p.imageUrl.trim()}
+                        alt={`${data.comic.title} - ${data.episode.title} page ${p.pageNumber || idx + 1} Tamil comic - Aathirai Comic`}
+                        loading="lazy"
+                        className="w-full h-auto block select-none pointer-events-none"
+                      />
+                    ) : (
+                      <div className="w-full py-20 text-center text-xs text-slate-400">
+                        Page {p.pageNumber || idx + 1} image unavailable
+                      </div>
+                    )}
                     {p.caption && (
                       <div className="p-2 text-center text-xs text-slate-400 bg-slate-950/90 border-t border-slate-800">
                         {p.caption}
@@ -1085,11 +1091,17 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                           key={pg.id || idx}
                           className="rounded-xl overflow-hidden shadow-2xl border border-slate-800 bg-slate-900"
                         >
-                          <img
-                            src={pg.imageUrl}
-                            alt={`${data.comic.title} - ${data.episode.title} page ${currentPageIndex + idx + 1} Tamil comic - Aathirai Comic`}
-                            className="w-full h-auto block select-none pointer-events-none"
-                          />
+                          {pg.imageUrl?.trim() ? (
+                            <img
+                              src={pg.imageUrl.trim()}
+                              alt={`${data.comic.title} - ${data.episode.title} page ${currentPageIndex + idx + 1} Tamil comic - Aathirai Comic`}
+                              className="w-full h-auto block select-none pointer-events-none"
+                            />
+                          ) : (
+                            <div className="w-full py-20 text-center text-xs text-slate-400">
+                              Page {currentPageIndex + idx + 1} image unavailable
+                            </div>
+                          )}
                         </div>
                       )
                   )}
@@ -1125,13 +1137,19 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
               <div className="w-full flex flex-col items-center space-y-4">
                 {pages[currentPageIndex] && (
                   <div className="w-full rounded-xl overflow-hidden shadow-2xl border border-slate-800 bg-slate-900 flex justify-center">
-                    <img
-                      src={pages[currentPageIndex].imageUrl}
-                      alt={`${data.comic.title} - ${data.episode.title} page ${currentPageIndex + 1} Tamil comic - Aathirai Comic`}
-                      className={`${
-                        readingMode === 'single' ? 'max-h-[80vh] w-auto object-contain' : 'w-full h-auto'
-                      } block select-none pointer-events-none`}
-                    />
+                    {pages[currentPageIndex].imageUrl?.trim() ? (
+                      <img
+                        src={pages[currentPageIndex].imageUrl.trim()}
+                        alt={`${data.comic.title} - ${data.episode.title} page ${currentPageIndex + 1} Tamil comic - Aathirai Comic`}
+                        className={`${
+                          readingMode === 'single' ? 'max-h-[80vh] w-auto object-contain' : 'w-full h-auto'
+                        } block select-none pointer-events-none`}
+                      />
+                    ) : (
+                      <div className="w-full py-24 text-center text-xs text-slate-400">
+                        Page {currentPageIndex + 1} image unavailable
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1351,11 +1369,17 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-center gap-2.5">
-                            <img
-                              src={comment.userAvatar}
-                              alt={comment.userName}
-                              className="w-7 h-7 rounded-full object-cover border border-slate-700"
-                            />
+                            {comment.userAvatar?.trim() ? (
+                              <img
+                                src={comment.userAvatar.trim()}
+                                alt={comment.userName}
+                                className="w-7 h-7 rounded-full object-cover border border-slate-700"
+                              />
+                            ) : (
+                              <div className="w-7 h-7 rounded-full bg-slate-800 text-rose-400 border border-slate-700 flex items-center justify-center text-[11px] font-bold shrink-0">
+                                {(comment.userName || 'R').charAt(0).toUpperCase()}
+                              </div>
+                            )}
                             <div>
                               <div className="flex items-center gap-1.5">
                                 <span className="text-xs font-bold text-white">{comment.userName}</span>

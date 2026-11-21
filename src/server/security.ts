@@ -358,7 +358,7 @@ export function sanitizeUserForClient(user: User, includeSessionToken = false): 
     delete clone.phone;
     clone.upiId = undefined;
     clone.role = 'reader';
-    clone.hasComplimentaryAdminAccess = true;
+    clone.hasComplimentaryAdminAccess = Boolean(clone.hasComplimentaryAdminAccess);
     clone.isProtectedOwnerReader = true;
   }
   return clone;

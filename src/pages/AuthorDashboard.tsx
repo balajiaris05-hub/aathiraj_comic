@@ -1436,11 +1436,17 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                       : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                   }`}
                 >
-                  <img
-                    src={c.coverImage}
-                    alt={c.title}
-                    className="w-12 h-16 rounded-lg object-cover shrink-0"
-                  />
+                  {c.coverImage?.trim() ? (
+                    <img
+                      src={c.coverImage.trim()}
+                      alt={c.title}
+                      className="w-12 h-16 rounded-lg object-cover shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-16 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-xs font-extrabold shrink-0">
+                      {(c.title || 'C').charAt(0).toUpperCase()}
+                    </div>
+                  )}
                     <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <h4 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
@@ -2129,11 +2135,17 @@ export const AuthorDashboard: React.FC<AuthorDashboardProps> = ({
                               className="flex items-center justify-between text-xs py-1.5 px-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/40 border border-transparent hover:border-slate-200 dark:hover:border-slate-800 transition-colors"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
-                                <img
-                                  src={ep.coverImage || ep.pages?.[0]?.imageUrl || selectedComic.coverImage}
-                                  alt={ep.title}
-                                  className="w-8 h-11 rounded object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-xs"
-                                />
+                                {(ep.coverImage || ep.pages?.[0]?.imageUrl || selectedComic.coverImage)?.trim() ? (
+                                  <img
+                                    src={(ep.coverImage || ep.pages?.[0]?.imageUrl || selectedComic.coverImage || '').trim()}
+                                    alt={ep.title}
+                                    className="w-8 h-11 rounded object-cover border border-slate-200 dark:border-slate-800 shrink-0 shadow-xs"
+                                  />
+                                ) : (
+                                  <div className="w-8 h-11 rounded bg-slate-900 text-rose-400 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-[10px] font-bold shrink-0">
+                                    E{ep.episodeNumber}
+                                  </div>
+                                )}
                                 <div className="min-w-0">
                                   <span className="font-semibold text-slate-700 dark:text-slate-200 truncate block">
                                     Ep {ep.episodeNumber}: {ep.title}

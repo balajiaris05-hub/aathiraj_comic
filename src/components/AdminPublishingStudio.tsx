@@ -1433,11 +1433,17 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                       : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                   }`}
                 >
-                  <img
-                    src={c.coverImage}
-                    alt={c.title}
-                    className="w-12 h-16 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
-                  />
+                  {c.coverImage?.trim() ? (
+                    <img
+                      src={c.coverImage.trim()}
+                      alt={c.title}
+                      className="w-12 h-16 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                    />
+                  ) : (
+                    <div className="w-12 h-16 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-xs font-extrabold shrink-0 border border-slate-200 dark:border-slate-700">
+                      {(c.title || 'C').charAt(0).toUpperCase()}
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <h4 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
@@ -1906,11 +1912,17 @@ export const AdminPublishingStudio: React.FC<AdminPublishingStudioProps> = ({
                                   className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 shadow-xs"
                                 >
                                   <div className="flex items-center gap-2.5 min-w-0">
-                                    <img
-                                      src={ep.coverImage || selectedComic.coverImage}
-                                      alt={ep.title}
-                                      className="w-10 h-14 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-800"
-                                    />
+                                    {(ep.coverImage || selectedComic.coverImage)?.trim() ? (
+                                      <img
+                                        src={(ep.coverImage || selectedComic.coverImage || '').trim()}
+                                        alt={ep.title}
+                                        className="w-10 h-14 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-800"
+                                      />
+                                    ) : (
+                                      <div className="w-10 h-14 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-[10px] font-bold shrink-0 border border-slate-200 dark:border-slate-800">
+                                        E{ep.episodeNumber}
+                                      </div>
+                                    )}
                                     <div className="min-w-0">
                                       <div className="flex items-center gap-1.5 flex-wrap">
                                         <span className="font-bold text-xs text-slate-900 dark:text-white truncate">

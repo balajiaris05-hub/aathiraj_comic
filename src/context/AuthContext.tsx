@@ -128,7 +128,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const nowMs = Date.now();
   const hasComplimentaryAdminAccess = Boolean(
     user?.hasComplimentaryAdminAccess ||
-      user?.isProtectedOwnerReader ||
       user?.premiumPaymentDetail?.isComplimentaryAdminAccess ||
       user?.premiumPaymentDetail?.status === 'complimentary'
   );

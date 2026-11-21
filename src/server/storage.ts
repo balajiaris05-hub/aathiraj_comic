@@ -359,7 +359,7 @@ export function enforceImmutableAdminRecord(users: User[]): void {
     }
   });
 
-  // Ensure the personal Owner Reader account exists in backend storage with permanent complimentary access
+  // Ensure the personal Owner Reader account exists in backend storage (without complimentary unlimited access; 1-month free trial expired for Razorpay payment testing)
   let ownerReader = users.find(
     (u) => u.id === IMMUTABLE_OWNER_READER_VAULT.id || Boolean(u.isProtectedOwnerReader)
   );
@@ -376,8 +376,13 @@ export function enforceImmutableAdminRecord(users: User[]): void {
       isVerified: true,
       emailVerified: true,
       isSuspended: false,
-      hasComplimentaryAdminAccess: true,
+      hasComplimentaryAdminAccess: false,
       isProtectedOwnerReader: true,
+      isFreeTrial: false,
+      freeTrialClaimed: true,
+      freeTrialGrantedAt: '2026-01-01T00:00:00Z',
+      freeTrialExpiresAt: '2026-01-31T00:00:00Z',
+      freeTrialPopupSeenAt: '2026-01-01T00:00:00Z',
       notifyGmail: true,
       notifyMobile: false,
       bookmarks: [],
@@ -403,14 +408,30 @@ export function enforceImmutableAdminRecord(users: User[]): void {
       u.emailVerified = true;
       u.isSuspended = false;
       u.suspendedReason = undefined;
-      u.hasComplimentaryAdminAccess = true;
+      u.hasComplimentaryAdminAccess = false;
       u.isProtectedOwnerReader = true;
       if (!u.passwordHash || !u.passwordHash.startsWith('scrypt:')) {
         u.passwordHash = IMMUTABLE_OWNER_READER_VAULT.passwordHash;
       }
       delete u.password;
-      u.isFreeTrial = false;
+      u.freeTrialClaimed = true;
+      u.freeTrialGrantedAt = u.freeTrialGrantedAt || '2026-01-01T00:00:00Z';
+      u.freeTrialExpiresAt = '2026-01-31T00:00:00Z';
       u.freeTrialPopupSeenAt = u.freeTrialPopupSeenAt || '2026-01-01T00:00:00Z';
+      if (
+        u.isFreeTrial ||
+        u.premiumPaymentDetail?.status === 'trial' ||
+        u.premiumPaymentDetail?.status === 'complimentary' ||
+        u.premiumPaymentDetail?.isComplimentaryAdminAccess
+      ) {
+        u.isFreeTrial = false;
+        u.premiumPlan = null;
+        u.premiumStartedAt = undefined;
+        u.premiumExpiresAt = undefined;
+        u.premiumPaymentDetail = undefined;
+      } else {
+        u.isFreeTrial = false;
+      }
       if (!Array.isArray(u.bookmarks)) u.bookmarks = [];
       if (!Array.isArray(u.favorites)) u.favorites = [];
       if (!Array.isArray(u.readingHistory)) u.readingHistory = [];
@@ -447,8 +468,13 @@ export function getDefaultDatabase(): DatabaseSchema {
         isVerified: true,
         emailVerified: true,
         isSuspended: false,
-        hasComplimentaryAdminAccess: true,
+        hasComplimentaryAdminAccess: false,
         isProtectedOwnerReader: true,
+        isFreeTrial: false,
+        freeTrialClaimed: true,
+        freeTrialGrantedAt: '2026-01-01T00:00:00Z',
+        freeTrialExpiresAt: '2026-01-31T00:00:00Z',
+        freeTrialPopupSeenAt: '2026-01-01T00:00:00Z',
         notifyGmail: true,
         notifyMobile: false,
         bookmarks: [],

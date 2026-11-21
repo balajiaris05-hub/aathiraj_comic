@@ -218,11 +218,17 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
                   onClick={() => setSelectedAuthorModal(author)}
                   className="flex items-center gap-3.5 cursor-pointer group"
                 >
-                  <img
-                    src={author.avatar}
-                    alt={author.name}
-                    className="w-14 h-14 rounded-2xl object-cover border-2 border-rose-500/20 shrink-0 group-hover:scale-105 transition-transform"
-                  />
+                  {author.avatar?.trim() ? (
+                    <img
+                      src={author.avatar.trim()}
+                      alt={author.name}
+                      className="w-14 h-14 rounded-2xl object-cover border-2 border-rose-500/20 shrink-0 group-hover:scale-105 transition-transform"
+                    />
+                  ) : (
+                    <div className="w-14 h-14 rounded-2xl bg-rose-600/15 text-rose-500 border-2 border-rose-500/20 shrink-0 flex items-center justify-center font-extrabold text-lg">
+                      {(author.name || 'A').charAt(0).toUpperCase()}
+                    </div>
+                  )}
                   <div>
                     <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors font-heading">
                       {author.name}
@@ -241,10 +247,10 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
                       Sample Artwork ({author.sampleImages.length}):
                     </span>
                     <div className="grid grid-cols-3 gap-1.5">
-                      {author.sampleImages.slice(0, 3).map((imgUrl, idx) => (
+                      {author.sampleImages.filter((u) => Boolean(u && u.trim())).slice(0, 3).map((imgUrl, idx) => (
                         <img
                           key={idx}
-                          src={imgUrl}
+                          src={imgUrl.trim()}
                           alt={`${author.name} sample ${idx + 1}`}
                           className="w-full h-14 object-cover rounded-lg border border-slate-200 dark:border-slate-800"
                         />
@@ -317,11 +323,17 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-4">
-                <img
-                  src={selectedAuthorModal.avatar}
-                  alt={selectedAuthorModal.name}
-                  className="w-16 h-16 rounded-2xl object-cover border-2 border-rose-500/30"
-                />
+                {selectedAuthorModal.avatar?.trim() ? (
+                  <img
+                    src={selectedAuthorModal.avatar.trim()}
+                    alt={selectedAuthorModal.name}
+                    className="w-16 h-16 rounded-2xl object-cover border-2 border-rose-500/30"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-2xl bg-rose-600/15 text-rose-500 border-2 border-rose-500/30 flex items-center justify-center font-extrabold text-xl shrink-0">
+                    {(selectedAuthorModal.name || 'A').charAt(0).toUpperCase()}
+                  </div>
+                )}
                 <div>
                   <h2 className="text-xl font-extrabold text-slate-900 dark:text-white font-heading">
                     {selectedAuthorModal.name}
@@ -405,7 +417,13 @@ export const AuthorsPage: React.FC<AuthorsPageProps> = ({
                     }}
                     className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-rose-500 cursor-pointer"
                   >
-                    <img src={c.coverImage} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-12 h-16 rounded-lg object-cover" />
+                    {c.coverImage?.trim() ? (
+                      <img src={c.coverImage.trim()} alt={`${c.title} Tamil comic cover - Aathirai Comic`} className="w-12 h-16 rounded-lg object-cover" />
+                    ) : (
+                      <div className="w-12 h-16 rounded-lg bg-slate-900 text-rose-400 flex items-center justify-center text-xs font-extrabold shrink-0">
+                        {(c.title || 'C').charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <h5 className="text-xs font-bold text-slate-900 dark:text-white truncate">{c.title}</h5>
                       <span className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5">
