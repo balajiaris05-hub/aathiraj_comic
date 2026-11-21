@@ -550,9 +550,16 @@ export interface RazorpayConfigStatus {
   statusMessage: string;
 }
 
+function cleanEnvSecret(raw?: string): string {
+  return String(raw || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .trim();
+}
+
 export function getRazorpayEnvironmentStatus(): RazorpayConfigStatus {
-  const rawKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
-  const rawSecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const rawKeyId = cleanEnvSecret(process.env.RAZORPAY_KEY_ID);
+  const rawSecret = cleanEnvSecret(process.env.RAZORPAY_KEY_SECRET);
 
   const effectiveKeyId = rawKeyId;
   const effectiveSecret = rawSecret;
@@ -602,7 +609,7 @@ export function getRazorpayEnvironmentStatus(): RazorpayConfigStatus {
 }
 
 export function getRazorpaySecret(): string {
-  return (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  return cleanEnvSecret(process.env.RAZORPAY_KEY_SECRET);
 }
 
 /**

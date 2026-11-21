@@ -49,9 +49,16 @@ export interface RazorpayCustomerVerificationResult {
 
 const KNOWN_SUBSCRIPTION_IDS = ['sub_U0DeTe3l42sQ9K', 'sub_U0DEqhM6bgOd0h'];
 
+function cleanRazorpayEnv(raw?: string): string {
+  return String(raw || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .trim();
+}
+
 export function hasRealRazorpayApiKeys(): boolean {
-  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
-  const secret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const keyId = cleanRazorpayEnv(process.env.RAZORPAY_KEY_ID);
+  const secret = cleanRazorpayEnv(process.env.RAZORPAY_KEY_SECRET);
   if (!keyId || !secret) return false;
   if (keyId === 'your_razorpay_key_id' || secret === 'your_razorpay_key_secret') return false;
   return keyId.startsWith('rzp_live_') || keyId.startsWith('rzp_test_');
@@ -59,7 +66,7 @@ export function hasRealRazorpayApiKeys(): boolean {
 
 function createRazorpaySdkClient(): Razorpay | null {
   if (!hasRealRazorpayApiKeys()) return null;
-  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keyId = cleanRazorpayEnv(process.env.RAZORPAY_KEY_ID);
   const keySecret = getRazorpaySecret();
   if (!keyId || !keySecret) return null;
   return new Razorpay({
@@ -70,7 +77,7 @@ function createRazorpaySdkClient(): Razorpay | null {
 
 function getRazorpayAuthHeader(): string | null {
   if (!hasRealRazorpayApiKeys()) return null;
-  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keyId = cleanRazorpayEnv(process.env.RAZORPAY_KEY_ID);
   const secret = getRazorpaySecret();
   if (!keyId || !secret) return null;
   return 'Basic ' + Buffer.from(`${keyId}:${secret}`).toString('base64');
