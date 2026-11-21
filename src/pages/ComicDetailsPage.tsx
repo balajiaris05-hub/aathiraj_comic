@@ -16,8 +16,7 @@ import {
   Mail,
   RefreshCw,
   Bookmark,
-  Heart,
-  ExternalLink
+  Heart
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import { processingClass } from '../utils/buttonLoading';
@@ -394,21 +393,6 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
                       <IndianRupee className="w-4 h-4" />
                       <span>Subscribe 6 Months (₹249)</span>
                     </button>
-
-                    <a
-                      href="https://rzp.io/rzp/eMyTbngF"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() =>
-                        setAwaitingPaymentInfo(
-                          `Razorpay hosted page opened for 1 Month Pass (₹49). Complete payment using your registered email (${user.email}) or phone, then click Verify Payment Status.`
-                        )
-                      }
-                      className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-rose-500 dark:text-slate-400"
-                    >
-                      <span>Hosted link</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
                   </div>
                 )}
               </>
@@ -668,11 +652,6 @@ export const ComicDetailsPage: React.FC<ComicDetailsPageProps> = ({
           itemType="subscription"
           subscriptionPlan={checkoutPlan}
           amountInr={checkoutPlan === '6_months' ? 249 : 49}
-          hostedPaymentUrl={
-            checkoutPlan === '6_months'
-              ? 'https://rzp.io/rzp/E077NNn'
-              : 'https://rzp.io/rzp/eMyTbngF'
-          }
           onPaymentSuccess={async () => {
             setAwaitingPaymentInfo(null);
             await refreshUser();

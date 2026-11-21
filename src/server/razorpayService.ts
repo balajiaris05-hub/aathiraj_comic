@@ -44,8 +44,7 @@ export function hasRealRazorpayApiKeys(): boolean {
   const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
   const secret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
   if (!keyId || !secret) return false;
-  if (keyId === 'your_razorpay_key_id' || keyId === 'rzp_test_AathiraiTestModeKey') return false;
-  if (secret === 'your_razorpay_key_secret' || secret === 'rzp_test_secret_AathiraiTestSecretKey2026') return false;
+  if (keyId === 'your_razorpay_key_id' || secret === 'your_razorpay_key_secret') return false;
   return keyId.startsWith('rzp_live_') || keyId.startsWith('rzp_test_');
 }
 
@@ -559,10 +558,3 @@ export async function findCapturedRazorpayPaymentForCustomer(params: {
   }
 }
 
-export function computeTestOrderCredentials(orderId: string, testPaymentId: string) {
-  return {
-    orderId,
-    paymentId: testPaymentId,
-    signature: computeRazorpayOrderSignature(orderId, testPaymentId),
-  };
-}

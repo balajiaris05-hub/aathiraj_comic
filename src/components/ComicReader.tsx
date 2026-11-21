@@ -25,7 +25,6 @@ import {
   Heart,
   Bookmark,
   Columns2,
-  ExternalLink,
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from './RazorpayCheckoutModal';
 import { processingClass } from '../utils/buttonLoading';
@@ -967,31 +966,13 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                         Unlocks all paywalled comics for 1 month on {user.email}.
                       </p>
                     </div>
-                    <div className="space-y-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setCheckoutPlan('1_month')}
-                        className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
-                      >
-                        <span>Subscribe ₹49 (1 Month)</span>
-                      </button>
-                      <div className="text-center">
-                        <a
-                          href="https://rzp.io/rzp/eMyTbngF"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() =>
-                            setAwaitingPaymentInfo(
-                              `Razorpay hosted page opened for 1 Month Pass (₹49). Use your registered email (${user.email}) or phone, then click Re-Verify above.`
-                            )
-                          }
-                          className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-400 hover:text-rose-400"
-                        >
-                          <span>Prefer hosted page?</span>
-                          <ExternalLink className="w-2.5 h-2.5" />
-                        </a>
-                      </div>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCheckoutPlan('1_month')}
+                      className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
+                    >
+                      <span>Subscribe ₹49 (1 Month)</span>
+                    </button>
                   </div>
 
                   <div className="p-4 rounded-2xl bg-gradient-to-b from-amber-500/15 to-slate-950 border-2 border-amber-500/60 space-y-3 flex flex-col justify-between">
@@ -1009,31 +990,13 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
                         Unlocks all paywalled comics for 6 months on {user.email}.
                       </p>
                     </div>
-                    <div className="space-y-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setCheckoutPlan('6_months')}
-                        className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
-                      >
-                        <span>Subscribe ₹249 (6 Months)</span>
-                      </button>
-                      <div className="text-center">
-                        <a
-                          href="https://rzp.io/rzp/E077NNn"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() =>
-                            setAwaitingPaymentInfo(
-                              `Razorpay hosted page opened for 6 Months Pass (₹249). Use your registered email (${user.email}) or phone, then click Re-Verify above.`
-                            )
-                          }
-                          className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-300 hover:text-amber-300"
-                        >
-                          <span>Prefer hosted page?</span>
-                          <ExternalLink className="w-2.5 h-2.5" />
-                        </a>
-                      </div>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCheckoutPlan('6_months')}
+                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 font-extrabold text-xs uppercase tracking-wider cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
+                    >
+                      <span>Subscribe ₹249 (6 Months)</span>
+                    </button>
                   </div>
                 </div>
 
@@ -1597,11 +1560,6 @@ export const ComicReader: React.FC<ComicReaderProps> = ({
           itemType="subscription"
           subscriptionPlan={checkoutPlan}
           amountInr={checkoutPlan === '6_months' ? 249 : 49}
-          hostedPaymentUrl={
-            checkoutPlan === '6_months'
-              ? 'https://rzp.io/rzp/E077NNn'
-              : 'https://rzp.io/rzp/eMyTbngF'
-          }
           onPaymentSuccess={async () => {
             setAwaitingPaymentInfo(null);
             await refreshUser();

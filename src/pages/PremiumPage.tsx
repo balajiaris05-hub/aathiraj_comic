@@ -5,26 +5,12 @@ import {
   Check,
   CheckCircle2,
   Lock,
-  ExternalLink,
   Gift,
   Clock
 } from 'lucide-react';
 import { RazorpayCheckoutModal } from '../components/RazorpayCheckoutModal';
 import { Purchase } from '../types/comic';
 import { processingClass } from '../utils/buttonLoading';
-
-const RAZORPAY_PLAN_LINKS = {
-  '1_month': {
-    id: 'sub_U0DeTe3l42sQ9K',
-    planId: 'plan_U0CwrDGonjUDN2',
-    url: 'https://rzp.io/rzp/eMyTbngF',
-  },
-  '6_months': {
-    id: 'sub_U0DEqhM6bgOd0h',
-    planId: 'plan_U0DDDaA2ru0PLQ',
-    url: 'https://rzp.io/rzp/E077NNn',
-  },
-} as const;
 
 interface PremiumPageProps {
   openAuthModal: () => void;
@@ -435,31 +421,13 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                 Subscribe 1 Month Premium — ₹49
               </button>
             ) : (
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => setCheckoutPlan('1_month')}
-                  className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
-                >
-                  <span>Subscribe 1 Month Premium — ₹49</span>
-                </button>
-                <div className="text-center">
-                  <a
-                    href={RAZORPAY_PLAN_LINKS['1_month'].url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() =>
-                      setAwaitingPaymentInfo(
-                        `Razorpay hosted page opened for 1 Month Pass (₹49). Complete payment using your registered email (${user.email}) or phone, then click "Verify Payment Status Now".`
-                      )
-                    }
-                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-rose-500 dark:text-slate-400"
-                  >
-                    <span>Prefer Razorpay hosted page?</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={() => setCheckoutPlan('1_month')}
+                className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/20 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <span>Subscribe 1 Month Premium — ₹49</span>
+              </button>
             )}
           </div>
         </div>
@@ -554,31 +522,13 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
                 Subscribe 6 Months Premium — ₹249
               </button>
             ) : (
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => setCheckoutPlan('6_months')}
-                  className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
-                >
-                  <span>Subscribe 6 Months Premium — ₹249</span>
-                </button>
-                <div className="text-center">
-                  <a
-                    href={RAZORPAY_PLAN_LINKS['6_months'].url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() =>
-                      setAwaitingPaymentInfo(
-                        `Razorpay hosted page opened for 6 Months Pass (₹249). Complete payment using your registered email (${user.email}) or phone, then click "Verify Payment Status Now".`
-                      )
-                    }
-                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-amber-300"
-                  >
-                    <span>Prefer Razorpay hosted page?</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={() => setCheckoutPlan('6_months')}
+                className="w-full py-4 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wider shadow-xl transition-all bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-slate-950 hover:scale-[1.02] cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <span>Subscribe 6 Months Premium — ₹249</span>
+              </button>
             )}
           </div>
         </div>
@@ -599,7 +549,6 @@ export const PremiumPage: React.FC<PremiumPageProps> = ({
           itemType="subscription"
           subscriptionPlan={checkoutPlan}
           amountInr={checkoutPlan === '6_months' ? 249 : 49}
-          hostedPaymentUrl={RAZORPAY_PLAN_LINKS[checkoutPlan].url}
           onPaymentSuccess={async (purchase: Purchase) => {
             setAwaitingPaymentInfo(null);
             await refreshUser();

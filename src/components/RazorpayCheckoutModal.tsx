@@ -44,7 +44,6 @@ interface CheckoutProps {
   itemType: 'full_comic' | 'chapter' | 'episode' | 'subscription';
   subscriptionPlan?: '1_month' | '6_months';
   amountInr: number;
-  hostedPaymentUrl?: string;
   onPaymentSuccess: (purchase: Purchase) => void;
 }
 
@@ -89,7 +88,6 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
   itemType,
   subscriptionPlan,
   amountInr,
-  hostedPaymentUrl,
   onPaymentSuccess,
 }) => {
   const { user, updateUser, refreshUser, getAuthHeaders } = useAuth();
@@ -198,14 +196,14 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
       const sdkReady = await ensureRazorpayCheckoutScript();
       if (!sdkReady || typeof window === 'undefined' || !window.Razorpay) {
         throw new Error(
-          'Unable to load Razorpay Checkout script (checkout.razorpay.com). Please check your connection or use the hosted payment link below.'
+          'Unable to load Razorpay Checkout script (checkout.razorpay.com). Please check your internet connection and try again.'
         );
       }
 
       const headers = await getAuthHeaders();
 
-      // 1. Create order on backend (server creates real Razorpay order in both Test & Live modes)
-      const orderRes = await fetch('/api/payments/razorpay/create-order', {
+      // 1. Create order on backend via POST /api/create-order
+      const orderRes = await fetch('/api/create-order', {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -245,8 +243,8 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
         razorpayPaymentId: string;
         razorpaySignature: string;
       }) => {
-        setStatusLabel('Verifying HMAC-SHA256 signature...');
-        const verifyRes = await fetch('/api/payments/razorpay/verify-payment', {
+        setStatusLabel('Verifying payment signature...');
+        const verifyRes = await fetch('/api/verify-payment', {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -386,24 +384,20 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
                 <span className="font-extrabold text-xs uppercase tracking-wider text-slate-900 dark:text-white">
                   Razorpay Checkout
                 </span>
-                {paymentMode === 'live' ? (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-                    LIVE · INR
-                  </span>
-                ) : paymentMode === 'test' ? (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
-                    TEST MODE · NO REAL CHARGE
-                  </span>
-                ) : (
+                {paymentMode === 'unconfigured' ? (
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
                     UNCONFIGURED
+                  </span>
+                ) : (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                    INR · SECURE
                   </span>
                 )}
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 {isCustomerGstEnabled
-                  ? 'HMAC-SHA256 Signature Verification · GST-Inclusive Billing'
-                  : 'HMAC-SHA256 Signature Verification · Instant Access'}
+                  ? 'Razorpay Standard Web Checkout · GST-Inclusive Billing'
+                  : 'Razorpay Standard Web Checkout · Instant Access'}
               </p>
             </div>
           </div>
@@ -417,19 +411,6 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
-
-        {paymentMode === 'test' && (
-          <div className="px-6 py-3 bg-amber-500/10 border-b border-amber-500/25 text-amber-800 dark:text-amber-200 text-xs space-y-1.5">
-            <div className="flex items-center gap-2 font-semibold">
-              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-              <span>Test Mode active — no real money is deducted.</span>
-            </div>
-            <div className="pl-6 space-y-0.5 text-[11px] font-mono tabular-nums text-amber-900/90 dark:text-amber-100/90">
-              <div>Test Card: 4100 2800 0000 1007 · CVV: 123 · Expiry: 12/26</div>
-              <div>Test UPI: test@razorpay</div>
-            </div>
-          </div>
-        )}
 
         {/* UNCONFIGURED MODE BANNER */}
         {paymentMode === 'unconfigured' && (
@@ -449,12 +430,12 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
                 <CheckCircle2 className="w-8 h-8" />
               </div>
               <h3 className="text-xl font-extrabold text-slate-900 dark:text-white">
-                Payment Verified ({enrichedReceipt.environment === 'live' ? 'LIVE' : 'TEST MODE'})!
+                Payment Verified!
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {isCustomerGstEnabled
-                  ? 'HMAC-SHA256 signature verified on the backend and your GST tax invoice is ready.'
-                  : 'HMAC-SHA256 signature verified on the backend and your payment receipt (No GST) is ready.'}
+                  ? 'Razorpay payment signature verified on the backend and your GST tax invoice is ready.'
+                  : 'Razorpay payment signature verified on the backend and your payment receipt (No GST) is ready.'}
               </p>
             </div>
 
@@ -791,28 +772,11 @@ export const RazorpayCheckoutModal: React.FC<CheckoutProps> = ({
                     ? 'Payment Gateway Unconfigured'
                     : isProcessing
                       ? statusLabel
-                      : paymentMode === 'test'
-                        ? isCustomerGstEnabled
-                          ? `Pay ₹${amountInr} in Razorpay Test Mode (Incl. GST)`
-                          : `Pay ₹${amountInr} in Razorpay Test Mode`
-                        : isCustomerGstEnabled
-                          ? `Pay ₹${amountInr} Securely via Razorpay (Incl. GST)`
-                          : `Pay ₹${amountInr} Securely via Razorpay`}
+                      : isCustomerGstEnabled
+                        ? `Pay ₹${amountInr} Securely via Razorpay (Incl. GST)`
+                        : `Pay ₹${amountInr} Securely via Razorpay`}
                 </span>
               </button>
-
-              {hostedPaymentUrl && (
-                <div className="text-center">
-                  <a
-                    href={hostedPaymentUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] font-semibold text-slate-500 hover:text-rose-500 dark:text-slate-400 dark:hover:text-rose-400 underline underline-offset-2"
-                  >
-                    Having trouble with the popup? Pay on Razorpay hosted page instead
-                  </a>
-                </div>
-              )}
 
               <div className="flex items-center justify-center gap-2 text-[11px] text-slate-400">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />

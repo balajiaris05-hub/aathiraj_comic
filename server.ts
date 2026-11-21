@@ -6606,8 +6606,8 @@ async function startServer() {
   const handleCreateOrder = async (req: express.Request, res: express.Response) => {
     const rzpStatus = getRazorpayEnvironmentStatus();
     if (!rzpStatus.isConfigured || rzpStatus.mode === 'unconfigured') {
-      return res.status(503).json({
-        error: 'Payment gateway is currently unavailable. Razorpay credentials (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET) are not configured on the server.',
+      return res.status(401).json({
+        error: 'Razorpay authentication failed: RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are not configured on the server.',
         mode: 'UNCONFIGURED',
       });
     }
@@ -6866,11 +6866,11 @@ async function startServer() {
       });
     }
 
-    // 2b. When real Razorpay API keys are configured and this is not a synthetic test ID, check capture status via Razorpay API
+    // 2b. Confirm payment capture/authorization status directly with Razorpay API
     let confirmedViaRazorpayApi = false;
     let razorpayPaymentAmountInr: number | undefined = undefined;
     let razorpayMethodLabel: string | undefined = undefined;
-    if (hasRealRazorpayApiKeys() && !resolvedPaymentId.startsWith('pay_test_')) {
+    if (hasRealRazorpayApiKeys()) {
       const liveCheck = await fetchRazorpayPaymentById(resolvedPaymentId);
       if (liveCheck.checked && liveCheck.found && !liveCheck.capturedOrAuthorized) {
         return res.status(400).json({
